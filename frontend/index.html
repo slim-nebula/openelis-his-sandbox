@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HIS Sandbox — Lab Ordering</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>HIS Sandbox</h1>
+    <p class="sub">Patient registration and lab ordering against OpenELIS</p>
+    <div id="health" class="health">checking…</div>
+  </header>
+
+  <main>
+    <!-- ---------------- Patients ---------------- -->
+    <section class="panel">
+      <h2>1 · Patients</h2>
+
+      <form id="patient-form" class="grid">
+        <label>First name <input name="firstName" required /></label>
+        <label>Last name <input name="lastName" required /></label>
+        <label>Sex
+          <select name="sex">
+            <option value="F">Female</option>
+            <option value="M">Male</option>
+            <option value="U">Unknown</option>
+          </select>
+        </label>
+        <label>Date of birth <input name="dateOfBirth" type="date" required /></label>
+        <label>Phone <input name="phone" /></label>
+        <label>National ID <input name="nationalId" /></label>
+        <button type="submit">Create patient</button>
+      </form>
+
+      <div class="searchbar">
+        <input id="patient-search" placeholder="Search by name, MRN or national ID…" />
+        <button id="search-btn" type="button">Search</button>
+      </div>
+
+      <table id="patients">
+        <thead>
+          <tr><th>MRN</th><th>Name</th><th>Sex</th><th>DOB</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <!-- ---------------- Selected patient ---------------- -->
+    <section class="panel" id="detail" hidden>
+      <h2>2 · <span id="detail-name"></span></h2>
+      <dl id="detail-summary" class="summary"></dl>
+
+      <h3>Place a lab order</h3>
+      <form id="order-form" class="grid">
+        <label>Test
+          <select name="testCode" id="test-select" required></select>
+        </label>
+        <label>Ordering provider <input name="orderingProvider" value="Dr. Konate" required /></label>
+        <label>Facility code <input name="facilityCode" value="FAC-001" required /></label>
+        <label>Priority
+          <select name="priority">
+            <option value="routine">Routine</option>
+            <option value="stat">STAT</option>
+          </select>
+        </label>
+        <button type="submit">Create lab order</button>
+      </form>
+
+      <h3>Lab orders</h3>
+      <table id="orders">
+        <thead>
+          <tr><th>Order number</th><th>Test</th><th>Status</th><th>Created</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <h3>Released results <span class="hint">returned from OpenELIS via the bridge</span></h3>
+      <table id="results">
+        <thead>
+          <tr><th>Test</th><th>Value</th><th>Interpretation</th><th>Status</th><th>Released</th><th>OpenELIS record</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p class="hint">
+        Results shown here are a simplified copy. OpenELIS remains the source of
+        truth for the full result and the laboratory workflow behind it.
+      </p>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

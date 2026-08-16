@@ -1,0 +1,85 @@
+# =============================================================================
+# Application tier — HIS microservice, bridge, test frontend
+#
+# Network membership is the boundary:
+#   his-api  sandbox + data          (never reaches OpenELIS)
+#   bridge   sandbox + integration + data
+#   frontend sandbox                 (static assets only)
+#
+# The bridge is the only container on both `sandbox` and `integration`, which
+# makes it the only path between the HIS estate and OpenELIS.
+# =============================================================================
+
+services:
+
+  # --- Patient + Lab Order microservice --------------------------------------
+  his-api:
+    build:
+      context: ../services/His.Api
+    image: his-sandbox/his-api:local
+    container_name: his-api
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ}
+      HIS_DB_CONNECTION: "Host=${HIS_DB_HOST};Port=${HIS_DB_PORT};Database=${HIS_DB_NAME};Username=${HIS_DB_USER};Password=${HIS_DB_PASSWORD};Include Error Detail=true"
+      KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP}
+      TOPIC_ORDER_CREATED: ${TOPIC_ORDER_CREATED}
+      TOPIC_ORDER_SENT: ${TOPIC_ORDER_SENT}
+      TOPIC_ORDER_FAILED: ${TOPIC_ORDER_FAILED}
+      TOPIC_RESULT_RELEASED: ${TOPIC_RESULT_RELEASED}
+      TOPIC_RESULT_FAILED: ${TOPIC_RESULT_FAILED}
+    networks: [sandbox, data]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  # --- Bridge service --------------------------------------------------------
+  # Consumes lab.order.created, publishes FHIR Tasks for OpenELIS to poll, and
+  # receives released results pushed back from OpenELIS on the same endpoint.
+  bridge:
+    build:
+      context: ../services/Bridge
+    image: his-sandbox/bridge:local
+    container_name: bridge
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ}
+      BRIDGE_DB_CONNECTION: "Host=${HIS_DB_HOST};Port=${HIS_DB_PORT};Database=${BRIDGE_DB_NAME};Username=${BRIDGE_DB_USER};Password=${BRIDGE_DB_PASSWORD};Include Error Detail=true"
+      HIS_API_INTERNAL_URL: ${HIS_API_INTERNAL_URL}
+      KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP}
+      TOPIC_ORDER_CREATED: ${TOPIC_ORDER_CREATED}
+      TOPIC_ORDER_SENT: ${TOPIC_ORDER_SENT}
+      TOPIC_ORDER_FAILED: ${TOPIC_ORDER_FAILED}
+      TOPIC_RESULT_RELEASED: ${TOPIC_RESULT_RELEASED}
+      TOPIC_RESULT_FAILED: ${TOPIC_RESULT_FAILED}
+      # Must equal org.openelisglobal.remote.source.identifier in
+      # openelis/generated/common.properties, or OpenELIS's poll matches nothing.
+      OE_REMOTE_SOURCE_IDENTIFIER: ${OE_REMOTE_SOURCE_IDENTIFIER}
+      BRIDGE_MAX_RETRIES: ${BRIDGE_MAX_RETRIES}
+      BRIDGE_RETRY_BASE_DELAY_SECONDS: ${BRIDGE_RETRY_BASE_DELAY_SECONDS}
+      BRIDGE_RESULT_CORRELATION_RETRY_MINUTES: ${BRIDGE_RESULT_CORRELATION_RETRY_MINUTES}
+    networks: [sandbox, integration, data]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  # --- Minimal test frontend -------------------------------------------------
+  frontend:
+    build:
+      context: ../frontend
+    image: his-sandbox/frontend:local
+    container_name: his-frontend
+    restart: unless-stopped
+    networks: [sandbox]

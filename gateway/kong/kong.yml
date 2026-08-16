@@ -1,0 +1,85 @@
+# =============================================================================
+# Kong declarative configuration (DB-less)
+#
+# Only client-facing endpoints are routed here. The bridge-facing /internal/*
+# API is deliberately ABSENT: the bridge reaches his-api directly over the
+# sandbox network, so internal integration traffic never transits the edge.
+# =============================================================================
+_format_version: "3.0"
+_transform: true
+
+services:
+  - name: his-patient-laborder-service
+    url: http://his-api:8080
+    connect_timeout: 5000
+    read_timeout: 30000
+    write_timeout: 30000
+    retries: 2
+    routes:
+      # Ordered most-specific first. Kong matches regex routes ahead of plain
+      # prefixes, so /patients/search is never swallowed by /patients/{id}.
+      - name: patients-search
+        paths: ["~/patients/search$"]
+        methods: [GET]
+        strip_path: false
+
+      - name: patient-results
+        paths: ["~/patients/[^/]+/results$"]
+        methods: [GET]
+        strip_path: false
+
+      - name: patient-orders
+        paths: ["~/patients/[^/]+/lab-orders$"]
+        methods: [GET]
+        strip_path: false
+
+      - name: patients-get
+        paths: ["~/patients/[^/]+$"]
+        methods: [GET]
+        strip_path: false
+
+      - name: patients-create
+        paths: ["/patients"]
+        methods: [POST]
+        strip_path: false
+
+      - name: lab-orders-get
+        paths: ["~/lab-orders/[^/]+$"]
+        methods: [GET]
+        strip_path: false
+
+      - name: lab-orders-create
+        paths: ["/lab-orders"]
+        methods: [POST]
+        strip_path: false
+
+      - name: test-catalogue
+        paths: ["/test-catalogue"]
+        methods: [GET]
+        strip_path: false
+
+      - name: his-health
+        paths: ["/healthz"]
+        methods: [GET]
+        strip_path: false
+
+plugins:
+  # Every request gets a correlation id at the edge; downstream services echo
+  # it onto their logs, their Kafka headers and their calls to OpenELIS.
+  - name: correlation-id
+    config:
+      header_name: X-Correlation-ID
+      generator: uuid
+      echo_downstream: true
+
+  - name: cors
+    config:
+      origins: ["*"]
+      methods: [GET, POST, PUT, OPTIONS]
+      headers: [Accept, Content-Type, X-Correlation-ID]
+      exposed_headers: [X-Correlation-ID]
+      max_age: 3600
+
+  - name: request-size-limiting
+    config:
+      allowed_payload_size: 1

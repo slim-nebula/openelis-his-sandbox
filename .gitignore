@@ -1,0 +1,13 @@
+# Rendered from .env by scripts/render-config.sh — never edit or commit
+openelis/generated/
+
+# .NET build output
+services/**/bin/
+services/**/obj/
+
+.DS_Store
+*.log
+
+# Only needed to regenerate the shared data-flow page
+node_modules/
+package-lock.json

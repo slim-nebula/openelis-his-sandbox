@@ -1,0 +1,88 @@
+# =============================================================================
+# Data tier — the "external database servers"
+#
+# Deliberately a SEPARATE compose project from the application platform. The
+# application stacks join `oe-data-net` as a pre-existing external network and
+# reach these servers only over TCP using connection strings supplied from .env.
+# There are no shared volumes, no depends_on across the boundary, and no
+# service in one database can see the other.
+#
+#   docker compose -p his-lab-data -f compose/data.yml up -d
+# =============================================================================
+
+services:
+
+  # --- HIS estate database server --------------------------------------------
+  # Hosts two independent databases: his_sandbox (Patient + Lab Order service)
+  # and bridge_sandbox (bridge service).
+  his-db:
+    image: postgres:17
+    container_name: his-db-external
+    hostname: his-db.external
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${HIS_DB_ADMIN_USER}
+      POSTGRES_PASSWORD: ${HIS_DB_ADMIN_PASSWORD}
+      POSTGRES_DB: postgres
+      HIS_DB_NAME: ${HIS_DB_NAME}
+      HIS_DB_USER: ${HIS_DB_USER}
+      HIS_DB_PASSWORD: ${HIS_DB_PASSWORD}
+      BRIDGE_DB_NAME: ${BRIDGE_DB_NAME}
+      BRIDGE_DB_USER: ${BRIDGE_DB_USER}
+      BRIDGE_DB_PASSWORD: ${BRIDGE_DB_PASSWORD}
+      TZ: ${TZ}
+    volumes:
+      - ../db/00-bootstrap.sh:/docker-entrypoint-initdb.d/00-bootstrap.sh:ro
+      - ../db/his:/schema/his:ro
+      - ../db/bridge:/schema/bridge:ro
+      - his-db-data:/var/lib/postgresql/data
+    ports:
+      - "${HIS_DB_PUBLISHED_PORT}:5432"
+    networks:
+      data:
+        aliases: [his-db.external]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${HIS_DB_ADMIN_USER} -d ${HIS_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # --- OpenELIS database server ----------------------------------------------
+  # The upstream OpenELIS database image (postgres 14 + the clinlims schema),
+  # deployed here as a standalone server. The OpenELIS application container
+  # points at it via -Ddatasource.url and ships no database of its own.
+  openelis-db:
+    image: itechuw/openelis-global-2-database:develop
+    platform: linux/amd64
+    container_name: openelis-db-external
+    hostname: openelis-db.external
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: ${OE_DB_NAME}
+      POSTGRES_INITDB_ARGS: "--auth-host=md5"
+      DB_PASSWORD: ${OE_DB_PASSWORD}
+      DB_SUPERUSER_PASSWORD: ${OE_DB_SUPERUSER_PASSWORD}
+      TZ: ${TZ}
+    volumes:
+      - openelis-db-data:/var/lib/postgresql/data
+    ports:
+      - "${OE_DB_PUBLISHED_PORT}:5432"
+    networks:
+      data:
+        aliases: [openelis-db.external]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -d ${OE_DB_NAME} -U ${OE_DB_USER}"]
+      interval: 10s
+      timeout: 45s
+      retries: 20
+
+networks:
+  data:
+    name: oe-data-net
+    driver: bridge
+
+volumes:
+  his-db-data:
+  openelis-db-data:
