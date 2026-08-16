@@ -95,6 +95,12 @@ Constraints that are easy to get wrong, all learned from the OpenELIS source:
   thing OpenELIS matches a test on.
 - `ServiceRequest.identifier[0].value` becomes the LIS-side external order id,
   and is truncated past 60 characters.
+- **`ServiceRequest.id` must equal that same identifier.** OpenELIS's Incoming
+  Orders view reads `ServiceRequest/{electronic_order.external_id}` straight
+  out of its local FHIR store. Give the resource a different id — a UUID, say —
+  and ordering still works, but every order shows the lab
+  `error in data collection - FHIR resource not found` and no test name. It is
+  invisible from the integration's side and obvious from the lab's.
 
 ### Outbound: released result → HIS
 

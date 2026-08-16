@@ -31,7 +31,21 @@ public static class OrderMapper
     {
         var patientId = order.Patient.PatientId.ToString();
         var practitionerId = DeterministicGuid($"provider|{order.OrderingProvider}").ToString();
-        var serviceRequestId = order.OrderId.ToString();
+
+        // The ServiceRequest id must be the ORDER NUMBER, not the order UUID.
+        // OpenELIS's Incoming Orders view reads
+        //     ServiceRequest/{electronic_order.external_id}
+        // straight out of its local FHIR store (RestElectronicOrdersController),
+        // and external_id is whatever we put in ServiceRequest.identifier[0].
+        // With a UUID id that read 404s, and the lab user sees
+        // "error in data collection - FHIR resource not found" with no test
+        // name on every order we send. Order import still worked, because that
+        // path follows Task.basedOn references instead — which is exactly why
+        // this stayed invisible from the integration's side.
+        //
+        // Order numbers are unique, <= 60 chars, and match the FHIR id
+        // grammar [A-Za-z0-9-.]{1,64}.
+        var serviceRequestId = order.OrderNumber;
         var specimenId = DeterministicGuid($"specimen|{order.OrderId}").ToString();
         var taskId = DeterministicGuid($"task|{order.OrderId}").ToString();
         var labPractitionerId = labOwnerReference.Split('/')[^1];
@@ -116,6 +130,8 @@ public static class OrderMapper
             Priority = MapPriority(order.Priority),
             // OpenELIS reads identifier[0].value as electronic_order.external_id.
             Identifier = [new Identifier(OrderNumberSystem, order.OrderNumber)],
+            // Populates "referring lab number" in the Incoming Orders view.
+            Requisition = new Identifier(OrderNumberSystem, order.OrderNumber),
             Code = new CodeableConcept
             {
                 Coding = [new Coding(LoincSystem, order.LoincCode, order.TestName)],

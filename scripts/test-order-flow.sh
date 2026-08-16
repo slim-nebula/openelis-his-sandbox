@@ -102,12 +102,24 @@ else
 fi
 
 check_contains "ServiceRequest carries the LOINC coding OpenELIS matches on" \
-    "in_sandbox http://localhost:8080/fhir/ServiceRequest/$ORDER_ID" \
+    "in_sandbox http://localhost:8080/fhir/ServiceRequest/$ORDER_NUMBER" \
     'loinc.org'
 
 check_contains "ServiceRequest carries the HIS order number as its identifier" \
-    "in_sandbox http://localhost:8080/fhir/ServiceRequest/$ORDER_ID" \
+    "in_sandbox http://localhost:8080/fhir/ServiceRequest/$ORDER_NUMBER" \
     "$ORDER_NUMBER"
+
+# OpenELIS's Incoming Orders view reads ServiceRequest/{external_id}, where
+# external_id is identifier[0].value. If the resource id and that identifier
+# ever diverge, ordering still works but every order shows the lab a warning
+# and no test name.
+SR_ID=$(bridge_sql "SELECT fhir_servicerequest_id FROM bridge.order_tracking WHERE order_number = '$ORDER_NUMBER'")
+if [[ "$SR_ID" == "$ORDER_NUMBER" ]]; then
+    ok "ServiceRequest.id equals its identifier, as OpenELIS's order view requires"
+else
+    bad "ServiceRequest.id equals its identifier" \
+        "id is '$SR_ID' but external_id will be '$ORDER_NUMBER'"
+fi
 
 # ---------------------------------------------------------------------------
 section "5 · OpenELIS polls the bridge and imports the order"

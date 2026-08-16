@@ -70,6 +70,19 @@ human clicking through the OpenELIS validation screen.
 | Poison (unparseable) message | Routed to `<topic>.dlq` and committed past, so it cannot stall the partition |
 | Preliminary (unvalidated) report | Not forwarded; only `final` / `amended` / `corrected` leave the lab |
 
+## Verified from the lab user's side, not just the integration's
+
+`ServiceRequest.id` is set to the order number rather than the order UUID,
+because OpenELIS's Incoming Orders view reads
+`ServiceRequest/{electronic_order.external_id}` from its local FHIR store. With
+a mismatched id the order still imports and every integration test still
+passes, while the lab sees a warning and a blank test name on every order.
+`make e2e` now asserts the invariant directly, and the fix was confirmed in
+OpenELIS's own order list: the test name populated and the warning cleared.
+
+The general lesson: assertions written from the integration's point of view
+cannot see damage that only shows up in the other system's UI.
+
 ## What OpenELIS does with an order it refuses
 
 Worth knowing, because it is not what you would guess: OpenELIS **does not
