@@ -30,6 +30,7 @@ builder.Services.AddSingleton(_ => new NpgsqlDataSourceBuilder(connectionString)
 builder.Services.AddScoped<Repository>();
 builder.Services.AddSingleton<EventPublisher>();
 builder.Services.AddHostedService<BridgeEventConsumer>();
+builder.Services.AddHostedService<OutboxRelay>();
 builder.Services.ConfigureHttpJsonOptions(o =>
 {
     o.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
@@ -108,52 +109,14 @@ app.MapGet("/patients/{id:guid}/results", async (Guid id, Repository repo, Cance
     Results.Ok(await repo.GetResultsForPatientAsync(id, ct)));
 
 app.MapPost("/lab-orders", async (
-    CreateLabOrderRequest req, Repository repo, EventPublisher publisher,
-    HttpContext ctx, CancellationToken ct) =>
+    CreateLabOrderRequest req, Repository repo, HttpContext ctx, CancellationToken ct) =>
 {
     var correlationId = Correlation(ctx);
-    var (order, test) = await repo.CreateOrderAsync(req, correlationId, ct);
 
-    // The event carries identity only. The bridge calls back to
-    // /internal/lab-orders/{id} for the full context, so the payload on the
-    // wire stays small and the HIS stays authoritative for the detail.
-    try
-    {
-        await publisher.PublishAsync(publisher.Options.OrderCreated, order.OrderId.ToString(), new
-        {
-            eventId = Guid.NewGuid().ToString(),
-            eventType = "lab.order.created",
-            occurredAt = DateTimeOffset.UtcNow,
-            correlationId,
-            orderId = order.OrderId,
-            orderNumber = order.OrderNumber,
-            patientId = order.PatientId,
-            testCode = test.TestCode,
-            loincCode = test.LoincCode
-        }, correlationId, ct);
-    }
-    catch (Exception ex)
-    {
-        // The order row is already committed, so a failed publish would
-        // otherwise leave an order that silently never reaches the LIS. Mark it
-        // FAILED and say so, rather than returning success.
-        //
-        // Production answer is a transactional outbox: write the event to the
-        // same database transaction as the order and relay it from there. That
-        // is deliberately out of scope here, but this is the seam for it.
-        app.Logger.LogError(ex, "Order {OrderNumber} committed but lab.order.created could not be published",
-            order.OrderNumber);
-        await repo.UpdateOrderStatusAsync(order.OrderNumber, "FAILED",
-            $"Order stored but not published to Kafka: {ex.Message}", correlationId, ct);
-
-        return Results.Json(new
-        {
-            error = "Order was stored but could not be dispatched to the laboratory.",
-            orderNumber = order.OrderNumber,
-            orderStatus = "FAILED"
-        }, statusCode: StatusCodes.Status502BadGateway);
-    }
-
+    // Order row, audit row and the lab.order.created event all commit together;
+    // the outbox relay puts the event on Kafka. Nothing here talks to the
+    // broker, so a broker outage cannot fail an order or leave one undispatched.
+    var (order, _) = await repo.CreateOrderAsync(req, correlationId, ct);
     return Results.Created($"/lab-orders/{order.OrderId}", order);
 });
 

@@ -7,7 +7,7 @@ make smoke      # 37 checks
 make e2e        # order flow into OpenELIS (pauses for the manual lab step)
 make results    # 14 checks
 make rejection  # 14 checks
-make negative   # 16 checks
+make negative   # 19 checks
 ```
 
 All four suites were run against the real stack: OpenELIS Global 2 on the
@@ -35,7 +35,9 @@ upstream `develop` images, against its own external database.
 | Externalised configuration | `.env` is the only source; `scripts/render-config.sh` renders what cannot read env vars |
 | Structured logging | JSON console logging in both .NET services; JSON access log on the edge proxy |
 | Correlation ID propagation | Minted by Kong's `correlation-id` plugin, carried on `X-Correlation-ID` across HTTP hops and as a Kafka message header |
-| Retry and dead-letter handling | Exponential backoff on HIS fetches; uncommitted offsets on handler failure; `bridge.dead_letters` + `/ops/dead-letters` |
+| Retry and dead-letter handling | Exponential backoff on HIS fetches; uncommitted offsets on handler failure; poison messages to `<topic>.dlq`; `bridge.dead_letters` + `/ops/dead-letters` |
+| No lost events on broker outage | Transactional outbox (`his.outbox`) drained by `OutboxRelay`, in outbox order, stopping at the first failure so per-order ordering holds |
+| Schema evolution | `make migrate` applies unapplied files, tracked per database in `schema_migrations`, with baselining for databases created before the runner existed |
 | Idempotent result ingestion | `bridge.processed_events`, `bridge.forwarded_results`, and `UNIQUE (openelis_result_ref)` on `his.lab_results_summary` |
 
 ## What "verified" means for criterion 6
@@ -65,7 +67,7 @@ human clicking through the OpenELIS validation screen.
 | Replayed result message | Three deliveries → exactly one row (upsert on the OpenELIS reference) |
 | Result for an unknown order | Logged and ignored, never stored |
 | OpenELIS unavailable | Orders still accepted; Task queues as `requested` and is imported on the next poll after recovery |
-| Kafka unavailable | 502 with the order explicitly marked `FAILED` — never a silent success |
+| Kafka unavailable | Order accepted normally; event queued in `his.outbox` and relayed automatically on recovery, with no manual step |
 | Catalogue drift — HIS knows a test the LIS does not | `make rejection`: HIS accepts, OpenELIS refuses, Task → `rejected`, order → `REJECTED_BY_LIS`, no lab work queued |
 | Poison (unparseable) message | Routed to `<topic>.dlq` and committed past, so it cannot stall the partition |
 | Preliminary (unvalidated) report | Not forwarded; only `final` / `amended` / `corrected` leave the lab |
@@ -104,10 +106,13 @@ forbids — or OpenELIS populating `Task.statusReason`, which it does not.
 Worth stating plainly, because each is a deliberate scope decision rather than
 an oversight:
 
-- **Order creation is a dual write.** The order row commits before the Kafka
-  publish. A publish failure is caught and the order is marked `FAILED`, but
-  the production answer is a transactional outbox. `services/His.Api/Program.cs`
-  marks the seam.
+- ~~Order creation is a dual write.~~ **Fixed.** The order, its audit row and
+  the `lab.order.created` event now commit in one transaction to `his.outbox`,
+  and `OutboxRelay` drains it to Kafka. Order creation no longer touches the
+  broker at all, so a broker outage cannot fail an order or leave one
+  undispatched — `make negative` proves an order placed during an outage
+  dispatches itself on recovery. Delivery is at-least-once by design, which the
+  existing idempotency guards already absorb.
 - **The databases are containers.** On a laptop with only Docker Desktop, the
   "external database server" boundary is enforced by project and network
   separation rather than by separate hosts.

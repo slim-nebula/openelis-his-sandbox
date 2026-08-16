@@ -24,7 +24,7 @@ include .env
 export
 
 .PHONY: help config data-up app-up up provision down clean logs ps \
-        smoke e2e results rejection negative psql-his psql-oe topics urls
+        smoke e2e results rejection negative capture migrate psql-his psql-oe topics urls
 
 help:
 	@grep -hE '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -53,6 +53,9 @@ app-up: ## Start platform, applications and OpenELIS
 up: config data-up app-up ## Full startup
 	@echo ""
 	@$(MAKE) --no-print-directory urls
+
+migrate: ## Apply any unapplied schema migrations to a running database
+	@bash scripts/migrate.sh
 
 provision: ## Apply LOINC mappings to the OpenELIS catalogue
 	@echo "==> Provisioning OpenELIS test catalogue"
@@ -95,6 +98,9 @@ results: ## Result return path - bridge correlation and HIS projection
 
 rejection: ## LIS rejection round trip - catalogue drift
 	@bash scripts/test-rejection.sh
+
+capture: ## Capture what OpenELIS really sends on release (needs a lab user)
+	@bash scripts/capture-lis-result.sh $(ORDER)
 
 negative: ## Phase 4 - negative paths
 	@bash scripts/test-negative.sh

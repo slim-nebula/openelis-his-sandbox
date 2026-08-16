@@ -8,8 +8,10 @@ namespace His.Api;
 /// All access to the HIS sandbox database. Nothing outside this service holds
 /// credentials for it — the bridge and OpenELIS reach HIS data over HTTP only.
 /// </summary>
-public sealed class Repository(NpgsqlDataSource dataSource, ILogger<Repository> log)
+public sealed class Repository(NpgsqlDataSource dataSource, KafkaOptions kafka, ILogger<Repository> log)
 {
+    private string orderCreatedTopic => kafka.OrderCreated;
+
     public async Task<Patient> CreatePatientAsync(CreatePatientRequest req, CancellationToken ct)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
@@ -139,6 +141,37 @@ public sealed class Repository(NpgsqlDataSource dataSource, ILogger<Repository> 
 
         await AppendEventAsync(conn, tx, orderId, "ORDER_CREATED",
             $"Order created for test {test.TestCode}", correlationId, null, ct);
+
+        // The lab.order.created event is written here, in the same transaction
+        // as the order itself. Nothing is published to Kafka on this path — the
+        // outbox relay does that. One commit decides whether both the order and
+        // its event exist, which is what makes a crash survivable.
+        var payload = JsonSerializer.Serialize(new
+        {
+            eventId = Guid.NewGuid().ToString(),
+            eventType = "lab.order.created",
+            occurredAt = DateTimeOffset.UtcNow,
+            correlationId,
+            orderId,
+            orderNumber,
+            patientId = req.PatientId,
+            testCode = test.TestCode,
+            loincCode = test.LoincCode
+        });
+
+        await conn.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO his.outbox
+                (event_id, aggregate_type, aggregate_id, topic, partition_key, payload, correlation_id)
+            VALUES (@eventId, 'lab_order', @orderId, @topic, @partitionKey, @payload::jsonb, @correlationId);
+            """, new
+        {
+            eventId = Guid.NewGuid(),
+            orderId,
+            topic = orderCreatedTopic,
+            partitionKey = orderId.ToString(),
+            payload,
+            correlationId
+        }, tx, cancellationToken: ct));
 
         await tx.CommitAsync(ct);
         log.LogInformation("Order {OrderNumber} created for patient {PatientId} (correlation {CorrelationId})",

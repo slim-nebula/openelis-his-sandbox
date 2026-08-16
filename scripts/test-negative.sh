@@ -175,24 +175,55 @@ info "stopping kafka…"
 docker stop his-kafka >/dev/null 2>&1
 sleep 3
 
-KAFKA_DOWN_CODE=$(status_of -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
+# With the transactional outbox, a broker outage is invisible to the caller:
+# the order and its event commit together and the relay drains the event when
+# the broker returns. Ordering must not depend on Kafka being up.
+KAFKA_DOWN_JSON=$(curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
     -d '{"patientId":"11111111-1111-1111-1111-111111111111","testCode":"ALT",
          "orderingProvider":"Dr. NoKafka","facilityCode":"FAC-001"}')
+NOKAFKA_ORDER=$(echo "$KAFKA_DOWN_JSON" | json_field "['orderNumber']")
 
-if [[ "$KAFKA_DOWN_CODE" == "502" ]]; then
-    ok "Order creation reports failure when the event cannot be published (HTTP 502)"
+if [[ -n "$NOKAFKA_ORDER" ]]; then
+    ok "Orders are still accepted while the broker is down ($NOKAFKA_ORDER)"
 else
-    bad "Order creation reports failure when the event cannot be published" \
-        "got HTTP $KAFKA_DOWN_CODE, expected 502 — an order that is never published would silently never reach the LIS"
+    bad "Orders are still accepted while the broker is down" "$KAFKA_DOWN_JSON"
 fi
 
-check "The undispatched order is marked FAILED rather than left looking healthy" \
-    "[[ \$(his_sql \"SELECT count(*) FROM his.lab_orders WHERE ordering_provider = 'Dr. NoKafka' AND order_status = 'FAILED'\") -ge 1 ]]"
+check "The event is durably queued in the outbox, not lost" \
+    "[[ \$(his_sql \"SELECT count(*) FROM his.outbox o JOIN his.lab_orders l ON l.order_id = o.aggregate_id
+          WHERE l.order_number = '$NOKAFKA_ORDER' AND o.published_at IS NULL\") == 1 ]]"
+
+check "The order is NOT marked FAILED — nothing has actually failed" \
+    "[[ \$(his_sql \"SELECT order_status FROM his.lab_orders WHERE order_number='$NOKAFKA_ORDER'\") == CREATED ]]"
 
 info "restarting kafka…"
 docker start his-kafka >/dev/null 2>&1
 bash "$ROOT/scripts/wait-for.sh" "kafka" \
     "docker exec his-kafka /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092" 120
+
+# The order placed during the outage must now dispatch itself, with nobody
+# retrying by hand. This is the property the outbox exists to provide.
+DRAINED=""
+for _ in $(seq 1 30); do
+    [[ $(his_sql "SELECT count(*) FROM his.outbox o JOIN his.lab_orders l ON l.order_id = o.aggregate_id
+                  WHERE l.order_number = '$NOKAFKA_ORDER' AND o.published_at IS NOT NULL") == "1" ]] \
+        && { DRAINED=yes; break; }
+    sleep 3
+done
+
+if [[ -n "$DRAINED" ]]; then
+    ok "The relay drained the queued event once the broker returned"
+else
+    bad "The relay drained the queued event once the broker returned" \
+        "outbox row for $NOKAFKA_ORDER is still unpublished"
+fi
+
+check "And the order reached the bridge without manual intervention" "
+    for _ in \$(seq 1 20); do
+        [[ -n \$(bridge_sql \"SELECT fhir_task_id FROM bridge.order_tracking WHERE order_number='$NOKAFKA_ORDER'\") ]] && exit 0
+        sleep 3
+    done
+    exit 1"
 
 check "Sandbox recovers: a new order flows again" "
     resp=\$(curl -sf -X POST ${API}/lab-orders -H 'Content-Type: application/json' \

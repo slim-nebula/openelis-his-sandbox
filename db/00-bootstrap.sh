@@ -20,12 +20,19 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<-SQL
     GRANT CONNECT ON DATABASE ${BRIDGE_DB_NAME} TO ${BRIDGE_DB_USER};
 SQL
 
-echo "[bootstrap] applying HIS schema to ${HIS_DB_NAME}"
-psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "${HIS_DB_NAME}" \
-    -f /schema/his/001_schema.sql
+# Every *.sql in the directory, in filename order, so numbered migrations added
+# later are applied on a fresh database without editing this script. An existing
+# database needs them applied explicitly — see `make migrate`.
+apply_all() {
+    local db="$1" dir="$2"
+    for f in "$dir"/*.sql; do
+        [[ -e "$f" ]] || continue
+        echo "[bootstrap] $db <- $(basename "$f")"
+        psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$db" -f "$f"
+    done
+}
 
-echo "[bootstrap] applying bridge schema to ${BRIDGE_DB_NAME}"
-psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "${BRIDGE_DB_NAME}" \
-    -f /schema/bridge/001_schema.sql
+apply_all "${HIS_DB_NAME}"    /schema/his
+apply_all "${BRIDGE_DB_NAME}" /schema/bridge
 
 echo "[bootstrap] done"

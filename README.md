@@ -40,10 +40,13 @@ Apple Silicon).
 ```bash
 make up          # render config, start databases, build and start everything
 make provision   # stamp LOINC codes onto the OpenELIS test catalogue  ← required
+make migrate     # apply any new schema migrations to a running database
 make smoke       # phase 1: platform smoke test          (37 checks)
 make e2e         # phase 2/3: place an order and follow it into OpenELIS
 make results     # result return: bridge correlation + HIS projection (14 checks)
-make negative    # phase 4: negative paths                (16 checks)
+make negative    # phase 4: negative paths                (19 checks)
+make rejection   # LIS rejection round trip               (14 checks)
+make capture     # capture what OpenELIS really sends on release
 ```
 
 | Entry point | URL |

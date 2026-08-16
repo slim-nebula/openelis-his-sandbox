@@ -53,12 +53,20 @@ public sealed class EventPublisher : IDisposable
         }).Build();
     }
 
-    public async Task PublishAsync<T>(string topic, string key, T payload, string correlationId, CancellationToken ct)
+    public Task PublishAsync<T>(string topic, string key, T payload, string correlationId, CancellationToken ct) =>
+        PublishRawAsync(topic, key, JsonSerializer.Serialize(payload), correlationId, ct);
+
+    /// <summary>
+    /// Publishes an already-serialised payload. The outbox stores the exact
+    /// bytes that were committed with the order, so the relay must send those
+    /// rather than re-serialise and risk a different shape.
+    /// </summary>
+    public async Task PublishRawAsync(string topic, string key, string json, string correlationId, CancellationToken ct)
     {
         var message = new Message<string, string>
         {
             Key = key,
-            Value = JsonSerializer.Serialize(payload),
+            Value = json,
             Headers = [new Header("X-Correlation-ID", Encoding.UTF8.GetBytes(correlationId))]
         };
 
