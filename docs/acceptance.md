@@ -6,6 +6,7 @@ Every criterion in the brief, mapped to the automated check that proves it.
 make smoke      # 37 checks
 make e2e        # order flow into OpenELIS (pauses for the manual lab step)
 make results    # 14 checks
+make rejection  # 14 checks
 make negative   # 16 checks
 ```
 
@@ -65,8 +66,25 @@ human clicking through the OpenELIS validation screen.
 | Result for an unknown order | Logged and ignored, never stored |
 | OpenELIS unavailable | Orders still accepted; Task queues as `requested` and is imported on the next poll after recovery |
 | Kafka unavailable | 502 with the order explicitly marked `FAILED` — never a silent success |
+| Catalogue drift — HIS knows a test the LIS does not | `make rejection`: HIS accepts, OpenELIS refuses, Task → `rejected`, order → `REJECTED_BY_LIS`, no lab work queued |
 | Poison (unparseable) message | Routed to `<topic>.dlq` and committed past, so it cannot stall the partition |
 | Preliminary (unvalidated) report | Not forwarded; only `final` / `amended` / `corrected` leave the lab |
+
+## What OpenELIS does with an order it refuses
+
+Worth knowing, because it is not what you would guess: OpenELIS **does not
+discard** a rejected order. It writes an `electronic_order` row with status
+`NonConforming` (24) rather than `Entered` (21), so the lab keeps an audit
+trail of what it was sent and turned away. No sample and no analysis is
+created, so nothing enters the work queue.
+
+One limitation falls out of that: the `electronic_order.reject_reason` column
+is left null on this path, and a FHIR `Task` status of `rejected` carries no
+reason either. So the HIS learns *that* the LIS refused, never *why*. The
+`status_detail` the HIS records is our own heuristic ("most often no test
+matches the LOINC code"), not the laboratory's own words. Closing that would
+mean reading `electronic_order` directly — which the no-cross-database rule
+forbids — or OpenELIS populating `Task.statusReason`, which it does not.
 
 ## Known limitations
 

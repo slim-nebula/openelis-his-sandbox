@@ -220,7 +220,10 @@ stateDiagram-v2
     note right of REJECTED_BY_LIS
         Almost always test identity:
         no OpenELIS test carries
-        that LOINC code
+        that LOINC code.
+        OpenELIS keeps the order as
+        NonConforming, queues no work.
+        Verified by make rejection
     end note
 ```
 

@@ -6,6 +6,7 @@
 #   make smoke       platform smoke test   (brief phase 1)
 #   make e2e         order flow test       (brief phase 2/3)
 #   make results     result return path
+#   make rejection   LIS rejection round trip
 #   make negative    negative-path test    (brief phase 4)
 #   make down        stop applications, keep data
 #   make clean       destroy everything including volumes
@@ -23,7 +24,7 @@ include .env
 export
 
 .PHONY: help config data-up app-up up provision down clean logs ps \
-        smoke e2e results negative psql-his psql-oe topics urls
+        smoke e2e results rejection negative psql-his psql-oe topics urls
 
 help:
 	@grep -hE '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -91,6 +92,9 @@ e2e: ## Phase 2/3 - order flow through to OpenELIS
 
 results: ## Result return path - bridge correlation and HIS projection
 	@bash scripts/test-result-return.sh
+
+rejection: ## LIS rejection round trip - catalogue drift
+	@bash scripts/test-rejection.sh
 
 negative: ## Phase 4 - negative paths
 	@bash scripts/test-negative.sh
