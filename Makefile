@@ -57,11 +57,16 @@ up: config data-up app-up ## Full startup
 migrate: ## Apply any unapplied schema migrations to a running database
 	@bash scripts/migrate.sh
 
-provision: ## Apply LOINC mappings to the OpenELIS catalogue
+provision: ## Disambiguate the OpenELIS test catalogue (restarts the webapp)
 	@echo "==> Provisioning OpenELIS test catalogue"
 	@docker exec -i -e PGPASSWORD=$(OE_DB_PASSWORD) openelis-db-external \
 	  psql -U $(OE_DB_USER) -d $(OE_DB_NAME) \
 	  < openelis/provision/01-loinc-mapping.sql
+	@echo "==> Restarting OpenELIS (sample-type bindings are cached in memory)"
+	@docker restart openelis-webapp >/dev/null
+	@bash scripts/wait-for.sh "OpenELIS webapp" \
+	  "curl -skf -o /dev/null https://localhost/api/OpenELIS-Global/LoginPage" 300 \
+	  || echo "    (webapp still starting; give it another minute)"
 
 down: ## Stop applications (databases keep running)
 	@$(APP) down
