@@ -240,6 +240,72 @@ use it. If not, N+1 on a 15-minute timer is acceptable, but add
 * Update `docs/data-flow.md` with the discovery path.
 * Update the runbook: `external orders = true` is a required prerequisite.
 
+## Phase 4 — status enrichment and monitoring
+
+The catalogue is one use of OpenELIS's REST surface. A survey of all 434
+endpoints the React UI calls turned up several more that are directly useful.
+All of the following were confirmed by direct call against the running instance.
+
+| Endpoint | What it gives us |
+|---|---|
+| `/rest/DataExportStatus` (+ `/{id}/attempts`, `/{id}/trigger`) | health of the result-push channel; force a push |
+| `/rest/SampleEdit?accessionNumber=` | per-test status (`"Results final"`), patient, sample types, analysis ids |
+| `/rest/ElectronicOrders?searchType=DATE_STATUS` | the order queue: Entered / NonConforming / Realized |
+| `/rest/displayList/ELECTRONIC_ORDER_STATUSES` | `AwaitingSpecimen, Cancelled, Entered, NonConforming, Realized` |
+| `/rest/analysis-status-types`, `/rest/sample-status-types` | status vocabularies |
+| `/rest/patient-search-results?guid=`, `/rest/patient-details?patientID=` | patient identity verification |
+| `/rest/alerts/dashboard/summary` | `criticalAlerts`, `statOverdue`, `sampleExpiration` |
+
+### 4a. `DataExportStatus` — do this first
+
+It is the cheapest item on this plan and closes a real hole. OpenELIS reports
+the health of its push channel to us, by name:
+
+```json
+[{ "id": 4820, "endpoint": "http://bridge:8080/fhir",
+   "lastStatus": "SUCCEEDED", "lastSuccess": "2026-08-18T22:48:36Z",
+   "failedLast24h": 0, "totalLast24h": 120, "maxIntervalMinutes": 1 }]
+```
+
+Today, if OpenELIS silently stopped pushing results, nothing would notice: the
+bridge would sit receiving nothing, indistinguishable from a quiet laboratory.
+Poll this, alert on `lastStatus != SUCCEEDED` or on `lastSuccess` ageing past a
+threshold. `/{id}/trigger` additionally gives a recovery lever and a way to
+exercise the result path without a full manual accession.
+
+Read-only, no schema change, no dependency on the rest of this plan.
+
+### 4b. Real laboratory progress in the HIS
+
+The HIS currently shows `accepted by lis` then `result available`. With
+`ElectronicOrders` (before accessioning) and `SampleEdit` (after), it can show
+what is actually happening — received, accessioned, in testing, results final,
+rejected — using **OpenELIS's own vocabulary** from the displayList endpoints
+rather than words we invented. That is more honest about where truth lives, and
+it is the question clinicians actually ask: not "did it send" but "where is it".
+
+Gap to solve: mapping our order number to OpenELIS's accession number.
+`/rest/ElectronicOrders?searchType=IDENTIFIER` with our order number returns
+**nothing**, so that route is out. The bridge should capture the accession from
+`ServiceRequest.requisition` on the result push, which it already receives:
+
+```json
+"requisition": { "value": "DEV01260000000000007",
+                 "system": "http://openelis-global.org/samp_labNo" }
+```
+
+Store it on `bridge.order_tracking` and the HIS gains a stable handle on the
+sample for as long as it exists.
+
+### Not yet verified, worth chasing
+
+* `/rest/ReportPrint` — the official PDF laboratory report. Linking the HIS to
+  the real report fits "OpenELIS is the source of truth" far better than our
+  simplified copy does. Needs parameters worked out.
+* `/rest/LogbookResults` — results by criteria. Needs parameters.
+* `/rest/AuditTrailReport` (+ `exportCsv`, `exportPdf`) — relevant to laboratory
+  accreditation, where an auditor asks who changed what.
+
 ## Carried over — unrelated open items
 
 Three genuine defects found while diagnosing this, none blocking:
