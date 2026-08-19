@@ -104,6 +104,9 @@ results: ## Result return path - bridge correlation and HIS projection
 rejection: ## LIS rejection round trip - catalogue drift
 	@bash scripts/test-rejection.sh
 
+corrections: ## Corrections and retractions of an already-released result
+	@bash scripts/test-corrections.sh $(ORDER)
+
 capture: ## Capture what OpenELIS really sends on release (needs a lab user)
 	@bash scripts/capture-lis-result.sh $(ORDER)
 

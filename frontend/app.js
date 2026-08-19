@@ -53,6 +53,22 @@ function statusBadge(status) {
   return `<span class="badge ${cls}">${status.replace(/_/g, ' ').toLowerCase()}</span>`;
 }
 
+// A result the laboratory has withdrawn must not read like an ordinary one.
+// "entered-in-error" in small grey type beside a blank value is exactly how a
+// retraction gets missed, so retracted rows are marked and struck through.
+function resultStatusBadge(status) {
+  const cls = {
+    final: 'ok',
+    amended: 'wait',
+    corrected: 'wait',
+    'entered-in-error': 'bad',
+  }[status] ?? '';
+  const label = status === 'entered-in-error' ? 'retracted' : status;
+  return `<span class="badge ${cls}">${label}</span>`;
+}
+
+const isRetracted = (r) => r.resultStatus === 'entered-in-error';
+
 const fmtDate = (v) => (v ? new Date(v).toLocaleString() : '—');
 
 // --- health ----------------------------------------------------------------
@@ -164,11 +180,15 @@ async function refreshPatientData() {
   resultsBody.innerHTML = results.length
     ? results
         .map(
-          (r) => `<tr>
+          (r) => `<tr class="${isRetracted(r) ? 'retracted' : ''}">
             <td>${r.testName}</td>
-            <td><strong>${r.resultValue ?? '—'}</strong> ${r.resultUnit ?? ''}</td>
+            <td>${
+              isRetracted(r)
+                ? '<span class="withdrawn">withdrawn by the laboratory</span>'
+                : `<strong>${r.resultValue ?? '—'}</strong> ${r.resultUnit ?? ''}`
+            }</td>
             <td>${r.interpretation ?? '—'}</td>
-            <td>${r.resultStatus}</td>
+            <td>${resultStatusBadge(r.resultStatus)}</td>
             <td>${fmtDate(r.releasedAt)}</td>
             <td class="mono">${r.openelisResultRef}</td>
           </tr>`
