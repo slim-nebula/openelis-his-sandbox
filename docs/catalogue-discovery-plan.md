@@ -142,17 +142,68 @@ New component in `services/Bridge`, roughly `CatalogueSync.cs`.
 1. **OpenELIS REST client** holding a service-account session, re-authenticating
    on 401/302-to-LoginPage. Credentials from `.env`
    (`OE_SERVICE_USER` / `OE_SERVICE_PASSWORD`), never hardcoded.
-2. **Sync loop** on a timer (start at 15 minutes; it is not latency-sensitive):
-   * page `/rest/test-catalog/tests`
-   * for each `active` row, fetch `/basic-info` and `/terminology`
-   * keep only tests where `active && orderable`, exactly one LOINC mapping,
+2. **Sync is manual, not scheduled.** A clinic changes its test menu when it
+   installs an analyser — a handful of times a year. A polling loop would run
+   thousands of times to catch that, and would slide changes in unnoticed.
+   Triggers:
+   * `POST /catalogue/sync` (admin only)
+   * `make sync-catalogue`, for deployment
+   * a "Refresh test catalogue from OpenELIS" button on the HIS admin screen
+   * once on bridge startup **only if `bridge.test_catalogue` is empty**, so a
+     fresh deployment is not dead on arrival
+
+   A sync run:
+   * authenticates, pages `/rest/test-catalog/tests`
+   * for each `active` row, fetches `/basic-info` and `/terminology`
+   * keeps only tests where `active && orderable`, exactly one LOINC mapping,
      and exactly one sample type
-   * write to a new `bridge.test_catalogue` table with `synced_at`
+   * swaps the whole set into `bridge.test_catalogue` in ONE transaction, with
+     `synced_at` - there must be no window in which the menu is empty
+   * discards the session; no long-lived credential to refresh
+   * returns a diff summary: `+2 added, -1 removed, 3 changed`, with names
+
 3. **Endpoint** `GET /catalogue` returning the cached rows:
-   `{ testId, loinc, name, specimenName, specimenId, unit }`.
-4. **Never serve an empty catalogue.** If a sync fails, keep the last good copy
+   `{ testId, loinc, name, specimenName, specimenId, unit, syncedAt }`.
+
+4. **Two guards, which matter more precisely because sync is manual.**
+   * **Refuse a suspicious result.** An expired session returns an empty list,
+     not an error; applying it would wipe the doctor's menu. Reject a sync
+     yielding zero tests, or dropping more than ~30% of the catalogue, unless
+     explicitly forced.
+   * **Make the diff visible.** The operator pressing the button should see
+     what changed. A scheduled sync hides "Haemoglobin disappeared" in a log;
+     a manual one puts it on screen in front of the person who caused it.
+
+5. **Never serve an empty catalogue.** If a sync fails, keep the last good copy
    and expose staleness — an empty dropdown must not be the failure mode of an
    OpenELIS restart.
+
+6. **Surface `syncedAt` on the HIS ordering screen.** Manual sync means the
+   catalogue will drift eventually. The remedy is making drift visible, not
+   pretending it cannot happen.
+
+### Operational procedure (for the clinic runbook)
+
+When the laboratory commissions a new analyser:
+
+1. Lab confirms which tests the analyser performs.
+2. **IT enables those tests in OpenELIS** — Administration -> Test Management.
+   Each test intended for HIS ordering must end up with exactly one LOINC code
+   and exactly one sample type, or discovery will filter it out on purpose.
+3. IT presses **Refresh test catalogue** in the HIS.
+4. IT reads the diff and confirms it matches what the lab asked for.
+5. A doctor sees the new test in the dropdown.
+
+The order matters: syncing before step 2 changes nothing, which looks like a
+broken button. Say so in the runbook.
+
+**Verify during implementation:** we know OpenELIS caches sample-type bindings
+in memory — a direct database edit stayed invisible until the webapp restarted.
+Changes made through the admin UI ought to invalidate that cache properly, but
+this has not been tested. Confirm that a test enabled through the admin UI
+appears in `/rest/test-catalog` without a restart. If it does not, step 2 of the
+procedure needs a restart in it, and that is a much heavier operation to ask of
+a clinic.
 
 ### Open question to settle first
 
