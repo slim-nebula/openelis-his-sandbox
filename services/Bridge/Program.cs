@@ -69,6 +69,47 @@ app.MapGet("/ops/orders", async (BridgeStore store, CancellationToken ct) =>
 app.MapGet("/ops/dead-letters", async (BridgeStore store, CancellationToken ct) =>
     Results.Ok(await store.GetDeadLettersAsync(ct)));
 
+// --- The test menu, discovered from OpenELIS -------------------------------
+
+// Served from the cache, never live: the ordering screen must not go blank
+// because OpenELIS is restarting, and syncedAt lets the caller show how old the
+// menu is rather than pretend it cannot age.
+app.MapGet("/catalogue", async (BridgeStore store, CancellationToken ct) =>
+{
+    var entries = await store.GetCatalogueAsync(ct);
+    return Results.Ok(new
+    {
+        syncedAt = await store.GetCatalogueSyncedAtAsync(ct),
+        count = entries.Count,
+        tests = entries
+    });
+});
+
+app.MapGet("/catalogue/syncs", async (BridgeStore store, CancellationToken ct) =>
+    Results.Ok(await store.GetCatalogueSyncsAsync(ct)));
+
+// Manual, because a clinic changes its menu when it commissions an analyser -
+// a few times a year - and a human pressing this is a human who can read the
+// diff. force=true overrides the shrink guard for a genuine large withdrawal.
+app.MapPost("/catalogue/sync", async (
+    bool? force, BridgeOptions opts, BridgeStore store, ILoggerFactory loggers, CancellationToken ct) =>
+{
+    if (!opts.CatalogueDiscoveryConfigured)
+        return Results.Problem(
+            "Catalogue discovery is not configured. Set OE_REST_BASE_URL, OE_SERVICE_USER and OE_SERVICE_PASSWORD.",
+            statusCode: StatusCodes.Status501NotImplemented);
+
+    var sync = new CatalogueSync(opts, store, loggers.CreateLogger<CatalogueSync>());
+    var result = await sync.RunAsync(force ?? false, ct);
+
+    // A rejected sync is not an error in the caller: the request was valid and
+    // the guard did its job. 409 says "I did not apply this", and the body says
+    // why, which is what the operator needs to decide whether to force it.
+    return result.Applied
+        ? Results.Ok(result)
+        : Results.Json(result, statusCode: StatusCodes.Status409Conflict);
+});
+
 // --- The FHIR R4 endpoint OpenELIS integrates with -------------------------
 app.MapFhirEndpoints();
 

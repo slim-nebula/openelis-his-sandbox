@@ -107,6 +107,23 @@ rejection: ## LIS rejection round trip - catalogue drift
 corrections: ## Corrections and retractions of an already-released result
 	@bash scripts/test-corrections.sh $(ORDER)
 
+sync-catalogue: ## Refresh the test menu from OpenELIS (FORCE=true to override the shrink guard)
+	@echo "==> Reading the test menu from OpenELIS"
+	@docker exec bridge curl -sS -X POST \
+	  "http://localhost:8080/catalogue/sync$(if $(FORCE),?force=$(FORCE),)" \
+	  --max-time 600 -o /tmp/sync.json -w '' || true
+	@docker exec bridge cat /tmp/sync.json | python3 -c "import sys,json; d=json.load(sys.stdin); \
+	  print('    applied:', d['applied'], '|', d['testsBefore'], '->', d['testsAfter']); \
+	  [print('    +', a) for a in d['diff']['added']]; \
+	  [print('    -', r) for r in d['diff']['removed']]; \
+	  [print('    ~', c) for c in d['diff']['changed']]; \
+	  print('    REFUSED:', d['reason']) if not d['applied'] else None"
+
+catalogue: ## Show the currently cached test menu
+	@docker exec bridge curl -sS http://localhost:8080/catalogue | python3 -c "import sys,json; d=json.load(sys.stdin); \
+	  print('    synced', d['syncedAt'], '—', d['count'], 'orderable tests'); \
+	  [print(f\"      {t['loinc']:<12} {t['name']}  [{t['specimenName']}]\") for t in d['tests']]"
+
 capture: ## Capture what OpenELIS really sends on release (needs a lab user)
 	@bash scripts/capture-lis-result.sh $(ORDER)
 

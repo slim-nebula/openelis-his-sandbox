@@ -23,6 +23,27 @@ public sealed class BridgeOptions
     public int RetryBaseDelaySeconds { get; init; } = 2;
     public int CorrelationRetryMinutes { get; init; } = 15;
 
+    // --- Catalogue discovery ------------------------------------------------
+    /// <summary>Root of the OpenELIS web application, e.g. https://openelis-proxy/api/OpenELIS-Global</summary>
+    public string OpenElisBaseUrl { get; init; } = "";
+    public string OpenElisUser { get; init; } = "";
+    public string OpenElisPassword { get; init; } = "";
+    public int OpenElisTimeoutSeconds { get; init; } = 120;
+
+    /// <summary>
+    /// Trust any certificate when talking to OpenELIS. True in the sandbox,
+    /// which serves a self-signed certificate; it must be false anywhere real,
+    /// which is why it is configuration rather than an unconditional bypass.
+    /// </summary>
+    public bool OpenElisAcceptAnyCertificate { get; init; } = true;
+
+    /// <summary>
+    /// The largest share of the menu a single sync may remove before it is
+    /// refused. A laboratory withdrawing a third of its tests at once is
+    /// possible; a partial read that looks like one is far likelier.
+    /// </summary>
+    public double CatalogueMaxShrink { get; init; } = 0.30;
+
     public static BridgeOptions FromEnvironment() => new()
     {
         ConnectionString = Require("BRIDGE_DB_CONNECTION"),
@@ -36,8 +57,18 @@ public sealed class BridgeOptions
         LabOwnerReference = Env("OE_REMOTE_SOURCE_IDENTIFIER", "Practitioner/openelis-sandbox-lab"),
         MaxRetries = int.Parse(Env("BRIDGE_MAX_RETRIES", "5")),
         RetryBaseDelaySeconds = int.Parse(Env("BRIDGE_RETRY_BASE_DELAY_SECONDS", "2")),
-        CorrelationRetryMinutes = int.Parse(Env("BRIDGE_RESULT_CORRELATION_RETRY_MINUTES", "15"))
+        CorrelationRetryMinutes = int.Parse(Env("BRIDGE_RESULT_CORRELATION_RETRY_MINUTES", "15")),
+        OpenElisBaseUrl = Env("OE_REST_BASE_URL", ""),
+        OpenElisUser = Env("OE_SERVICE_USER", ""),
+        OpenElisPassword = Env("OE_SERVICE_PASSWORD", ""),
+        OpenElisTimeoutSeconds = int.Parse(Env("OE_REST_TIMEOUT_SECONDS", "120")),
+        OpenElisAcceptAnyCertificate = Env("OE_REST_ACCEPT_ANY_CERT", "true") == "true",
+        CatalogueMaxShrink = double.Parse(Env("CATALOGUE_MAX_SHRINK", "0.30"))
     };
+
+    /// <summary>Catalogue discovery is optional; without credentials the endpoints refuse rather than crash the bridge.</summary>
+    public bool CatalogueDiscoveryConfigured =>
+        OpenElisBaseUrl.Length > 0 && OpenElisUser.Length > 0 && OpenElisPassword.Length > 0;
 
     public static string Env(string key, string fallback) =>
         Environment.GetEnvironmentVariable(key) is { Length: > 0 } v ? v : fallback;

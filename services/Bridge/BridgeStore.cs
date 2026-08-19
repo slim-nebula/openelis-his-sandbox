@@ -276,6 +276,93 @@ public sealed class BridgeStore(NpgsqlDataSource dataSource, ILogger<BridgeStore
         return rows.ToList();
     }
 
+    // --- Discovered test catalogue -----------------------------------------
+
+    public async Task<IReadOnlyList<CatalogueEntry>> GetCatalogueAsync(CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        var rows = await conn.QueryAsync<CatalogueEntry>(new CommandDefinition("""
+            SELECT loinc            AS Loinc,
+                   openelis_test_id AS OpenElisTestId,
+                   name             AS Name,
+                   specimen_name    AS SpecimenName,
+                   specimen_id      AS SpecimenId,
+                   result_unit      AS ResultUnit
+            FROM bridge.test_catalogue
+            ORDER BY name;
+            """, cancellationToken: ct));
+        return rows.ToList();
+    }
+
+    public async Task<DateTimeOffset?> GetCatalogueSyncedAtAsync(CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        return await conn.ExecuteScalarAsync<DateTimeOffset?>(new CommandDefinition(
+            "SELECT max(synced_at) FROM bridge.test_catalogue;", cancellationToken: ct));
+    }
+
+    /// <summary>
+    /// Swaps the whole menu in one transaction. Deleting and re-inserting across
+    /// two statements would leave a window in which the catalogue endpoint
+    /// returns nothing, and a doctor loading the ordering screen in that window
+    /// would see an empty list rather than an error.
+    /// </summary>
+    public async Task ReplaceCatalogueAsync(IReadOnlyList<CatalogueEntry> entries, CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        await conn.ExecuteAsync(new CommandDefinition(
+            "DELETE FROM bridge.test_catalogue;", transaction: tx, cancellationToken: ct));
+
+        await conn.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO bridge.test_catalogue
+                (loinc, openelis_test_id, name, specimen_name, specimen_id, result_unit, synced_at)
+            VALUES (@Loinc, @OpenElisTestId, @Name, @SpecimenName, @SpecimenId, @ResultUnit, now());
+            """, entries, transaction: tx, cancellationToken: ct));
+
+        await tx.CommitAsync(ct);
+    }
+
+    public async Task<long> BeginCatalogueSyncAsync(int testsBefore, CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        return await conn.ExecuteScalarAsync<long>(new CommandDefinition("""
+            INSERT INTO bridge.catalogue_syncs (status, tests_before)
+            VALUES ('RUNNING', @testsBefore) RETURNING id;
+            """, new { testsBefore }, cancellationToken: ct));
+    }
+
+    public async Task FinishCatalogueSyncAsync(
+        long id, string status, int testsAfter, CatalogueDiff diff, string? detail, CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition("""
+            UPDATE bridge.catalogue_syncs
+               SET finished_at = now(), status = @status, tests_after = @testsAfter,
+                   added = @added, removed = @removed, changed = @changed, detail = @detail
+             WHERE id = @id;
+            """, new
+        {
+            id, status, testsAfter, detail,
+            added = string.Join("; ", diff.Added),
+            removed = string.Join("; ", diff.Removed),
+            changed = string.Join("; ", diff.Changed)
+        }, cancellationToken: ct));
+    }
+
+    public async Task<IReadOnlyList<SyncHistoryRow>> GetCatalogueSyncsAsync(CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        var rows = await conn.QueryAsync<SyncHistoryRow>(new CommandDefinition("""
+            SELECT id, started_at AS StartedAt, finished_at AS FinishedAt, status,
+                   tests_before AS TestsBefore, tests_after AS TestsAfter,
+                   added, removed, changed, detail
+            FROM bridge.catalogue_syncs ORDER BY started_at DESC LIMIT 20;
+            """, cancellationToken: ct));
+        return rows.ToList();
+    }
+
     public static string ToJson(Resource resource) => Serializer.SerializeToString(resource);
     public static Resource ParseResource(string json) => Parser.Parse<Resource>(json);
 
@@ -284,5 +371,9 @@ public sealed class BridgeStore(NpgsqlDataSource dataSource, ILogger<BridgeStore
 
 public sealed record DeadLetterRow(
     long Id, string Source, string Reason, string? CorrelationId, DateTimeOffset CreatedAt);
+
+public sealed record SyncHistoryRow(
+    long Id, DateTimeOffset StartedAt, DateTimeOffset? FinishedAt, string Status,
+    int TestsBefore, int TestsAfter, string? Added, string? Removed, string? Changed, string? Detail);
 
 internal sealed record MirrorRow(string Content, DateTimeOffset ReceivedAt);
