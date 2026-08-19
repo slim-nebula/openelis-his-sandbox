@@ -45,10 +45,13 @@ public sealed class Repository(NpgsqlDataSource dataSource, KafkaOptions kafka, 
 
     private static async Task<string> NextMrnAsync(NpgsqlConnection conn)
     {
-        // Sandbox-grade MRN allocation: good enough to be readable in the UI and
-        // unique under the table's unique constraint, which is the real guard.
-        var n = await conn.ExecuteScalarAsync<long>(
-            "SELECT count(*) + 1 FROM his.patients");
+        // A sequence, not count(*) + 1. Counting rows reissues a number as soon
+        // as any patient is deleted, and two concurrent registrations read the
+        // same count and compute the same MRN. The unique constraint on
+        // external_patient_id caught both, so the failure was a registration
+        // that errored rather than a duplicate MRN - but that constraint is a
+        // last line of defence, not an allocation strategy.
+        var n = await conn.ExecuteScalarAsync<long>("SELECT nextval('his.mrn_seq')");
         return $"MRN-{n:D6}";
     }
 

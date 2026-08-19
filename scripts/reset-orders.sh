@@ -116,6 +116,25 @@ his -c "TRUNCATE his.lab_order_events,
                  his.lab_orders,
                  his.patients CASCADE;" >/dev/null
 
+# The demo patient from 001_schema.sql is seed data, not test data: the
+# rejection and negative suites post orders against its fixed uuid rather than
+# creating a patient of their own. Truncating patients removes it, and both
+# suites then fail at "Order accepted by the HIS" with an empty response - a
+# foreign key violation that looks nothing like its cause. Restore it.
+his -c "INSERT INTO his.patients
+            (patient_id, external_patient_id, first_name, last_name, sex, date_of_birth, phone, national_id)
+        VALUES ('11111111-1111-1111-1111-111111111111', 'MRN-000001',
+                'Amina', 'Traore', 'F', '1988-04-17', '+22370000001', 'NID-000001')
+        ON CONFLICT (patient_id) DO NOTHING;" >/dev/null
+
+# The MRN sequence is independent of the table, so TRUNCATE leaves it where it
+# was. Wind it back to just past the seeded patient, otherwise MRNs climb
+# forever across resets and stop matching the row count anyone eyeballing the
+# table expects.
+his -c "SELECT setval('his.mrn_seq',
+            (SELECT coalesce(max(substring(external_patient_id from '^MRN-([0-9]+)\$')::bigint), 1)
+               FROM his.patients));" >/dev/null
+
 # --- Verify ----------------------------------------------------------------
 echo "==> After"
 fail=0
@@ -130,6 +149,10 @@ check "bridge.fhir_resources"     0 "$(bridge -c 'SELECT count(*) FROM bridge.fh
 check "bridge.order_tracking"     0 "$(bridge -c 'SELECT count(*) FROM bridge.order_tracking;')"
 check "clinlims.electronic_order" 0 "$(oe     -c 'SELECT count(*) FROM clinlims.electronic_order;')"
 check "clinlims.patient"          0 "$(oe     -c 'SELECT count(*) FROM clinlims.patient;')"
+# The suites post orders against this uuid; without it they fail in a way that
+# gives no hint the reset caused it.
+check "seeded demo patient"       1 "$(his -c \
+    \"SELECT count(*) FROM his.patients WHERE patient_id = '11111111-1111-1111-1111-111111111111';\")"
 
 # Configuration must have survived, or the next order silently regresses to the
 # empty-patient behaviour this sandbox was fixed to avoid.
