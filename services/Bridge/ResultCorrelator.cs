@@ -1,4 +1,5 @@
 using Hl7.Fhir.Model;
+using Hl7.Fhir.Utility;
 // Disambiguate from Hl7.Fhir.Model.Task, the FHIR resource.
 using Task = System.Threading.Tasks.Task;
 
@@ -21,7 +22,21 @@ public sealed class ResultCorrelator(
     EventPublisher publisher,
     ILogger<ResultCorrelator> log) : BackgroundService
 {
-    private static readonly string[] ReleasedStatuses = ["final", "amended", "corrected"];
+    /// <summary>
+    /// Statuses that must reach the HIS. A laboratory does not only publish
+    /// results, it corrects and withdraws them, and each of those is as clinically
+    /// significant as the original.
+    ///
+    /// entered-in-error is included deliberately: it retracts a result the
+    /// clinician has already seen. Suppressing it would leave a withdrawn value
+    /// on screen indefinitely, which is worse than showing a stale one, because
+    /// nothing signals that it is wrong.
+    /// </summary>
+    private static readonly string[] ReleasedStatuses =
+        ["final", "amended", "corrected", "entered-in-error"];
+
+    /// <summary>A retracted result carries no value - only the retraction.</summary>
+    private const string RetractedStatus = "entered-in-error";
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
@@ -48,7 +63,13 @@ public sealed class ResultCorrelator(
 
         foreach (var (report, receivedAt) in reports)
         {
-            var status = report.Status?.ToString().ToLowerInvariant() ?? "unknown";
+            // GetLiteral, not ToString: the enum member is EnteredInError while
+            // the FHIR code is "entered-in-error", so ToString().ToLower() gives
+            // "enteredinerror" and silently fails to match. final, amended and
+            // corrected happen to round-trip, which is exactly why this hid.
+            var status = report.Status is { } reportStatus
+                ? reportStatus.GetLiteral() ?? "unknown"
+                : "unknown";
 
             if (!ReleasedStatuses.Contains(status))
             {
@@ -143,16 +164,27 @@ public sealed class ResultCorrelator(
     {
         var resultRef = $"DiagnosticReport/{report.Id}";
 
-        if (!await store.TryClaimResultAsync(resultRef, tracked.OrderId, ct))
+        // OpenELIS increments meta.versionId when it corrects a result, so the
+        // version is part of the identity of what we are forwarding. Absent a
+        // version we fall back to "1", which reproduces the old
+        // one-forward-per-report behaviour rather than forwarding endlessly.
+        var versionId = report.Meta?.VersionId ?? "1";
+
+        if (!await store.TryClaimResultAsync(resultRef, versionId, tracked.OrderId, ct))
         {
-            log.LogInformation("{Ref} already forwarded for order {OrderNumber}; skipping",
-                resultRef, tracked.OrderNumber);
+            log.LogInformation("{Ref} version {Version} already forwarded for order {OrderNumber}; skipping",
+                resultRef, versionId, tracked.OrderNumber);
             await store.MarkProcessedAsync("DiagnosticReport", report.Id!, ct);
             return;
         }
 
+        var retracted = status == RetractedStatus;
         var observation = await FirstObservationAsync(store, report, ct);
-        var (value, unit, range, interpretation) = Flatten(observation, report);
+        var (value, unit, range, interpretation) = retracted
+            // Forwarding the old number alongside a retracted status invites a
+            // reader to keep using it. The retraction is the whole message.
+            ? ((string?)null, (string?)null, (string?)null, (string?)null)
+            : Flatten(observation, report);
 
         var correlationId = tracked.CorrelationId ?? Guid.NewGuid().ToString();
         var message = new

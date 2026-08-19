@@ -231,14 +231,26 @@ public sealed class BridgeStore(NpgsqlDataSource dataSource, ILogger<BridgeStore
             new { eventKey }, cancellationToken: ct));
     }
 
-    public async Task<bool> TryClaimResultAsync(string openelisRef, Guid orderId, CancellationToken ct)
+    /// <summary>
+    /// Claims one VERSION of a result for forwarding, returning false if that
+    /// exact version has already gone downstream.
+    ///
+    /// Keying on the reference alone would be wrong: OpenELIS corrects a result
+    /// by updating the same DiagnosticReport and incrementing meta.versionId, so
+    /// a correction would look like a duplicate and be dropped, leaving the HIS
+    /// showing a superseded value. Keying on (reference, version) still
+    /// suppresses genuine at-least-once redelivery, which is what this guard is
+    /// for.
+    /// </summary>
+    public async Task<bool> TryClaimResultAsync(
+        string openelisRef, string versionId, Guid orderId, CancellationToken ct)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         var inserted = await conn.ExecuteAsync(new CommandDefinition("""
-            INSERT INTO bridge.forwarded_results (openelis_result_ref, order_id)
-            VALUES (@openelisRef, @orderId)
-            ON CONFLICT (openelis_result_ref) DO NOTHING;
-            """, new { openelisRef, orderId }, cancellationToken: ct));
+            INSERT INTO bridge.forwarded_results (openelis_result_ref, version_id, order_id)
+            VALUES (@openelisRef, @versionId, @orderId)
+            ON CONFLICT (openelis_result_ref, version_id) DO NOTHING;
+            """, new { openelisRef, versionId, orderId }, cancellationToken: ct));
         return inserted > 0;
     }
 
