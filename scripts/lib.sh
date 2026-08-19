@@ -73,6 +73,20 @@ in_sandbox() {
 
 json_field() { python3 -c "import json,sys; print(json.load(sys.stdin)$1)" 2>/dev/null; }
 
+# Any test the HIS will currently accept an order for.
+#
+# Use this wherever a test only needs to be orderable and the particular analyte
+# is irrelevant. Hardcoding a code couples the test to a catalogue that is now
+# discovered from OpenELIS and changes when the laboratory changes: ALT and PLT
+# stopped being orderable the moment discovery noticed their LOINC codes are
+# each shared by two tests, and every suite that named them broke at once with
+# an empty response body.
+any_active_test_code() {
+    his_sql "SELECT test_code FROM his.test_catalogue
+             WHERE is_active AND source = 'DISCOVERED'
+             ORDER BY test_code LIMIT 1"
+}
+
 summary() {
     printf '\n────────────────────────────────────────\n'
     printf '  %s passed, %s failed\n' "$(green "$PASS")" "$( [[ $FAIL -eq 0 ]] && green "$FAIL" || red "$FAIL")"

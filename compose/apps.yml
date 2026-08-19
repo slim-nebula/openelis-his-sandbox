@@ -31,6 +31,10 @@ services:
       TOPIC_ORDER_FAILED: ${TOPIC_ORDER_FAILED}
       TOPIC_RESULT_RELEASED: ${TOPIC_RESULT_RELEASED}
       TOPIC_RESULT_FAILED: ${TOPIC_RESULT_FAILED}
+      # Where the discovered test menu is pulled from. Reached over `sandbox`,
+      # which both services share; the HIS never joins `integration`, so it
+      # still has no path to OpenELIS.
+      BRIDGE_INTERNAL_URL: ${BRIDGE_INTERNAL_URL}
     networks: [sandbox, data]
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz || exit 1"]

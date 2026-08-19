@@ -40,8 +40,8 @@ check "Unknown patient lookup returns 404" \
 section "Duplicate event delivery is absorbed"
 
 ORDER_JSON=$(curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
-    -d '{"patientId":"11111111-1111-1111-1111-111111111111","testCode":"GLUC",
-         "orderingProvider":"Dr. Duplicate","facilityCode":"FAC-001"}')
+    -d "{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"$(any_active_test_code)\",
+         \"orderingProvider\":\"Dr. Duplicate\",\"facilityCode\":\"FAC-001\"}")
 DUP_ORDER_ID=$(echo "$ORDER_JSON" | json_field "['orderId']")
 DUP_ORDER_NUMBER=$(echo "$ORDER_JSON" | json_field "['orderNumber']")
 info "seeded order $DUP_ORDER_NUMBER"
@@ -151,8 +151,8 @@ info "stopping openelis-webapp…"
 docker stop openelis-webapp >/dev/null 2>&1
 
 OFFLINE_JSON=$(curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
-    -d '{"patientId":"11111111-1111-1111-1111-111111111111","testCode":"CREA",
-         "orderingProvider":"Dr. Offline","facilityCode":"FAC-001"}')
+    -d "{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"$(any_active_test_code)\",
+         \"orderingProvider\":\"Dr. Offline\",\"facilityCode\":\"FAC-001\"}")
 OFFLINE_NUMBER=$(echo "$OFFLINE_JSON" | json_field "['orderNumber']")
 
 if [[ -n "$OFFLINE_NUMBER" ]]; then
@@ -179,8 +179,8 @@ sleep 3
 # the order and its event commit together and the relay drains the event when
 # the broker returns. Ordering must not depend on Kafka being up.
 KAFKA_DOWN_JSON=$(curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
-    -d '{"patientId":"11111111-1111-1111-1111-111111111111","testCode":"ALT",
-         "orderingProvider":"Dr. NoKafka","facilityCode":"FAC-001"}')
+    -d "{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"$(any_active_test_code)\",
+         \"orderingProvider\":\"Dr. NoKafka\",\"facilityCode\":\"FAC-001\"}")
 NOKAFKA_ORDER=$(echo "$KAFKA_DOWN_JSON" | json_field "['orderNumber']")
 
 if [[ -n "$NOKAFKA_ORDER" ]]; then
@@ -227,7 +227,7 @@ check "And the order reached the bridge without manual intervention" "
 
 check "Sandbox recovers: a new order flows again" "
     resp=\$(curl -sf -X POST ${API}/lab-orders -H 'Content-Type: application/json' \
-        -d '{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"CHOL\",
+        -d '{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"$(any_active_test_code)\",
              \"orderingProvider\":\"Dr. Recovered\",\"facilityCode\":\"FAC-001\"}')
     number=\$(echo \"\$resp\" | python3 -c \"import json,sys; print(json.load(sys.stdin)['orderNumber'])\")
     for _ in \$(seq 1 20); do

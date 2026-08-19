@@ -28,6 +28,8 @@ builder.Logging.AddJsonConsole(o =>
 builder.Services.AddSingleton(kafkaOptions);
 builder.Services.AddSingleton(_ => new NpgsqlDataSourceBuilder(connectionString).Build());
 builder.Services.AddScoped<Repository>();
+builder.Services.AddScoped<CatalogueMirror>();
+builder.Services.AddHttpClient();
 builder.Services.AddSingleton<EventPublisher>();
 builder.Services.AddHostedService<BridgeEventConsumer>();
 builder.Services.AddHostedService<OutboxRelay>();
@@ -84,8 +86,22 @@ app.MapGet("/healthz", async (NpgsqlDataSource ds, CancellationToken ct) =>
     return Results.Ok(new { status = "ok", component = "his-api" });
 });
 
+// Served from the local mirror, never live from the bridge: the ordering screen
+// must keep working while the bridge restarts, and a menu one sync out of date
+// beats an empty one.
 app.MapGet("/test-catalogue", async (Repository repo, CancellationToken ct) =>
     Results.Ok(await repo.GetCatalogueAsync(ct)));
+
+// Pulls the menu the bridge discovered in OpenELIS. Manual, like the sync
+// behind it: the technician who enabled a test in the LIS is the person who
+// presses this, and is there to read what changed.
+app.MapPost("/admin/catalogue/refresh", async (
+    CatalogueMirror mirror, CancellationToken ct) =>
+{
+    var bridgeUrl = KafkaOptions.Env("BRIDGE_INTERNAL_URL", "http://bridge:8080");
+    var result = await mirror.RefreshAsync(bridgeUrl, ct);
+    return result.Applied ? Results.Ok(result) : Results.Json(result, statusCode: StatusCodes.Status409Conflict);
+});
 
 app.MapPost("/patients", async (CreatePatientRequest req, Repository repo, CancellationToken ct) =>
 {

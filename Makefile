@@ -118,6 +118,11 @@ sync-catalogue: ## Refresh the test menu from OpenELIS (FORCE=true to override t
 	  [print('    -', r) for r in d['diff']['removed']]; \
 	  [print('    ~', c) for c in d['diff']['changed']]; \
 	  print('    REFUSED:', d['reason']) if not d['applied'] else None"
+	@echo "==> Mirroring it into the HIS"
+	@docker exec his-api curl -sS -X POST http://localhost:8080/admin/catalogue/refresh \
+	  | python3 -c "import sys,json; d=json.load(sys.stdin); \
+	  print('    offered', d['offered'], '| updated', d['upserted'], '| withdrawn', d['deactivated']) \
+	  if d['applied'] else print('    REFUSED:', d['reason'])"
 
 catalogue: ## Show the currently cached test menu
 	@docker exec bridge curl -sS http://localhost:8080/catalogue | python3 -c "import sys,json; d=json.load(sys.stdin); \
