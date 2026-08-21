@@ -209,6 +209,36 @@ public sealed class OpenElisClient(BridgeOptions options, ILogger<OpenElisClient
         return unique;
     }
 
+    /// <summary>
+    /// How OpenELIS thinks its outbound push subscriptions are doing.
+    ///
+    /// Reported per endpoint, so the entry naming the bridge is the health of
+    /// the channel results actually arrive on. maxIntervalMinutes is the cadence
+    /// OpenELIS intends to keep, which is a better basis for judging staleness
+    /// than a number we picked.
+    /// </summary>
+    public async Task<IReadOnlyList<ExportSubscription>> GetDataExportStatusAsync(CancellationToken ct)
+    {
+        using var doc = await GetJsonAsync("rest/DataExportStatus", ct);
+
+        return doc.RootElement.EnumerateArray().Select(e => new ExportSubscription(
+            Id: e.GetPropertyOrNull("id")?.ToString() ?? "",
+            Endpoint: e.GetPropertyOrNull("endpoint").GetString() ?? "",
+            LastStatus: e.GetPropertyOrNull("lastStatus").GetString(),
+            LastSuccess: ParseTime(e, "lastSuccess"),
+            LastAttempt: ParseTime(e, "lastAttempt"),
+            FailedLast24h: ParseInt(e, "failedLast24h"),
+            TotalLast24h: ParseInt(e, "totalLast24h"),
+            MaxIntervalMinutes: ParseInt(e, "maxIntervalMinutes"))).ToList();
+    }
+
+    private static DateTimeOffset? ParseTime(JsonElement e, string name) =>
+        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String &&
+        DateTimeOffset.TryParse(v.GetString(), out var parsed) ? parsed : null;
+
+    private static int? ParseInt(JsonElement e, string name) =>
+        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : null;
+
     private async Task<JsonDocument> GetJsonAsync(string path, CancellationToken ct)
     {
         var response = await _http.GetAsync(path, ct);
@@ -237,6 +267,17 @@ public sealed class OpenElisClient(BridgeOptions options, ILogger<OpenElisClient
 
     public void Dispose() => _http.Dispose();
 }
+
+/// <summary>One outbound push subscription, as OpenELIS reports it.</summary>
+public sealed record ExportSubscription(
+    string Id,
+    string Endpoint,
+    string? LastStatus,
+    DateTimeOffset? LastSuccess,
+    DateTimeOffset? LastAttempt,
+    int? FailedLast24h,
+    int? TotalLast24h,
+    int? MaxIntervalMinutes);
 
 /// <summary>One orderable test, as OpenELIS describes it.</summary>
 public sealed record CatalogueEntry(

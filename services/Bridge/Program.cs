@@ -21,9 +21,11 @@ builder.Logging.AddJsonConsole(o =>
 builder.Services.AddSingleton(options);
 builder.Services.AddSingleton(_ => new NpgsqlDataSourceBuilder(options.ConnectionString).Build());
 builder.Services.AddScoped<BridgeStore>();
+builder.Services.AddScoped<ExportHealthProbe>();
 builder.Services.AddSingleton<EventPublisher>();
 builder.Services.AddHostedService<OrderConsumer>();
 builder.Services.AddHostedService<ResultCorrelator>();
+builder.Services.AddHostedService<ExportMonitor>();
 
 builder.Services.AddHttpClient("his-api", client =>
 {
@@ -87,6 +89,31 @@ app.MapGet("/catalogue", async (BridgeStore store, CancellationToken ct) =>
 
 app.MapGet("/catalogue/syncs", async (BridgeStore store, CancellationToken ct) =>
     Results.Ok(await store.GetCatalogueSyncsAsync(ct)));
+
+// --- Health of the channel results arrive on -------------------------------
+
+// Answers "is OpenELIS still pushing results to us", which nothing else could
+// tell you: a bridge receiving nothing looks the same as a quiet laboratory.
+app.MapGet("/ops/export-status", async (BridgeStore store, CancellationToken ct) =>
+    await store.GetLatestExportCheckAsync(ct) is { } latest
+        ? Results.Ok(latest)
+        : Results.Ok(new { verdict = "UNKNOWN", detail = "no check has run yet" }));
+
+app.MapGet("/ops/export-status/history", async (BridgeStore store, CancellationToken ct) =>
+    Results.Ok(await store.GetExportChecksAsync(ct)));
+
+// Runs the check now rather than waiting for the next cycle. An operator asking
+// "is it working right now" should not have to wait five minutes for an answer.
+app.MapPost("/ops/export-status/check", async (
+    BridgeOptions opts, ExportHealthProbe probe, CancellationToken ct) =>
+{
+    if (!opts.CatalogueDiscoveryConfigured)
+        return Results.Problem("No OpenELIS REST credentials configured.",
+            statusCode: StatusCodes.Status501NotImplemented);
+
+    var (verdict, detail) = await probe.RunAsync(ct);
+    return Results.Ok(new { verdict, detail });
+});
 
 // Manual, because a clinic changes its menu when it commissions an analyser -
 // a few times a year - and a human pressing this is a human who can read the

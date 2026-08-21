@@ -363,6 +363,49 @@ public sealed class BridgeStore(NpgsqlDataSource dataSource, ILogger<BridgeStore
         return rows.ToList();
     }
 
+    // --- Result push channel health ----------------------------------------
+
+    public async Task RecordExportCheckAsync(
+        string verdict, ExportSubscription? s, string detail, CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO bridge.export_status_checks
+                (subscription_id, endpoint, verdict, last_status, last_success, last_attempt,
+                 failed_last_24h, total_last_24h, max_interval_minutes, detail)
+            VALUES (@id, @endpoint, @verdict, @lastStatus, @lastSuccess, @lastAttempt,
+                    @failed, @total, @maxInterval, @detail);
+            """, new
+        {
+            id = s?.Id, endpoint = s?.Endpoint, verdict, detail,
+            lastStatus = s?.LastStatus, lastSuccess = s?.LastSuccess, lastAttempt = s?.LastAttempt,
+            failed = s?.FailedLast24h, total = s?.TotalLast24h, maxInterval = s?.MaxIntervalMinutes
+        }, cancellationToken: ct));
+    }
+
+    public async Task<ExportCheckRow?> GetLatestExportCheckAsync(CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        return await conn.QuerySingleOrDefaultAsync<ExportCheckRow>(new CommandDefinition("""
+            SELECT checked_at AS CheckedAt, verdict, endpoint, last_status AS LastStatus,
+                   last_success AS LastSuccess, failed_last_24h AS FailedLast24h,
+                   total_last_24h AS TotalLast24h, detail
+            FROM bridge.export_status_checks ORDER BY checked_at DESC LIMIT 1;
+            """, cancellationToken: ct));
+    }
+
+    public async Task<IReadOnlyList<ExportCheckRow>> GetExportChecksAsync(CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        var rows = await conn.QueryAsync<ExportCheckRow>(new CommandDefinition("""
+            SELECT checked_at AS CheckedAt, verdict, endpoint, last_status AS LastStatus,
+                   last_success AS LastSuccess, failed_last_24h AS FailedLast24h,
+                   total_last_24h AS TotalLast24h, detail
+            FROM bridge.export_status_checks ORDER BY checked_at DESC LIMIT 50;
+            """, cancellationToken: ct));
+        return rows.ToList();
+    }
+
     public static string ToJson(Resource resource) => Serializer.SerializeToString(resource);
     public static Resource ParseResource(string json) => Parser.Parse<Resource>(json);
 
@@ -371,6 +414,10 @@ public sealed class BridgeStore(NpgsqlDataSource dataSource, ILogger<BridgeStore
 
 public sealed record DeadLetterRow(
     long Id, string Source, string Reason, string? CorrelationId, DateTimeOffset CreatedAt);
+
+public sealed record ExportCheckRow(
+    DateTimeOffset CheckedAt, string Verdict, string? Endpoint, string? LastStatus,
+    DateTimeOffset? LastSuccess, int? FailedLast24h, int? TotalLast24h, string? Detail);
 
 public sealed record SyncHistoryRow(
     long Id, DateTimeOffset StartedAt, DateTimeOffset? FinishedAt, string Status,

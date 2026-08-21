@@ -25,7 +25,7 @@ export
 
 .PHONY: help config data-up app-up up down clean logs ps \
         smoke e2e results rejection corrections catalogue-test negative capture \
-        sync-catalogue catalogue migrate psql-his psql-oe topics urls
+        sync-catalogue catalogue export-status migrate psql-his psql-oe topics urls
 
 help:
 	@grep -hE '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -123,6 +123,11 @@ sync-catalogue: ## Refresh the test menu from OpenELIS (FORCE=true to override t
 	  | python3 -c "import sys,json; d=json.load(sys.stdin); \
 	  print('    offered', d['offered'], '| updated', d['upserted'], '| withdrawn', d['deactivated']) \
 	  if d['applied'] else print('    REFUSED:', d['reason'])"
+
+export-status: ## Is OpenELIS still pushing results to us? (checks now)
+	@docker exec bridge curl -sS -X POST http://localhost:8080/ops/export-status/check \
+	  --max-time 300 | python3 -c "import sys,json; d=json.load(sys.stdin); \
+	  print('   ', d['verdict'], '—', d['detail'])"
 
 catalogue: ## Show the currently cached test menu
 	@docker exec bridge curl -sS http://localhost:8080/catalogue | python3 -c "import sys,json; d=json.load(sys.stdin); \

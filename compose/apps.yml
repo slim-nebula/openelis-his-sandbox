@@ -79,6 +79,9 @@ services:
       OE_REST_TIMEOUT_SECONDS: ${OE_REST_TIMEOUT_SECONDS}
       OE_REST_ACCEPT_ANY_CERT: ${OE_REST_ACCEPT_ANY_CERT}
       CATALOGUE_MAX_SHRINK: ${CATALOGUE_MAX_SHRINK}
+      EXPORT_CHECK_MINUTES: ${EXPORT_CHECK_MINUTES}
+      EXPORT_STALE_CYCLES: ${EXPORT_STALE_CYCLES}
+      BRIDGE_PUBLIC_FHIR_HOST: ${BRIDGE_PUBLIC_FHIR_HOST}
     networks: [sandbox, integration, data]
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz || exit 1"]

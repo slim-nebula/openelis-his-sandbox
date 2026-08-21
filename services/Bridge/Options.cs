@@ -44,6 +44,20 @@ public sealed class BridgeOptions
     /// </summary>
     public double CatalogueMaxShrink { get; init; } = 0.30;
 
+    // --- Result push monitoring ---------------------------------------------
+    /// <summary>How often to ask OpenELIS whether it is still pushing results.</summary>
+    public int ExportCheckMinutes { get; init; } = 5;
+
+    /// <summary>
+    /// How many of OpenELIS's own declared push cycles may pass without a
+    /// success before the channel counts as stale. One missed push is a hiccup;
+    /// several in a row is an outage.
+    /// </summary>
+    public int ExportStaleCycles { get; init; } = 5;
+
+    /// <summary>Host OpenELIS names in its subscription, used to find our own entry.</summary>
+    public string PublicFhirHost { get; init; } = "bridge";
+
     public static BridgeOptions FromEnvironment() => new()
     {
         ConnectionString = Require("BRIDGE_DB_CONNECTION"),
@@ -63,7 +77,10 @@ public sealed class BridgeOptions
         OpenElisPassword = Env("OE_SERVICE_PASSWORD", ""),
         OpenElisTimeoutSeconds = int.Parse(Env("OE_REST_TIMEOUT_SECONDS", "120")),
         OpenElisAcceptAnyCertificate = Env("OE_REST_ACCEPT_ANY_CERT", "true") == "true",
-        CatalogueMaxShrink = double.Parse(Env("CATALOGUE_MAX_SHRINK", "0.30"))
+        CatalogueMaxShrink = double.Parse(Env("CATALOGUE_MAX_SHRINK", "0.30")),
+        ExportCheckMinutes = int.Parse(Env("EXPORT_CHECK_MINUTES", "5")),
+        ExportStaleCycles = int.Parse(Env("EXPORT_STALE_CYCLES", "5")),
+        PublicFhirHost = Env("BRIDGE_PUBLIC_FHIR_HOST", "bridge")
     };
 
     /// <summary>Catalogue discovery is optional; without credentials the endpoints refuse rather than crash the bridge.</summary>

@@ -395,6 +395,32 @@ that has ever been ordered can never be dropped — it is deactivated instead; a
 the ordering screen must keep working while the bridge restarts. A menu one sync
 out of date beats an empty one.
 
+### Watching the channel results arrive on
+
+A laboratory that has stopped returning results looks exactly like a laboratory
+with nothing ready — the bridge receives nothing either way. Orders queue up
+visibly in `ACCEPTED_BY_LIS`, but the *return* path failing is silent, and the
+detection mechanism was a clinician eventually asking where a result went.
+
+OpenELIS already knows. `/rest/DataExportStatus` reports each push subscription
+by endpoint, including ours, and the bridge polls it:
+
+```
+$ make export-status
+    OK — last push 1 min ago, 66 in 24h
+```
+
+Staleness is judged against `maxIntervalMinutes` — the cadence OpenELIS says it
+intends to keep — rather than a threshold picked here, so the check stays correct
+if the laboratory changes how often it pushes. Verdicts are `OK`, `STALE`,
+`FAILING`, or `UNREACHABLE`, because not being able to ask is its own state and
+reporting healthy in that case would be worse than useless.
+
+This one is **polled**, unlike the catalogue, and the difference is the point:
+export health changes minute to minute and nobody presses a button to ask about
+it, whereas the test menu changes a few times a year and the person who changed
+it should see the diff.
+
 ### One limit, stated plainly
 
 OpenELIS holds LOINC codes in two places — `clinlims.test.loinc`, which binds

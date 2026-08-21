@@ -165,8 +165,32 @@ sleep 8
 check "The order is queued as a FHIR Task, waiting for the LIS to come back" \
     "[[ \$(bridge_sql \"SELECT task_status FROM bridge.order_tracking WHERE order_number = '$OFFLINE_NUMBER'\") == requested ]]"
 
+# The failure this catches is the quiet one. Orders queue up visibly, but a
+# laboratory that has stopped RETURNING results looks exactly like a laboratory
+# with nothing ready — the bridge receives nothing either way. Someone has to be
+# told, and until this check existed nobody was.
+OFFLINE_VERDICT=$(docker exec bridge curl -sS -X POST --max-time 240 \
+    http://localhost:8080/ops/export-status/check | json_field "['verdict']")
+if [[ "$OFFLINE_VERDICT" != "OK" ]]; then
+    ok "The result push channel is reported as $OFFLINE_VERDICT, not silently healthy"
+else
+    bad "The result push channel is not reported healthy while the LIS is down" \
+        "verdict was OK — an outage would go unnoticed"
+fi
+
+check "The verdict is recorded, so an outage leaves a trace" \
+    "[[ \$(bridge_sql \"SELECT count(*) FROM bridge.export_status_checks
+                        WHERE verdict <> 'OK' AND checked_at > now() - interval '5 minutes'\") -ge 1 ]]"
+
 info "restarting openelis-webapp (it will pick the order up on its next poll)…"
 docker start openelis-webapp >/dev/null 2>&1
+
+bash "$(dirname "${BASH_SOURCE[0]}")/wait-for.sh" "OpenELIS webapp" \
+    "curl -skf -o /dev/null https://localhost/api/OpenELIS-Global/LoginPage" 300 || true
+
+RECOVERED=$(docker exec bridge curl -sS -X POST --max-time 240 \
+    http://localhost:8080/ops/export-status/check | json_field "['verdict']")
+check "And it reports healthy again once the LIS is back" "[[ '$RECOVERED' == OK ]]"
 
 # ---------------------------------------------------------------------------
 section "Kafka unavailable"
