@@ -20,16 +20,29 @@ DATA    := docker compose -p his-lab-data $(ENVFILE) -f compose/data.yml
 APP     := docker compose -p his-lab-sandbox $(ENVFILE) \
              -f compose/platform.yml -f compose/apps.yml -f compose/openelis.yml
 
-include .env
-export
+# .env holds the values and is not committed; .env.example holds the shape and
+# is. Without it `include` fails with a line number instead of an instruction,
+# so say the useful thing - while still letting `secrets` and `help` run, since
+# those are what you reach for when it is missing.
+ifeq (,$(wildcard .env))
+  ifeq (,$(filter secrets help,$(MAKECMDGOALS)))
+    $(error No .env found. Run `make secrets` to generate one from .env.example)
+  endif
+else
+  include .env
+  export
+endif
 
-.PHONY: help config data-up app-up up down clean logs ps \
+.PHONY: help secrets config data-up app-up up down clean logs ps \
         smoke e2e results rejection corrections catalogue-test negative capture \
-        sync-catalogue catalogue export-status migrate psql-his psql-oe topics urls
+        sync-catalogue catalogue export-status prune migrate psql-his psql-oe topics urls
 
 help:
 	@grep -hE '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 	 awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+
+secrets: ## Create .env from .env.example, generating the passwords and tokens
+	@bash scripts/init-secrets.sh
 
 config: ## Render templated configuration from .env
 	@bash scripts/render-config.sh
@@ -110,6 +123,7 @@ catalogue-test: ## Catalogue discovery - filters, guards and the HIS mirror
 sync-catalogue: ## Refresh the test menu from OpenELIS (FORCE=true to override the shrink guard)
 	@echo "==> Reading the test menu from OpenELIS"
 	@docker exec bridge curl -sS -X POST \
+	  -H "Authorization: Bearer $(BRIDGE_ADMIN_TOKEN)" \
 	  "http://localhost:8080/catalogue/sync$(if $(FORCE),?force=$(FORCE),)" \
 	  --max-time 600 -o /tmp/sync.json -w '' || true
 	@docker exec bridge cat /tmp/sync.json | python3 -c "import sys,json; d=json.load(sys.stdin); \
@@ -119,15 +133,27 @@ sync-catalogue: ## Refresh the test menu from OpenELIS (FORCE=true to override t
 	  [print('    ~', c) for c in d['diff']['changed']]; \
 	  print('    REFUSED:', d['reason']) if not d['applied'] else None"
 	@echo "==> Mirroring it into the HIS"
-	@docker exec his-api curl -sS -X POST http://localhost:8080/admin/catalogue/refresh \
+	@docker exec his-api curl -sS -X POST \
+	  -H "Authorization: Bearer $(HIS_ADMIN_TOKEN)" \
+	  http://localhost:8080/admin/catalogue/refresh \
 	  | python3 -c "import sys,json; d=json.load(sys.stdin); \
 	  print('    offered', d['offered'], '| updated', d['upserted'], '| withdrawn', d['deactivated']) \
 	  if d['applied'] else print('    REFUSED:', d['reason'])"
 
 export-status: ## Is OpenELIS still pushing results to us? (checks now)
-	@docker exec bridge curl -sS -X POST http://localhost:8080/ops/export-status/check \
+	@docker exec bridge curl -sS -X POST \
+	  -H "Authorization: Bearer $(BRIDGE_ADMIN_TOKEN)" \
+	  http://localhost:8080/ops/export-status/check \
 	  --max-time 300 | python3 -c "import sys,json; d=json.load(sys.stdin); \
 	  print('   ', d['verdict'], '—', d['detail'])"
+
+prune: ## Run the retention sweep now and report what it removed
+	@docker exec bridge curl -sS -X POST \
+	  -H "Authorization: Bearer $(BRIDGE_ADMIN_TOKEN)" \
+	  http://localhost:8080/ops/retention/sweep --max-time 120 \
+	  | python3 -c "import sys,json; \
+	  [print(f\"    {r['table']:<22} kept {r['retained']:>7}  removed {r['deleted']:>6}  \" \
+	         f\"(window {r['days']}d)\") for r in json.load(sys.stdin)]"
 
 catalogue: ## Show the currently cached test menu
 	@docker exec bridge curl -sS http://localhost:8080/catalogue | python3 -c "import sys,json; d=json.load(sys.stdin); \

@@ -11,7 +11,18 @@
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-TEST_CODE="${1:-HGB}"
+# Default to whatever the laboratory currently accepts, not to a code chosen
+# when this was written. HGB used to be the default and stopped being orderable
+# the moment discovery noticed OpenELIS cannot bind it to a single specimen —
+# so this suite failed on its second step with an empty response body, which
+# looks nothing like "the test menu changed". See any_active_test_code in
+# lib.sh; the same trap has now caught two suites.
+TEST_CODE="${1:-$(any_active_test_code)}"
+
+if [[ -z "$TEST_CODE" ]]; then
+    echo "  No orderable test in the HIS menu. Run: make sync-catalogue" >&2
+    exit 1
+fi
 ACCEPT_TIMEOUT=180     # seconds to wait for OpenELIS to poll and accept
 RESULT_TIMEOUT="${RESULT_TIMEOUT:-600}"
 

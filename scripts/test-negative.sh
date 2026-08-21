@@ -169,8 +169,7 @@ check "The order is queued as a FHIR Task, waiting for the LIS to come back" \
 # laboratory that has stopped RETURNING results looks exactly like a laboratory
 # with nothing ready — the bridge receives nothing either way. Someone has to be
 # told, and until this check existed nobody was.
-OFFLINE_VERDICT=$(docker exec bridge curl -sS -X POST --max-time 240 \
-    http://localhost:8080/ops/export-status/check | json_field "['verdict']")
+OFFLINE_VERDICT=$(bridge_admin POST /ops/export-status/check | json_field "['verdict']")
 if [[ "$OFFLINE_VERDICT" != "OK" ]]; then
     ok "The result push channel is reported as $OFFLINE_VERDICT, not silently healthy"
 else
@@ -188,8 +187,7 @@ docker start openelis-webapp >/dev/null 2>&1
 bash "$(dirname "${BASH_SOURCE[0]}")/wait-for.sh" "OpenELIS webapp" \
     "curl -skf -o /dev/null https://localhost/api/OpenELIS-Global/LoginPage" 300 || true
 
-RECOVERED=$(docker exec bridge curl -sS -X POST --max-time 240 \
-    http://localhost:8080/ops/export-status/check | json_field "['verdict']")
+RECOVERED=$(bridge_admin POST /ops/export-status/check | json_field "['verdict']")
 check "And it reports healthy again once the LIS is back" "[[ '$RECOVERED' == OK ]]"
 
 # ---------------------------------------------------------------------------
@@ -262,6 +260,101 @@ check "Sandbox recovers: a new order flows again" "
 
 section "Dead letters"
 DLQ=$(bridge_sql "SELECT count(*) FROM bridge.dead_letters")
-info "bridge dead-letter rows: ${DLQ:-0}  (inspect with: docker exec bridge curl -s http://localhost:8080/ops/dead-letters)"
+info "bridge dead-letter rows: ${DLQ:-0}  (inspect with: bridge_admin GET /ops/dead-letters)"
+
+# ---------------------------------------------------------------------------
+section "Callers without the right to act are refused"
+
+# These assert on the STATUS CODE rather than the body. A refusal that returns
+# 200 with an error message in it passes any test that greps the body, and is
+# indistinguishable from success to every client.
+
+check "No token: the catalogue sync is refused" \
+    "[[ \$(http_status bridge POST http://localhost:8080/catalogue/sync) == 401 ]]"
+
+check "Wrong token: the catalogue sync is still refused" \
+    "[[ \$(http_status bridge POST http://localhost:8080/catalogue/sync \
+           -H 'Authorization: Bearer not-the-token') == 401 ]]"
+
+check "Right token: the same call is allowed through to the handler" \
+    "[[ \$(http_status bridge GET http://localhost:8080/ops/dead-letters \
+           -H \"Authorization: Bearer \$BRIDGE_ADMIN_TOKEN\") == 200 ]]"
+
+check "No token: the HIS catalogue refresh is refused" \
+    "[[ \$(http_status his-api POST http://localhost:8080/admin/catalogue/refresh) == 401 ]]"
+
+# The endpoints that are deliberately open must STAY open. Locking the ordering
+# screen out of its own test menu would be a worse failure than leaving the
+# menu readable, and it is the failure this kind of change actually causes.
+check "The cached test menu is still readable without a token" \
+    "[[ \$(http_status his-api GET http://localhost:8080/test-catalogue) == 200 ]]"
+
+check "Health checks are still readable without a token" \
+    "[[ \$(http_status bridge GET http://localhost:8080/healthz) == 200 ]]"
+
+# The FHIR endpoint cannot use a token: OpenELIS 3.2.1.11 has no way to send
+# one. It is restricted by origin instead — so what has to be proved is that
+# the restriction distinguishes OpenELIS from everything else that shares a
+# network with the bridge, and that it has not simply been left off.
+check "A container that is not OpenELIS cannot reach the FHIR endpoint" \
+    "[[ \$(http_status his-api GET http://bridge:8080/fhir/metadata) == 403 ]]"
+
+check "A container that is not OpenELIS cannot push a result either" \
+    "[[ \$(http_status his-api POST http://bridge:8080/fhir \
+           -H 'Content-Type: application/fhir+json' \
+           -d '{\"resourceType\":\"Bundle\",\"type\":\"transaction\"}') == 403 ]]"
+
+check "OpenELIS itself still reaches the FHIR endpoint" \
+    "[[ \$(http_status openelis-webapp GET http://bridge:8080/fhir/metadata) == 200 ]]"
+
+# ---------------------------------------------------------------------------
+section "Retention removes what is finished and keeps what is not"
+
+# Ageing rows on both sides of the guard is the only way to test this. A sweep
+# run against fresh data deletes nothing and passes whatever it is asserted
+# against, including a sweep that is broken.
+RET_BEFORE_DONE=$(bridge_sql "SELECT count(*) FROM bridge.received_resources WHERE processed = true")
+RET_BEFORE_OPEN=$(bridge_sql "SELECT count(*) FROM bridge.received_resources WHERE processed = false")
+
+if [[ ${RET_BEFORE_DONE:-0} -ge 1 && ${RET_BEFORE_OPEN:-0} -ge 1 ]]; then
+    bridge_sql "UPDATE bridge.received_resources SET received_at = now() - interval '400 days'
+                WHERE (resource_type, resource_id) IN (
+                  SELECT resource_type, resource_id FROM bridge.received_resources
+                  WHERE processed = true LIMIT 1)" >/dev/null
+    bridge_sql "UPDATE bridge.received_resources SET received_at = now() - interval '400 days'
+                WHERE (resource_type, resource_id) IN (
+                  SELECT resource_type, resource_id FROM bridge.received_resources
+                  WHERE processed = false LIMIT 1)" >/dev/null
+
+    bridge_admin POST /ops/retention/sweep >/dev/null
+
+    check "The aged, already-correlated resource is removed" \
+        "[[ \$(bridge_sql \"SELECT count(*) FROM bridge.received_resources
+                            WHERE processed = true AND received_at < now() - interval '390 days'\") -eq 0 ]]"
+
+    # This is the assertion that matters. An unprocessed resource is a result
+    # that has not reached the patient's record yet; its age is not evidence
+    # that it never will, and a sweep that treats age as permission to delete
+    # would lose it silently.
+    check "The aged resource that has NOT been correlated is kept" \
+        "[[ \$(bridge_sql \"SELECT count(*) FROM bridge.received_resources
+                            WHERE processed = false AND received_at < now() - interval '390 days'\") -eq 1 ]]"
+else
+    info "skipped: needs at least one processed and one unprocessed mirror row"
+fi
+
+# Not "does the sweep run" but "is it running with the windows this deployment
+# configured". The failure mode is a variable added to .env and never wired
+# through compose: the sweeper then silently uses its compiled-in default, and
+# a laboratory that set 400 days for an audit hold gets 30.
+check "The sweep uses the windows this deployment configured, not its defaults" \
+    "[[ \$(bridge_admin POST /ops/retention/sweep | python3 -c \"
+import json,sys
+want = {'received_resources': $RETENTION_RECEIVED_DAYS,
+        'processed_events': $RETENTION_EVENTS_DAYS,
+        'export_status_checks': $RETENTION_EXPORT_CHECKS_DAYS,
+        'dead_letters': $RETENTION_DEAD_LETTERS_DAYS}
+got = {r['table']: r['days'] for r in json.load(sys.stdin)}
+print('match' if got == want else f'MISMATCH want={want} got={got}')\") == match ]]"
 
 summary

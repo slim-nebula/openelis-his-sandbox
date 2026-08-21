@@ -23,6 +23,35 @@ public sealed class BridgeOptions
     public int RetryBaseDelaySeconds { get; init; } = 2;
     public int CorrelationRetryMinutes { get; init; } = 15;
 
+    /// <summary>
+    /// Largest number of resources one search may return. Without a cap the
+    /// order poll serialises every Task the bridge has ever published into one
+    /// response, and the cost of a poll grows with the age of the deployment.
+    /// </summary>
+    public int MaxSearchResults { get; init; } = 200;
+
+    // --- Access -------------------------------------------------------------
+    /// <summary>
+    /// Bearer token for the endpoints that change something or expose
+    /// operational detail. Empty means those endpoints refuse everything;
+    /// see AdminTokenFilter for why that direction and not the other.
+    /// </summary>
+    public string AdminToken { get; init; } = "";
+
+    /// <summary>
+    /// Hostnames permitted to call /fhir. Empty disables the check. This is a
+    /// network-layer control because OpenELIS cannot present a credential at
+    /// all - the reasoning is recorded on FhirPeerGuard.
+    /// </summary>
+    public string[] FhirAllowedPeers { get; init; } = [];
+
+    // --- Retention ----------------------------------------------------------
+    public int RetentionReceivedDays { get; init; } = 30;
+    public int RetentionEventsDays { get; init; } = 14;
+    public int RetentionExportChecksDays { get; init; } = 30;
+    public int RetentionDeadLettersDays { get; init; } = 180;
+    public int RetentionSweepHours { get; init; } = 24;
+
     // --- Catalogue discovery ------------------------------------------------
     /// <summary>Root of the OpenELIS web application, e.g. https://openelis-proxy/api/OpenELIS-Global</summary>
     public string OpenElisBaseUrl { get; init; } = "";
@@ -72,6 +101,14 @@ public sealed class BridgeOptions
         MaxRetries = int.Parse(Env("BRIDGE_MAX_RETRIES", "5")),
         RetryBaseDelaySeconds = int.Parse(Env("BRIDGE_RETRY_BASE_DELAY_SECONDS", "2")),
         CorrelationRetryMinutes = int.Parse(Env("BRIDGE_RESULT_CORRELATION_RETRY_MINUTES", "15")),
+        MaxSearchResults = int.Parse(Env("BRIDGE_MAX_SEARCH_RESULTS", "200")),
+        AdminToken = Env("BRIDGE_ADMIN_TOKEN", ""),
+        FhirAllowedPeers = SplitPeers(Env("BRIDGE_FHIR_ALLOWED_PEERS", "")),
+        RetentionReceivedDays = int.Parse(Env("RETENTION_RECEIVED_DAYS", "30")),
+        RetentionEventsDays = int.Parse(Env("RETENTION_EVENTS_DAYS", "14")),
+        RetentionExportChecksDays = int.Parse(Env("RETENTION_EXPORT_CHECKS_DAYS", "30")),
+        RetentionDeadLettersDays = int.Parse(Env("RETENTION_DEAD_LETTERS_DAYS", "180")),
+        RetentionSweepHours = int.Parse(Env("RETENTION_SWEEP_HOURS", "24")),
         OpenElisBaseUrl = Env("OE_REST_BASE_URL", ""),
         OpenElisUser = Env("OE_SERVICE_USER", ""),
         OpenElisPassword = Env("OE_SERVICE_PASSWORD", ""),
@@ -86,6 +123,9 @@ public sealed class BridgeOptions
     /// <summary>Catalogue discovery is optional; without credentials the endpoints refuse rather than crash the bridge.</summary>
     public bool CatalogueDiscoveryConfigured =>
         OpenElisBaseUrl.Length > 0 && OpenElisUser.Length > 0 && OpenElisPassword.Length > 0;
+
+    private static string[] SplitPeers(string value) =>
+        value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
     public static string Env(string key, string fallback) =>
         Environment.GetEnvironmentVariable(key) is { Length: > 0 } v ? v : fallback;

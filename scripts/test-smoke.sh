@@ -48,6 +48,21 @@ check_contains "HIS API consumer group is registered" \
     "docker exec his-kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server kafka:9092 --list" \
     'his-api'
 
+# The producers already write with acks=all. min.insync.replicas is what gives
+# that any meaning: without it, "all replicas acknowledged" can mean "the one
+# replica that happened to be up". The two settings only work as a pair, and
+# only the topic can be asked whether the second one was actually applied.
+check "Topics carry the configured min.insync.replicas, so acks=all means something" \
+    "[[ \$(docker exec his-kafka /opt/kafka/bin/kafka-configs.sh --bootstrap-server kafka:9092 \
+            --entity-type topics --entity-name ${TOPIC_ORDER_CREATED} --describe \
+          | grep -c 'min.insync.replicas=${KAFKA_MIN_INSYNC_REPLICAS}') -ge 1 ]]"
+
+check "Topics are replicated as this deployment configured" \
+    "[[ \$(docker exec his-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+            --describe --topic ${TOPIC_ORDER_CREATED} \
+          | grep -o 'ReplicationFactor: [0-9]*' | head -1 | grep -o '[0-9]*') \
+        == ${KAFKA_REPLICATION_FACTOR} ]]"
+
 section "Bridge FHIR endpoint"
 check_contains "Bridge is healthy" "in_sandbox http://localhost:8080/healthz" '"status":"ok"'
 check_contains "CapabilityStatement declares FHIR R4" \
@@ -57,6 +72,26 @@ check_contains "Task search responds with a searchset bundle" \
     'searchset'
 check_contains "OpenELIS can reach the bridge's FHIR endpoint" \
     "docker exec openelis-webapp curl -sf ${BRIDGE_FHIR_BASE}/metadata" '4.0.1'
+
+# A search that returns everything ever published gets slower as the deployment
+# gets older, and is slowest exactly when the laboratory is busiest. The bundle
+# reports the true match count alongside the capped page, so a truncated caller
+# is never told it has seen everything.
+check "A search page is capped, and says how many matches it capped from" \
+    "docker exec bridge curl -sS 'http://localhost:8080/fhir/Task?_count=1' | python3 -c \"
+import json,sys
+b = json.load(sys.stdin)
+entries, total = len(b.get('entry', [])), b['total']
+assert entries <= 1, f'asked for 1, got {entries}'
+assert total >= entries, f'total {total} is below the {entries} returned'
+\""
+
+check "A client asking for more than the server will serialise gets the server's answer" \
+    "docker exec bridge curl -sS 'http://localhost:8080/fhir/Task?_count=100000' | python3 -c \"
+import json,sys
+b = json.load(sys.stdin)
+assert len(b.get('entry', [])) <= ${BRIDGE_MAX_SEARCH_RESULTS}, 'cap not applied'
+\""
 
 section "Data tier"
 check "HIS schema is present" \

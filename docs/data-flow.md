@@ -191,6 +191,35 @@ Three databases, three owners, no shared credentials — verified: the bridge's
 role is refused `CONNECT` on `his_sandbox`, and OpenELIS holds no HIS
 credentials at all.
 
+### Membership was doing more work than it should have
+
+The diagram makes network membership look like a complete boundary, and for the
+*databases* it is. For the bridge's own HTTP surface it was not: `bridge` sits
+on `sandbox` and `integration`, and it served `/fhir`, `/ops/*` and
+`/catalogue/*` on one port to both. Anything on `sandbox` — the HIS service,
+the frontend, Kong, Redis — could post a `DiagnosticReport` to `/fhir`, and a
+fabricated `DiagnosticReport` is a fabricated patient result.
+
+The surface is now split by *what the caller is*, not by which port it arrived
+on:
+
+| Surface | Who | How they are checked |
+|---|---|---|
+| `/fhir` | OpenELIS | **origin** — the peer's address must resolve from `BRIDGE_FHIR_ALLOWED_PEERS` |
+| `/ops/*`, `/catalogue/sync` | operators | **bearer token**, fail-closed |
+| `/healthz`, `GET /catalogue` | anything internal | open, read-only, unchanged |
+
+The first row is an origin check rather than a credential for a reason that is
+not going to change: OpenELIS 3.2.1.11 has no way to send one. The evidence is
+in [`security.md` §3](security.md#3-why-the-fhir-endpoint-has-no-token); the
+short version is that its `BasicAuthInterceptor` is gated on the target being
+its own local FHIR store, and there is no configuration key for remote-source
+credentials at all. Demanding a token on `/fhir` would not secure the
+integration, it would stop it.
+
+That makes this the one boundary in the system held by something weaker than a
+credential, which is worth knowing rather than glossing.
+
 ---
 
 ## 3. Order status lifecycle

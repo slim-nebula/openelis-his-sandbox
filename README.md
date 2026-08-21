@@ -38,16 +38,28 @@ stack is six containers, all `linux/amd64`, so they run under emulation on
 Apple Silicon).
 
 ```bash
+make secrets     # generate .env from .env.example        ← first run only
 make up          # render config, start databases, build and start everything
 make sync-catalogue  # read the orderable test menu from OpenELIS  ← required
 make migrate     # apply any new schema migrations to a running database
-make smoke       # phase 1: platform smoke test          (37 checks)
+make smoke       # phase 1: platform smoke test          (41 checks)
 make e2e         # phase 2/3: place an order and follow it into OpenELIS
 make results     # result return: bridge correlation + HIS projection (14 checks)
-make negative    # phase 4: negative paths                (19 checks)
+make negative    # phase 4: negative paths and access control (34 checks)
 make rejection   # LIS rejection round trip               (14 checks)
+make corrections # corrections and retractions            (11 checks)
+make catalogue-test  # catalogue discovery, filters and guards (19 checks)
 make capture     # capture what OpenELIS really sends on release
+make prune       # run the retention sweep now
 ```
+
+`make secrets` writes `.env` (gitignored, mode 600) from `.env.example`,
+generating the passwords and tokens. It then prints the two values it cannot
+invent — OpenELIS's own admin password and the service account the bridge reads
+the catalogue with — because those belong to OpenELIS, not to this repository.
+It refuses to overwrite an existing `.env`: regenerating passwords against
+databases initialised with the old ones does not rotate anything, it locks you
+out.
 
 | Entry point | URL |
 |---|---|
@@ -249,6 +261,32 @@ transits the public edge:
 | `GET` | `/internal/lab-orders/{id}` |
 | `POST` | `/internal/lab-results` |
 
+Administrative, requiring `Authorization: Bearer $HIS_ADMIN_TOKEN`:
+
+| Method | Path |
+|---|---|
+| `POST` | `/admin/catalogue/refresh` |
+
+On the bridge, requiring `Authorization: Bearer $BRIDGE_ADMIN_TOKEN`:
+
+| Method | Path | |
+|---|---|---|
+| `POST` | `/catalogue/sync` | replace the menu from OpenELIS |
+| `GET` | `/catalogue/syncs` | sync history |
+| `GET` | `/ops/orders` | what is published for OpenELIS to poll |
+| `GET` | `/ops/dead-letters` | what could not be handled |
+| `GET` | `/ops/export-status` | is OpenELIS still pushing results |
+| `POST` | `/ops/export-status/check` | ask now rather than wait for the cycle |
+| `POST` | `/ops/retention/sweep` | prune now |
+
+Unauthenticated on the bridge, and deliberately so: `GET /healthz` and
+`GET /catalogue`. Both are read-only, and locking the ordering screen out of
+its own test menu is a worse failure than leaving the menu readable.
+
+`/fhir` is restricted by **origin**, not by token — OpenELIS 3.2.1.11 cannot
+present a credential to a remote FHIR source. The evidence and the consequences
+are in [`docs/security.md`](docs/security.md#3-why-the-fhir-endpoint-has-no-token).
+
 ## Kafka topics
 
 | Topic | Producer | Consumer |
@@ -268,10 +306,18 @@ id spans a whole order lifecycle.
 ## Configuration
 
 Everything lives in `.env` — endpoints, credentials, topic names, poll
-intervals, retry policy. `scripts/render-config.sh` renders OpenELIS's
-`common.properties` from it (Tomcat reads that file as a docker secret and
-cannot expand environment variables itself) and then asserts that the polled
-identifier survived rendering.
+intervals, retry policy, retention windows. `scripts/render-config.sh` renders
+OpenELIS's `common.properties` from it (Tomcat reads that file as a docker
+secret and cannot expand environment variables itself) and then asserts that
+the polled identifier survived rendering.
+
+`.env` is **not committed**. `.env.example` holds the shape of the
+configuration and is; `make secrets` turns one into the other. Adding a setting
+means adding it to the example; adding a secret means adding it as
+`__GENERATE__` and getting a fresh one for free.
+
+Security posture — what is protected, what is not, and why the FHIR endpoint
+cannot use a token — is in [`docs/security.md`](docs/security.md).
 
 ## Troubleshooting
 
@@ -280,6 +326,9 @@ identifier survived rendering.
 | Task flips straight to `rejected` | The LOINC no longer resolves to one OpenELIS test. Re-run `make sync-catalogue`; if it is still offered, the laboratory has changed that test. |
 | Task stays `requested` forever | OpenELIS cannot reach the bridge, or `Task.owner` ≠ `remote.source.identifier`. Check `docker logs openelis-webapp \| grep -i task`. |
 | Order accepted, no result comes back | Result not validated *and released* in OpenELIS, or correlation is still waiting for the ServiceRequest chain. Check `docker logs bridge \| grep -i correlat` and `/ops/dead-letters`. |
+| `401` from `/ops/*` or a sync | Missing or wrong bearer token. `make` targets pass it for you; a hand-written curl needs `-H "Authorization: Bearer $BRIDGE_ADMIN_TOKEN"`. |
+| `503` from an admin endpoint | The token is not *configured*. These fail closed, so an unset variable refuses everything rather than opening the door. Check the service's `environment:` block in `compose/apps.yml`. |
+| `403` from `/fhir`, orders stop | The caller is not in `BRIDGE_FHIR_ALLOWED_PEERS`. Expected if OpenELIS was renamed or redeployed under different container names — see `docs/runbook.md` → Adding a new FHIR peer. |
 | `his-api` restarts at startup | The external HIS database is still initialising; it retries for two minutes. |
 | Everything is slow | OpenELIS images are amd64-only and emulated on Apple Silicon. Give Docker more memory. |
 
@@ -288,8 +337,12 @@ Useful:
 ```bash
 make logs S=bridge
 make topics
-docker exec bridge curl -s http://localhost:8080/ops/orders
-docker exec bridge curl -s http://localhost:8080/ops/dead-letters
+make export-status                 # is OpenELIS still pushing results to us
+make prune                         # run the retention sweep and see what went
+docker exec bridge curl -s -H "Authorization: Bearer $BRIDGE_ADMIN_TOKEN" \
+  http://localhost:8080/ops/orders
+docker exec bridge curl -s -H "Authorization: Bearer $BRIDGE_ADMIN_TOKEN" \
+  http://localhost:8080/ops/dead-letters
 ```
 
 See `docs/runbook.md` for startup, shutdown and recovery procedures.

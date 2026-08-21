@@ -60,9 +60,21 @@ public sealed class BridgeStore(NpgsqlDataSource dataSource, ILogger<BridgeStore
     /// <summary>
     /// Backs GET /fhir/Task?status=requested&amp;owner=... — the query OpenELIS
     /// issues on every poll.
+    ///
+    /// Capped, and oldest first. Uncapped, one poll serialises every Task the
+    /// bridge has ever published, so the cost of asking "anything new?" grows
+    /// with the age of the deployment and is worst exactly when the laboratory
+    /// is busiest.
+    ///
+    /// The cap needs no paging to be correct HERE, because of what the query
+    /// is: OpenELIS searches status=requested, and accepting an order moves it
+    /// out of that set. So a capped page drains itself over successive polls.
+    /// Oldest first is what makes that a queue rather than a lottery - without
+    /// the ordering, an order arriving during a backlog could be starved
+    /// indefinitely while newer ones are served.
     /// </summary>
     public async Task<IReadOnlyList<Resource>> SearchTasksAsync(
-        string? status, string? owner, string? id, CancellationToken ct)
+        string? status, string? owner, string? id, int limit, CancellationToken ct)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         var rows = await conn.QueryAsync<string>(new CommandDefinition("""
@@ -71,18 +83,32 @@ public sealed class BridgeStore(NpgsqlDataSource dataSource, ILogger<BridgeStore
               AND (@status IS NULL OR content ->> 'status' = @status)
               AND (@owner  IS NULL OR content -> 'owner' ->> 'reference' = @owner)
               AND (@id     IS NULL OR resource_id = @id)
-            ORDER BY last_updated;
-            """, new { status, owner, id }, cancellationToken: ct));
+            ORDER BY last_updated
+            LIMIT @limit;
+            """, new { status, owner, id, limit }, cancellationToken: ct));
         return rows.Select(Parser.Parse<Resource>).ToList();
     }
 
-    public async Task<IReadOnlyList<Resource>> SearchByTypeAsync(string type, CancellationToken ct)
+    /// <summary>Total matching the same predicate, so a bundle can report a truthful total when it is truncated.</summary>
+    public async Task<int> CountTasksAsync(string? status, string? owner, string? id, CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        return await conn.ExecuteScalarAsync<int>(new CommandDefinition("""
+            SELECT count(*) FROM bridge.fhir_resources
+            WHERE resource_type = 'Task'
+              AND (@status IS NULL OR content ->> 'status' = @status)
+              AND (@owner  IS NULL OR content -> 'owner' ->> 'reference' = @owner)
+              AND (@id     IS NULL OR resource_id = @id);
+            """, new { status, owner, id }, cancellationToken: ct));
+    }
+
+    public async Task<IReadOnlyList<Resource>> SearchByTypeAsync(string type, int limit, CancellationToken ct)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         var rows = await conn.QueryAsync<string>(new CommandDefinition("""
             SELECT content::text FROM bridge.fhir_resources
-            WHERE resource_type = @type ORDER BY last_updated;
-            """, new { type }, cancellationToken: ct));
+            WHERE resource_type = @type ORDER BY last_updated LIMIT @limit;
+            """, new { type, limit }, cancellationToken: ct));
         return rows.Select(Parser.Parse<Resource>).ToList();
     }
 

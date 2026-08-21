@@ -75,11 +75,17 @@ public static class FhirEndpoints
 
         // --- Search ---------------------------------------------------------
         app.MapGet("/fhir/{type}", async (
-            string type, HttpContext ctx, BridgeStore store,
+            string type, HttpContext ctx, BridgeStore store, BridgeOptions options,
             ILoggerFactory loggerFactory, CancellationToken ct) =>
         {
             var log = loggerFactory.CreateLogger("FhirSearch");
             var baseUrl = BaseUrl(ctx);
+
+            // _count is honoured but never trusted: a client asking for more
+            // than the server is willing to serialise gets the server's answer.
+            var limit = int.TryParse(ctx.Request.Query["_count"].FirstOrDefault(), out var requested)
+                ? Math.Clamp(requested, 1, options.MaxSearchResults)
+                : options.MaxSearchResults;
 
             if (type == "Task")
             {
@@ -87,10 +93,19 @@ public static class FhirEndpoints
                 var owner = ctx.Request.Query["owner"].FirstOrDefault();
                 var id = ctx.Request.Query["_id"].FirstOrDefault();
 
-                var tasks = await store.SearchTasksAsync(status, owner, id, ct);
+                var tasks = await store.SearchTasksAsync(status, owner, id, limit, ct);
+                var total = tasks.Count < limit
+                    ? tasks.Count                                      // a short page is the whole set
+                    : await store.CountTasksAsync(status, owner, id, ct);
+
+                if (total > tasks.Count)
+                    log.LogInformation(
+                        "Task search truncated to {Returned} of {Total}; the rest follow on later polls",
+                        tasks.Count, total);
+
                 log.LogInformation("Task search status={Status} owner={Owner} -> {Count} match(es)",
                     status, owner, tasks.Count);
-                return FhirResult(SearchBundle(tasks, baseUrl));
+                return FhirResult(SearchBundle(tasks, baseUrl, total));
             }
 
             // Everything else: OpenELIS only ever searches QuestionnaireResponse
@@ -99,7 +114,7 @@ public static class FhirEndpoints
             if (ctx.Request.Query.Count > 0 && type != "Patient")
                 return FhirResult(SearchBundle([], baseUrl));
 
-            var all = await store.SearchByTypeAsync(type, ct);
+            var all = await store.SearchByTypeAsync(type, limit, ct);
             return FhirResult(SearchBundle(all, baseUrl));
         });
 
@@ -249,13 +264,18 @@ public static class FhirEndpoints
         }
     }
 
-    private static Bundle SearchBundle(IReadOnlyList<Resource> resources, string baseUrl)
+    /// <summary>
+    /// <paramref name="total"/> is the number of matches, which is not the same
+    /// as the number of entries once a page is capped. Reporting the page size
+    /// as the total would tell a truncated caller it had seen everything.
+    /// </summary>
+    private static Bundle SearchBundle(IReadOnlyList<Resource> resources, string baseUrl, int? total = null)
     {
         var bundle = new Bundle
         {
             Id = Guid.NewGuid().ToString(),
             Type = Bundle.BundleType.Searchset,
-            Total = resources.Count,
+            Total = total ?? resources.Count,
             Meta = new Meta { LastUpdated = DateTimeOffset.UtcNow }
         };
 

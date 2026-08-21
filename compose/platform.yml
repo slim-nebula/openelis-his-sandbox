@@ -71,9 +71,14 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Kafka's own internal topics, replicated exactly like ours. Leaving these
+      # at 1 while the data topics run at 3 would move the single point of
+      # failure rather than remove it: losing __consumer_offsets loses every
+      # consumer's position, which replays or skips orders depending on the
+      # reset policy.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: ${KAFKA_REPLICATION_FACTOR}
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: ${KAFKA_REPLICATION_FACTOR}
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: ${KAFKA_MIN_INSYNC_REPLICAS}
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       CLUSTER_ID: his-lab-sandbox-cluster
@@ -107,7 +112,15 @@ services:
                  ${TOPIC_ORDER_CREATED}.dlq ${TOPIC_ORDER_SENT}.dlq \
                  ${TOPIC_ORDER_FAILED}.dlq ${TOPIC_RESULT_RELEASED}.dlq; do
           /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
-            --create --if-not-exists --topic "$$t" --partitions 3 --replication-factor 1
+            --create --if-not-exists --topic "$$t" --partitions 3 \
+            --replication-factor ${KAFKA_REPLICATION_FACTOR}
+          # Applied by --alter, not by --create, so that raising durability on
+          # an existing deployment is a restart rather than a topic rebuild.
+          # min.insync.replicas is what gives the producers' acks=all any
+          # meaning: without it, "all" can mean "the one replica that is up".
+          /opt/kafka/bin/kafka-configs.sh --bootstrap-server kafka:9092 \
+            --entity-type topics --entity-name "$$t" \
+            --alter --add-config min.insync.replicas=${KAFKA_MIN_INSYNC_REPLICAS}
         done
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
     networks: [sandbox]

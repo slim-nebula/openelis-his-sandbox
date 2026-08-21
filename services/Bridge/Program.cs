@@ -22,10 +22,15 @@ builder.Services.AddSingleton(options);
 builder.Services.AddSingleton(_ => new NpgsqlDataSourceBuilder(options.ConnectionString).Build());
 builder.Services.AddScoped<BridgeStore>();
 builder.Services.AddScoped<ExportHealthProbe>();
+builder.Services.AddScoped<RetentionSweeper>();
 builder.Services.AddSingleton<EventPublisher>();
+// Singleton: it caches resolved peer addresses, which is only worth doing once
+// for the process rather than once per request.
+builder.Services.AddSingleton<FhirPeerGuard>();
 builder.Services.AddHostedService<OrderConsumer>();
 builder.Services.AddHostedService<ResultCorrelator>();
 builder.Services.AddHostedService<ExportMonitor>();
+builder.Services.AddHostedService<RetentionService>();
 
 builder.Services.AddHttpClient("his-api", client =>
 {
@@ -37,7 +42,14 @@ var app = builder.Build();
 
 await WaitForDatabaseAsync(app);
 
-// --- Operational surface ----------------------------------------------------
+// Before routing, so it covers every /fhir handler including the bare POST for
+// the result bundle - and any added later without remembering to guard them.
+app.UseFhirPeerGuard();
+
+// --- Public surface ---------------------------------------------------------
+// Reachable without a credential, and deliberately so: liveness, and the
+// read-only cached menu the HIS service mirrors. Neither changes anything, and
+// both are already behind network membership.
 
 app.MapGet("/healthz", async (NpgsqlDataSource ds, CancellationToken ct) =>
 {
@@ -51,27 +63,6 @@ app.MapGet("/healthz", async (NpgsqlDataSource ds, CancellationToken ct) =>
         labOwner = options.LabOwnerReference
     });
 });
-
-// Useful during testing: shows exactly what the bridge is publishing for
-// OpenELIS to poll, and what it could not correlate.
-app.MapGet("/ops/orders", async (BridgeStore store, CancellationToken ct) =>
-{
-    var tasks = await store.SearchTasksAsync(null, null, null, ct);
-    var summary = tasks.Select(t => new
-    {
-        taskId = t.Id,
-        status = ((Hl7.Fhir.Model.Task)t).Status?.ToString(),
-        owner = ((Hl7.Fhir.Model.Task)t).Owner?.Reference,
-        basedOn = ((Hl7.Fhir.Model.Task)t).BasedOn.Select(b => b.Reference),
-        description = ((Hl7.Fhir.Model.Task)t).Description
-    });
-    return Results.Ok(summary);
-});
-
-app.MapGet("/ops/dead-letters", async (BridgeStore store, CancellationToken ct) =>
-    Results.Ok(await store.GetDeadLettersAsync(ct)));
-
-// --- The test menu, discovered from OpenELIS -------------------------------
 
 // Served from the cache, never live: the ordering screen must not go blank
 // because OpenELIS is restarting, and syncedAt lets the caller show how old the
@@ -87,24 +78,50 @@ app.MapGet("/catalogue", async (BridgeStore store, CancellationToken ct) =>
     });
 });
 
-app.MapGet("/catalogue/syncs", async (BridgeStore store, CancellationToken ct) =>
-    Results.Ok(await store.GetCatalogueSyncsAsync(ct)));
+// --- Operational and administrative surface ---------------------------------
+// Everything past this point either changes something or describes the health
+// of the integration in detail. Both are worth a bearer token: the first
+// because an unauthenticated caller could empty the doctor's test menu, the
+// second because "which orders are outstanding and which failed" is a
+// description of real patients' care.
+
+var ops = app.MapGroup("/ops").AddEndpointFilter<AdminTokenFilter>();
+var catalogue = app.MapGroup("/catalogue").AddEndpointFilter<AdminTokenFilter>();
+
+// Useful during testing: shows exactly what the bridge is publishing for
+// OpenELIS to poll, and what it could not correlate.
+ops.MapGet("/orders", async (BridgeStore store, BridgeOptions opts, CancellationToken ct) =>
+{
+    var tasks = await store.SearchTasksAsync(null, null, null, opts.MaxSearchResults, ct);
+    var summary = tasks.Select(t => new
+    {
+        taskId = t.Id,
+        status = ((Hl7.Fhir.Model.Task)t).Status?.ToString(),
+        owner = ((Hl7.Fhir.Model.Task)t).Owner?.Reference,
+        basedOn = ((Hl7.Fhir.Model.Task)t).BasedOn.Select(b => b.Reference),
+        description = ((Hl7.Fhir.Model.Task)t).Description
+    });
+    return Results.Ok(summary);
+});
+
+ops.MapGet("/dead-letters", async (BridgeStore store, CancellationToken ct) =>
+    Results.Ok(await store.GetDeadLettersAsync(ct)));
 
 // --- Health of the channel results arrive on -------------------------------
 
 // Answers "is OpenELIS still pushing results to us", which nothing else could
 // tell you: a bridge receiving nothing looks the same as a quiet laboratory.
-app.MapGet("/ops/export-status", async (BridgeStore store, CancellationToken ct) =>
+ops.MapGet("/export-status", async (BridgeStore store, CancellationToken ct) =>
     await store.GetLatestExportCheckAsync(ct) is { } latest
         ? Results.Ok(latest)
         : Results.Ok(new { verdict = "UNKNOWN", detail = "no check has run yet" }));
 
-app.MapGet("/ops/export-status/history", async (BridgeStore store, CancellationToken ct) =>
+ops.MapGet("/export-status/history", async (BridgeStore store, CancellationToken ct) =>
     Results.Ok(await store.GetExportChecksAsync(ct)));
 
 // Runs the check now rather than waiting for the next cycle. An operator asking
 // "is it working right now" should not have to wait five minutes for an answer.
-app.MapPost("/ops/export-status/check", async (
+ops.MapPost("/export-status/check", async (
     BridgeOptions opts, ExportHealthProbe probe, CancellationToken ct) =>
 {
     if (!opts.CatalogueDiscoveryConfigured)
@@ -115,10 +132,21 @@ app.MapPost("/ops/export-status/check", async (
     return Results.Ok(new { verdict, detail });
 });
 
+// Runs the retention sweep now. The timer is the normal path; this exists so
+// the windows can be verified against real data rather than trusted, and so a
+// database filling up can be dealt with at the time rather than at 03:00.
+ops.MapPost("/retention/sweep", async (RetentionSweeper sweeper, CancellationToken ct) =>
+    Results.Ok(await sweeper.RunAsync(ct)));
+
+// --- The test menu, discovered from OpenELIS -------------------------------
+
+catalogue.MapGet("/syncs", async (BridgeStore store, CancellationToken ct) =>
+    Results.Ok(await store.GetCatalogueSyncsAsync(ct)));
+
 // Manual, because a clinic changes its menu when it commissions an analyser -
 // a few times a year - and a human pressing this is a human who can read the
 // diff. force=true overrides the shrink guard for a genuine large withdrawal.
-app.MapPost("/catalogue/sync", async (
+catalogue.MapPost("/sync", async (
     bool? force, BridgeOptions opts, BridgeStore store, ILoggerFactory loggers, CancellationToken ct) =>
 {
     if (!opts.CatalogueDiscoveryConfigured)

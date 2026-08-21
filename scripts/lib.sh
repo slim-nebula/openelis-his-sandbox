@@ -71,6 +71,31 @@ in_sandbox() {
     docker exec bridge curl -fsS --max-time 10 "$1" 2>/dev/null
 }
 
+# The bridge's and the HIS service's administrative endpoints need a bearer
+# token. Centralised here so a suite cannot accidentally exercise the
+# unauthenticated path and report a pass on a 401 body it never parsed.
+#
+#   bridge_admin <method> <path> [extra curl args...]
+bridge_admin() {
+    local method="$1" path="$2"; shift 2
+    docker exec bridge curl -sS -X "$method" --max-time 600 \
+        -H "Authorization: Bearer $BRIDGE_ADMIN_TOKEN" "$@" "http://localhost:8080$path"
+}
+
+his_admin() {
+    local method="$1" path="$2"; shift 2
+    docker exec his-api curl -sS -X "$method" --max-time 120 \
+        -H "Authorization: Bearer $HIS_ADMIN_TOKEN" "$@" "http://localhost:8080$path"
+}
+
+# HTTP status only, from a named container, with whatever headers are passed.
+# Used to assert that a door is shut, which needs the code and not the body.
+http_status() {  # http_status <container> <method> <url> [curl args...]
+    local container="$1" method="$2" url="$3"; shift 3
+    docker exec "$container" curl -s -o /dev/null -w '%{http_code}' \
+        -X "$method" --max-time 30 "$@" "$url" 2>/dev/null
+}
+
 json_field() { python3 -c "import json,sys; print(json.load(sys.stdin)$1)" 2>/dev/null; }
 
 # Any test the HIS will currently accept an order for.

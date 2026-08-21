@@ -22,11 +22,21 @@
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# The sync and refresh endpoints change what the hospital can order, so they sit
+# behind a bearer token. bridge_admin / his_admin (lib.sh) carry it.
 bridge_api() {  # bridge_api <method> <path>
-    docker exec bridge curl -sS -X "$1" --max-time 600 "http://localhost:8080$2"
+    if [[ $2 == /catalogue/sync* || $2 == /catalogue/syncs* || $2 == /ops/* ]]; then
+        bridge_admin "$1" "$2"
+    else
+        docker exec bridge curl -sS -X "$1" --max-time 600 "http://localhost:8080$2"
+    fi
 }
 his_api() {     # his_api <method> <path>
-    docker exec his-api curl -sS -X "$1" --max-time 120 "http://localhost:8080$2"
+    if [[ $2 == /admin/* ]]; then
+        his_admin "$1" "$2"
+    else
+        docker exec his-api curl -sS -X "$1" --max-time 120 "http://localhost:8080$2"
+    fi
 }
 
 # ---------------------------------------------------------------------------

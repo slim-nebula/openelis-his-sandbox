@@ -35,6 +35,9 @@ services:
       # which both services share; the HIS never joins `integration`, so it
       # still has no path to OpenELIS.
       BRIDGE_INTERNAL_URL: ${BRIDGE_INTERNAL_URL}
+      # Guards /admin/catalogue/refresh, which replaces the menu every doctor
+      # orders from. Empty means that endpoint refuses everything.
+      HIS_ADMIN_TOKEN: ${HIS_ADMIN_TOKEN}
     networks: [sandbox, data]
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz || exit 1"]
@@ -71,6 +74,18 @@ services:
       BRIDGE_MAX_RETRIES: ${BRIDGE_MAX_RETRIES}
       BRIDGE_RETRY_BASE_DELAY_SECONDS: ${BRIDGE_RETRY_BASE_DELAY_SECONDS}
       BRIDGE_RESULT_CORRELATION_RETRY_MINUTES: ${BRIDGE_RESULT_CORRELATION_RETRY_MINUTES}
+      BRIDGE_MAX_SEARCH_RESULTS: ${BRIDGE_MAX_SEARCH_RESULTS}
+      # Access. The token guards /ops/* and the catalogue sync; the peer list
+      # guards /fhir, which cannot use a token because OpenELIS has no way to
+      # send one (see services/Bridge/Access.cs).
+      BRIDGE_ADMIN_TOKEN: ${BRIDGE_ADMIN_TOKEN}
+      BRIDGE_FHIR_ALLOWED_PEERS: ${BRIDGE_FHIR_ALLOWED_PEERS}
+      # Retention for the tables that otherwise grow for ever.
+      RETENTION_RECEIVED_DAYS: ${RETENTION_RECEIVED_DAYS}
+      RETENTION_EVENTS_DAYS: ${RETENTION_EVENTS_DAYS}
+      RETENTION_EXPORT_CHECKS_DAYS: ${RETENTION_EXPORT_CHECKS_DAYS}
+      RETENTION_DEAD_LETTERS_DAYS: ${RETENTION_DEAD_LETTERS_DAYS}
+      RETENTION_SWEEP_HOURS: ${RETENTION_SWEEP_HOURS}
       # Catalogue discovery. Read-only: the bridge asks OpenELIS which tests the
       # laboratory has switched on, and never writes to it.
       OE_REST_BASE_URL: ${OE_REST_BASE_URL}

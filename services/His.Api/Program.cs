@@ -101,7 +101,7 @@ app.MapPost("/admin/catalogue/refresh", async (
     var bridgeUrl = KafkaOptions.Env("BRIDGE_INTERNAL_URL", "http://bridge:8080");
     var result = await mirror.RefreshAsync(bridgeUrl, ct);
     return result.Applied ? Results.Ok(result) : Results.Json(result, statusCode: StatusCodes.Status409Conflict);
-});
+}).AddEndpointFilter<AdminTokenFilter>();
 
 app.MapPost("/patients", async (CreatePatientRequest req, Repository repo, CancellationToken ct) =>
 {

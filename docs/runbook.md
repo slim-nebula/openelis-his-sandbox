@@ -23,6 +23,7 @@ make smoke       # confirm the platform before sending clinical data
 
 | Step | What it does | How long |
 |---|---|---|
+| `secrets` | First run only: writes `.env` from `.env.example`, generating passwords and tokens | instant |
 | `config` | Renders `openelis/generated/common.properties` from `.env` | instant |
 | `data-up` | Starts `his-db.external` and `openelis-db.external`, waits for `pg_isready` | 30 s first run, ~4 min for OpenELIS's schema load |
 | `app-up` | Builds the two .NET services and starts everything else | 3–6 min first run |
@@ -59,8 +60,10 @@ make psql-oe            # psql on the OpenELIS database
 Bridge introspection, useful when an order seems stuck:
 
 ```bash
-docker exec bridge curl -s http://localhost:8080/ops/orders
-docker exec bridge curl -s http://localhost:8080/ops/dead-letters
+docker exec bridge curl -s -H "Authorization: Bearer $BRIDGE_ADMIN_TOKEN" \
+  http://localhost:8080/ops/orders
+docker exec bridge curl -s -H "Authorization: Bearer $BRIDGE_ADMIN_TOKEN" \
+  http://localhost:8080/ops/dead-letters
 docker exec bridge curl -s 'http://localhost:8080/fhir/Task?status=requested&owner=Practitioner/0e11c5a0-0000-4000-a000-000000000001'
 ```
 
@@ -105,7 +108,8 @@ correlation sweep.
 The bridge has published the Task but OpenELIS has not imported it.
 
 ```bash
-docker exec bridge curl -s http://localhost:8080/ops/orders
+docker exec bridge curl -s -H "Authorization: Bearer $BRIDGE_ADMIN_TOKEN" \
+  http://localhost:8080/ops/orders
 docker logs openelis-webapp 2>&1 | grep -iE "task|remote" | tail -40
 ```
 
@@ -140,7 +144,8 @@ LOINC and accepts exactly one specimen. Resolve it in OpenELIS under
 
 ```bash
 docker logs bridge 2>&1 | grep -i correlat | tail -20
-docker exec bridge curl -s http://localhost:8080/ops/dead-letters
+docker exec bridge curl -s -H "Authorization: Bearer $BRIDGE_ADMIN_TOKEN" \
+  http://localhost:8080/ops/dead-letters
 ```
 
 Check what actually arrived from OpenELIS:
@@ -220,6 +225,23 @@ docker compose -p his-lab-data --env-file .env -f compose/data.yml restart his-d
 | Change the polled identity | `.env` → `OE_REMOTE_SOURCE_IDENTIFIER`, then `make config` and restart both `bridge` and `openelis-webapp` |
 | Change poll or push cadence | `.env` → `OE_REMOTE_POLL_FREQUENCY`, `OE_SUBSCRIBER_BACKUP_INTERVAL`, then `make config` and restart `openelis-webapp` |
 | Add an API route | `services/His.Api/Program.cs` **and** `gateway/kong/kong.yml` |
+| Add a configuration setting | `.env.example` **and** `.env` **and** the service's `environment:` block in `compose/`. Missing the third is silent: the service falls back to its compiled-in default and the setting appears to be ignored. |
+| Rotate an admin token | `.env` → `BRIDGE_ADMIN_TOKEN` / `HIS_ADMIN_TOKEN`, then restart that service. There is one token per service, so rotating means a brief window where an in-flight `make sync-catalogue` gets 401 — re-run it. |
+| Raise Kafka durability | `.env` → `KAFKA_REPLICATION_FACTOR=3`, `KAFKA_MIN_INSYNC_REPLICAS=2`, then run three brokers and `docker compose up kafka-init`. `min.insync.replicas` is applied with `--alter`, so existing topics pick it up without a rebuild; the replication factor of *existing* topics needs a reassignment. |
+| Change a retention window | `.env` → `RETENTION_*`, restart `bridge`, then `make prune` to confirm the sweep reports the new window rather than its default. |
 
 After editing `.env`, always `make config` before restarting OpenELIS —
 `common.properties` is a rendered file, not a live environment read.
+
+### Adding a new FHIR peer
+
+If OpenELIS is deployed under different container names, `/fhir` will refuse it
+with 403 and orders will stop. Add the names to `BRIDGE_FHIR_ALLOWED_PEERS` and
+restart the bridge. The startup log states what it is enforcing:
+
+```
+FHIR endpoint restricted to openelis-webapp, openelis-fhir
+```
+
+An empty list disables the check and logs a warning instead — visible, rather
+than a silent open door.

@@ -1,3 +1,7 @@
+# Credentials. The shape of the configuration lives in .env.example, which IS
+# committed; the values live here and never are. `make secrets` builds it.
+.env
+
 # Rendered from .env by scripts/render-config.sh — never edit or commit
 openelis/generated/
 
