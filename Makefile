@@ -103,6 +103,9 @@ rejection: ## LIS rejection round trip - catalogue drift
 corrections: ## Corrections and retractions of an already-released result
 	@bash scripts/test-corrections.sh $(ORDER)
 
+catalogue-test: ## Catalogue discovery - filters, guards and the HIS mirror
+	@bash scripts/test-catalogue-sync.sh
+
 sync-catalogue: ## Refresh the test menu from OpenELIS (FORCE=true to override the shrink guard)
 	@echo "==> Reading the test menu from OpenELIS"
 	@docker exec bridge curl -sS -X POST \
