@@ -77,7 +77,7 @@ if [[ "${LOINC_COUNT:-0}" -ge 6 ]]; then
     ok "OpenELIS tests carry LOINC codes ($LOINC_COUNT)"
 else
     bad "OpenELIS tests carry LOINC codes" \
-        "found ${LOINC_COUNT:-0}; run 'make provision' or every order will be rejected"
+        "found ${LOINC_COUNT:-0}; the seeded catalogue should carry these already"
 fi
 
 unmapped=""

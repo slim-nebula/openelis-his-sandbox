@@ -2,7 +2,7 @@
 # OpenELIS <-> HIS sandbox
 #
 #   make up          bring everything up in the right order
-#   make provision   stamp LOINC codes onto the OpenELIS test catalogue
+#   make sync-catalogue  read the orderable test menu from OpenELIS
 #   make smoke       platform smoke test   (brief phase 1)
 #   make e2e         order flow test       (brief phase 2/3)
 #   make results     result return path
@@ -23,12 +23,13 @@ APP     := docker compose -p his-lab-sandbox $(ENVFILE) \
 include .env
 export
 
-.PHONY: help config data-up app-up up provision down clean logs ps \
-        smoke e2e results rejection negative capture migrate psql-his psql-oe topics urls
+.PHONY: help config data-up app-up up down clean logs ps \
+        smoke e2e results rejection corrections catalogue-test negative capture \
+        sync-catalogue catalogue migrate psql-his psql-oe topics urls
 
 help:
 	@grep -hE '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
-	 awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+	 awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 config: ## Render templated configuration from .env
 	@bash scripts/render-config.sh

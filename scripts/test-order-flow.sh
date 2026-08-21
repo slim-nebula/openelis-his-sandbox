@@ -139,7 +139,7 @@ case "$ACCEPTED" in
     accepted) ok "OpenELIS accepted the order (Task -> accepted)" ;;
     rejected)
         bad "OpenELIS accepted the order" \
-            "Task was REJECTED — usually means no OpenELIS test carries this LOINC code. Run 'make provision'."
+            "Task was REJECTED — the LOINC no longer resolves to exactly one OpenELIS test. Re-run 'make sync-catalogue'."
         ;;
     *)  bad "OpenELIS accepted the order" \
             "Task still '$STATUS' after ${ACCEPT_TIMEOUT}s. Check: docker logs openelis-webapp | grep -i task" ;;

@@ -1,6 +1,37 @@
 # Plan — let the HIS discover its test menu from OpenELIS
 
-**Status:** proposed, not started. Written 2026-08-18 for the next working session.
+**Status: delivered 2026-08-21.** Phases 0–3 are built, tested and committed.
+Phase 4 remains proposed.
+
+How the delivered system works is documented in
+[data-flow.md §6](data-flow.md#6-where-the-test-menu-comes-from); this file is
+kept as the record of what was decided and why, including the parts that turned
+out differently once built. Each phase below carries a note on what actually
+happened, rather than being quietly rewritten to match.
+
+| Phase | | |
+|---|---|---|
+| 0 | Revert the OpenELIS catalogue edits | **done** — `undo-catalogue-curation.sql`, verified back to seed state |
+| 1 | Catalogue sync in the bridge | **done** — `CatalogueSync.cs`, `OpenElisClient.cs`, `make sync-catalogue` |
+| 2 | The HIS consumes it | **done** — `CatalogueMirror.cs`, `his.test_catalogue` is now a mirror |
+| 3 | Tests | **done** — `make catalogue-test`, 19 assertions |
+| 4 | Status enrichment and monitoring | **not started** — see below |
+
+**Two things went differently from this plan, both worth reading:**
+
+1. **The order was changed deliberately.** The plan puts the revert first. Doing
+   that would have left the sandbox degraded until Phase 2 landed, so discovery
+   was built and proved first, then the revert applied — moving straight from
+   "works via catalogue edit" to "works via discovery filtering" with no broken
+   window in between.
+
+2. **The filter was wrong on the first attempt, in the same way the original bug
+   was.** It checked that each test carries one LOINC, but not that each LOINC
+   belongs to one test — and the first sync crashed on `94547-7`, which four
+   COVID antibody tests claim. Checking uniqueness within a test is not enough:
+   OpenELIS matches on the code alone and will not choose between candidates.
+   Both sides of a collision are now dropped, because guessing which test the
+   laboratory meant sends the specimen to the wrong bench.
 
 ## Goal
 
@@ -78,8 +109,13 @@ Shape of this instance today:
 210 tests total
 201 active
  60 carry a LOINC code
- 54 active + LOINC + exactly one specimen     <- the safely orderable set
+ 54 active + LOINC + exactly one specimen     <- WRONG, see below
 ```
+
+That last figure was measured before the shared-LOINC problem was understood, and
+counts tests whose LOINC another test also claims. The real answer is **25**: a
+test must additionally hold its LOINC alone. The mistake is left visible because
+it is the same one the filter made on its first attempt.
 
 `findings` is OpenELIS's own catalogue quality checker (95 rows carry findings,
 e.g. `TERMINOLOGY_NO_DISPLAY_NAME`). Worth surfacing later; not needed for v1.
@@ -93,6 +129,13 @@ e.g. `TERMINOLOGY_NO_DISPLAY_NAME`). Worth surfacing later; not needed for v1.
 | `/rest/test-display-beans` | returns an empty list |
 
 ## Phase 0 — put OpenELIS back to seed state
+
+> **Done, and applied last rather than first.** The menu went 29 → 25: restoring
+> the duplicates made Haemoglobin, Glucose, Creatinine and Total Cholesterol
+> ambiguous again, so discovery stopped offering them. The diff named exactly
+> those four with nothing else moving, which is the evidence discovery does the
+> work rather than the edits. Making them orderable is now a laboratory decision
+> taken in Administration → Test Management, which is where it belongs.
 
 Do this first. It is the reason the rest of the plan is worth doing, and it must
 be verified before anything depends on the new behaviour.
@@ -136,6 +179,13 @@ admin UI, is a documented prerequisite for electronic ordering, and is not a
 catalogue modification.
 
 ## Phase 1 — catalogue sync in the bridge
+
+> **Done.** 25 of 210 tests qualify. The open question below was settled: there
+> is no bulk endpoint — `/rest/test-catalog/group/summary` never responds
+> (http 000 after 25s) — so the N+1 walk stands, which manual sync makes fine.
+> The bridge reaches OpenELIS at `https://oe.openelis.org:8443/OpenELIS-Global`,
+> straight to Tomcat: `openelis-proxy` sits only on the `openelis` network and is
+> unreachable from the bridge, and the context path has no `/api` prefix.
 
 New component in `services/Bridge`, roughly `CatalogueSync.cs`.
 
@@ -215,6 +265,13 @@ use it. If not, N+1 on a 15-minute timer is acceptable, but add
 
 ## Phase 2 — the HIS consumes it
 
+> **Done.** Proved with a test that was never in the hand-written catalogue —
+> Aspartate Aminotransferase, discovered, ordered, accepted, `sampleTypes`
+> populated. Withdrawing ALT and PLT immediately broke three suites that
+> hardcoded test codes: hardcoding couples a test to a catalogue that now changes
+> when the *laboratory* changes, so cases needing only *an* orderable test call
+> `any_active_test_code`.
+
 1. `GET /test-catalogue` in `His.Api` proxies the bridge instead of reading
    `his.test_catalogue`.
 2. `his.test_catalogue` becomes a **mirror**, refreshed from the bridge. Keep the
@@ -230,6 +287,12 @@ use it. If not, N+1 on a 15-minute timer is acceptable, but add
 
 ## Phase 3 — tests and documentation
 
+> **Done** — `make catalogue-test`, 19 assertions. It reads every offered LOINC
+> back out of OpenELIS's own tables rather than trusting the filter. Two of the
+> first assertions were vacuous (a row-count comparison, and a `NOT EXISTS …
+> WHERE false`); both were replaced and then *proved to fail* by corrupting a
+> mirrored code. An assertion nobody has watched fail is not yet a test.
+
 * Sync unit tests: ambiguous test excluded; non-orderable excluded; inactive
   excluded; multi-LOINC excluded.
 * Integration test: order a test taken from `/catalogue` and assert
@@ -241,6 +304,9 @@ use it. If not, N+1 on a 15-minute timer is acceptable, but add
 * Update the runbook: `external orders = true` is a required prerequisite.
 
 ## Phase 4 — status enrichment and monitoring
+
+> **Not started.** `DataExportStatus` remains the cheapest worthwhile item here
+> and is independent of everything above.
 
 The catalogue is one use of OpenELIS's REST surface. A survey of all 434
 endpoints the React UI calls turned up several more that are directly useful.

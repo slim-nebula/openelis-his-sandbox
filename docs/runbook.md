@@ -13,7 +13,7 @@ before any order will be accepted.
 
 ```bash
 make up          # renders config → starts databases → builds and starts apps
-make provision   # LOINC codes on the OpenELIS test catalogue
+make sync-catalogue  # read the orderable test menu from OpenELIS into the HIS
 make smoke       # confirm the platform before sending clinical data
 ```
 
@@ -121,11 +121,20 @@ docker logs openelis-webapp 2>&1 | grep -iE "task|remote" | tail -40
 Almost always test identity. Confirm the LOINC exists on an OpenELIS test:
 
 ```bash
-make psql-oe
-select id, description, loinc from clinlims.test where loinc is not null;
+make catalogue          # what the HIS currently offers
+make sync-catalogue     # re-read it from OpenELIS
 ```
 
-If the table is empty, run `make provision`.
+If a test you expect is missing, OpenELIS considers it ambiguous. Check why:
+
+```bash
+docker logs bridge --since 10m | grep -E 'is claimed by|OpenELIS catalogue:'
+```
+
+The sync logs each collision by name and a one-line summary of what it filtered
+and why. A test is offered only if it is active, orderable, holds exactly one
+LOINC and accepts exactly one specimen. Resolve it in OpenELIS under
+*Administration → Test Management*, then sync again.
 
 ### A released result never arrives
 
@@ -188,7 +197,8 @@ make clean    # destroy everything, volumes included
 ```
 
 `make clean` discards both databases. The next `make up` reloads the OpenELIS
-schema from scratch (slow) and you must re-run `make provision`.
+schema from scratch (slow) and you must re-run `make sync-catalogue`, or the HIS
+will have no test menu.
 
 To reset only the HIS side and leave OpenELIS's data alone:
 
@@ -206,7 +216,7 @@ docker compose -p his-lab-data --env-file .env -f compose/data.yml restart his-d
 
 | Change | Files to edit together |
 |---|---|
-| Add a test | `db/his/001_schema.sql` (`test_catalogue`) **and** `openelis/provision/01-loinc-mapping.sql` |
+| Add a test | Enable it in OpenELIS (*Administration → Test Management*), give it one LOINC and one specimen, then `make sync-catalogue`. Nothing in this repo lists tests any more. |
 | Change the polled identity | `.env` → `OE_REMOTE_SOURCE_IDENTIFIER`, then `make config` and restart both `bridge` and `openelis-webapp` |
 | Change poll or push cadence | `.env` → `OE_REMOTE_POLL_FREQUENCY`, `OE_SUBSCRIBER_BACKUP_INTERVAL`, then `make config` and restart `openelis-webapp` |
 | Add an API route | `services/His.Api/Program.cs` **and** `gateway/kong/kong.yml` |

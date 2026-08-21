@@ -73,7 +73,7 @@ sequenceDiagram
     OE->>BR: GET /fhir/Specimen/{id} — from ServiceRequest.specimen
     OE->>OE: TaskInterpreter matches<br/>ServiceRequest.code LOINC coding
     OE->>ODB: SELECT test WHERE loinc = code
-    Note right of ODB: No match → Task rejected.<br/>This is what `make provision` prevents
+    Note right of ODB: No match → Task rejected.<br/>Discovery avoids this by never<br/>offering a test OpenELIS cannot bind
     OE->>ODB: INSERT electronic_order<br/>external_id = order_number
     OE->>BR: PUT /fhir/Task/{id} status=accepted
     BR->>BDB: UPDATE order_tracking task_status=accepted
@@ -320,3 +320,90 @@ actually pushed back:
 The bridge tries the direct id match first, then the parent hop, then the
 order-number identifier — see `ResolveOrderAsync` in
 [ResultCorrelator.cs](../services/Bridge/ResultCorrelator.cs).
+
+The **parent hop is the one that matters in practice**. A real released result,
+captured from OpenELIS rather than simulated, arrived as
+`DiagnosticReport.basedOn → ServiceRequest/f71f7cc1… → ServiceRequest/LAB-…`.
+A correlator that only looked one level deep — the obvious implementation —
+would have passed every simulated test and failed on every real result.
+
+## 6. Where the test menu comes from
+
+The HIS does not decide which tests exist. OpenELIS does, and the bridge asks it.
+
+```mermaid
+flowchart TB
+    subgraph OE["OpenELIS"]
+        CAT["/rest/test-catalog/tests<br/>210 tests"]
+        BI["/basic-info<br/>active · orderable · specimens"]
+        TM["/terminology<br/>LOINC mappings"]
+    end
+
+    subgraph BR["bridge"]
+        SYNC["CatalogueSync<br/>manual, POST /catalogue/sync"]
+        FILT{"unambiguous?"}
+        CACHE[("bridge.test_catalogue<br/>25 orderable")]
+        GUARD{"empty or<br/>shrunk &gt; 30%?"}
+    end
+
+    subgraph HIS["HIS"]
+        MIRROR[("his.test_catalogue<br/>mirror + LOCAL rows")]
+        DROP["Ordering screen"]
+    end
+
+    CAT --> SYNC
+    BI --> SYNC
+    TM --> SYNC
+    SYNC --> FILT
+    FILT -->|"no — 185 dropped"| SKIP["not offered"]
+    FILT -->|yes| GUARD
+    GUARD -->|"suspicious"| KEEP["refuse · keep last good menu"]
+    GUARD -->|ok| CACHE
+    CACHE -->|"POST /admin/catalogue/refresh"| MIRROR
+    MIRROR --> DROP
+
+    classDef drop fill:#fdeceb,stroke:#c0392b;
+    class SKIP,KEEP drop;
+```
+
+A test is offered only if OpenELIS reports it **active**, **orderable**, holding
+**exactly one LOINC**, and bound to **exactly one specimen** — and only if no
+other test claims that same LOINC. Of 210 tests, 25 qualify: 141 have no LOINC,
+22 share one, 9 are inactive, 6 accept several specimens, 3 are not orderable.
+
+Those last two filters are not fussiness. OpenELIS matches an incoming order on
+the LOINC code alone, and will not use the `Specimen` we send to narrow a
+multi-specimen test — verified directly. An order for an ambiguous test is
+accepted into the queue and then stalls at the accessioning screen, waiting for
+a human to pick the test. Not offering it is the honest outcome.
+
+**Sync is manual.** A clinic changes its menu when it commissions an analyser, a
+few times a year, so a timer would run thousands of times to catch that and
+would slide changes in unnoticed. The person who enabled the test in OpenELIS
+presses the button and reads the diff:
+
+```
+$ make sync-catalogue
+    applied: True | 29 -> 25
+    - 2160-0 Creatinine [Plasma]
+    - 718-7 Hemoglobin (Bld) [Mass/Vol] [Whole Blood]
+```
+
+**The HIS keeps a mirror rather than calling through**, for two reasons that
+outrank freshness: `lab_orders.test_code` has a foreign key into it, so a test
+that has ever been ordered can never be dropped — it is deactivated instead; and
+the ordering screen must keep working while the bridge restarts. A menu one sync
+out of date beats an empty one.
+
+### One limit, stated plainly
+
+OpenELIS holds LOINC codes in two places — `clinlims.test.loinc`, which binds
+incoming orders, and `test_terminology_mapping`, which the REST API reports —
+and they can disagree. Discovery currently **under-offers**, which is the safe
+direction. The unsafe direction cannot be ruled out from the bridge, because
+checking would mean reading OpenELIS's database, which section 2 forbids
+outright.
+
+What makes that acceptable is that drift is loud rather than silent: an order
+OpenELIS cannot match returns `REJECTED_BY_LIS` with a reason, lands in the
+order's audit trail, and is covered by the rejection suite.

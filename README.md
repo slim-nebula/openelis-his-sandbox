@@ -39,7 +39,7 @@ Apple Silicon).
 
 ```bash
 make up          # render config, start databases, build and start everything
-make provision   # stamp LOINC codes onto the OpenELIS test catalogue  ← required
+make sync-catalogue  # read the orderable test menu from OpenELIS  ← required
 make migrate     # apply any new schema migrations to a running database
 make smoke       # phase 1: platform smoke test          (37 checks)
 make e2e         # phase 2/3: place an order and follow it into OpenELIS
@@ -58,8 +58,8 @@ make capture     # capture what OpenELIS really sends on release
 | HIS database | `psql -h localhost -p 55432 -U his_app -d his_sandbox` |
 | OpenELIS database | `psql -h localhost -p 15432 -U clinlims -d clinlims` |
 
-`make provision` is not optional. See
-[Test identity](#test-identity-the-one-thing-that-must-be-configured).
+`make sync-catalogue` is not optional — without it the HIS has no test menu. See
+[Test identity](#test-identity-how-the-two-systems-agree-on-a-test).
 
 ---
 
@@ -127,28 +127,41 @@ the HTTP push. A report whose chain has not landed yet is retried; after
 
 ---
 
-## Test identity: the one thing that must be configured
+## Test identity: how the two systems agree on a test
 
-**In the OpenELIS seed database, no test has a LOINC code.** Without
-provisioning, every order the bridge sends is rejected with
-`no test found for SR`, and the symptom — a `Task` flipping straight to
-`rejected` — looks like a transport failure rather than a mapping gap.
+Neither system sends its own internal identifier. OpenELIS's `testId` means
+nothing outside that installation and the HIS `test_code` means nothing outside
+the HIS, so the wire contract is **LOINC**, which means the same thing
+everywhere.
 
-`make provision` stamps six LOINC codes onto the shipped catalogue and refuses
-to run if a code would resolve to more than one test:
+The HIS no longer keeps a hand-written list of tests. The bridge asks OpenELIS
+which tests it will actually accept an order for, and the HIS mirrors the answer:
 
-| HIS `test_code` | LOINC | OpenELIS test |
-|---|---|---|
-| `HGB` | 718-7 | Hémoglobine (Whole Blood) |
-| `GLUC` | 2345-7 | Glucose (Plasma) |
-| `CREA` | 2160-0 | Créatinine (Serum) |
-| `ALT` | 1742-6 | Transaminases GPT (Serum) |
-| `CHOL` | 2093-3 | Cholestérol total (Serum) |
-| `PLT` | 777-3 | Plaquette (Whole Blood) |
+```bash
+make sync-catalogue   # read the menu from OpenELIS, mirror it into the HIS
+make catalogue        # show what is currently orderable
+```
 
-`his.test_catalogue` and `openelis/provision/01-loinc-mapping.sql` are the two
-halves of this contract; change them together. The same edit can be made by
-hand in *Administration → Test Management* if you prefer the UI.
+A test is offered only if OpenELIS reports it **active**, **orderable**, holding
+**exactly one LOINC**, and bound to **exactly one specimen** — and only if no
+other test claims that LOINC. Of 210 tests in the shipped catalogue, 25 qualify.
+
+That filtering is not fussiness. OpenELIS matches an incoming order on the LOINC
+code alone; it will not choose between two tests sharing a code, and it will not
+use the `Specimen` we send to narrow a multi-specimen test. An ambiguous order is
+accepted into the queue and then stalls at the accessioning screen waiting for a
+human to pick the test. Not offering it is the honest outcome.
+
+**Sync is manual**, because a clinic changes its menu when it commissions an
+analyser — a few times a year. The technician who enables the test in OpenELIS
+presses the button and reads the diff. See
+[the operational procedure](docs/catalogue-discovery-plan.md).
+
+To make a currently-ambiguous test orderable, resolve it in OpenELIS under
+*Administration → Test Management* — one LOINC, one specimen — then sync. That
+decision belongs to the laboratory, which is why the integration no longer
+edits OpenELIS's catalogue to force it.
+
 
 ---
 
@@ -264,7 +277,7 @@ identifier survived rendering.
 
 | Symptom | Cause |
 |---|---|
-| Task flips straight to `rejected` | No OpenELIS test carries that LOINC. Run `make provision`. |
+| Task flips straight to `rejected` | The LOINC no longer resolves to one OpenELIS test. Re-run `make sync-catalogue`; if it is still offered, the laboratory has changed that test. |
 | Task stays `requested` forever | OpenELIS cannot reach the bridge, or `Task.owner` ≠ `remote.source.identifier`. Check `docker logs openelis-webapp \| grep -i task`. |
 | Order accepted, no result comes back | Result not validated *and released* in OpenELIS, or correlation is still waiting for the ServiceRequest chain. Check `docker logs bridge \| grep -i correlat` and `/ops/dead-letters`. |
 | `his-api` restarts at startup | The external HIS database is still initialising; it retries for two minutes. |
