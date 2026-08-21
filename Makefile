@@ -57,16 +57,12 @@ up: config data-up app-up ## Full startup
 migrate: ## Apply any unapplied schema migrations to a running database
 	@bash scripts/migrate.sh
 
-provision: ## Disambiguate the OpenELIS test catalogue (restarts the webapp)
-	@echo "==> Provisioning OpenELIS test catalogue"
-	@docker exec -i -e PGPASSWORD=$(OE_DB_PASSWORD) openelis-db-external \
-	  psql -U $(OE_DB_USER) -d $(OE_DB_NAME) \
-	  < openelis/provision/01-loinc-mapping.sql
-	@echo "==> Restarting OpenELIS (sample-type bindings are cached in memory)"
-	@docker restart openelis-webapp >/dev/null
-	@bash scripts/wait-for.sh "OpenELIS webapp" \
-	  "curl -skf -o /dev/null https://localhost/api/OpenELIS-Global/LoginPage" 300 \
-	  || echo "    (webapp still starting; give it another minute)"
+# There is deliberately no `provision` target any more. Reshaping OpenELIS's
+# seeded catalogue to suit the HIS was the wrong side to change: the LIS is the
+# accredited component and its catalogue belongs to the laboratory. Ambiguous
+# tests are now handled by not offering them (see `make sync-catalogue`), and
+# openelis/provision/undo-catalogue-curation.sql reverses the edits for anyone
+# who applied the old script.
 
 down: ## Stop applications (databases keep running)
 	@$(APP) down
