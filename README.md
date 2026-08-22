@@ -42,6 +42,7 @@ make secrets     # generate .env from .env.example        ← first run only
 make up          # render config, start databases, build and start everything
 make sync-catalogue  # read the orderable test menu from OpenELIS  ← required
 make migrate     # apply any new schema migrations to a running database
+make token       # sign in — the clinical API needs a user token
 make smoke       # phase 1: platform smoke test          (51 checks)
 make e2e         # phase 2/3: place an order and follow it into OpenELIS
 make results     # result return: bridge correlation + HIS projection (14 checks)
@@ -49,6 +50,7 @@ make negative    # phase 4: negative paths and access control (34 checks)
 make rejection   # LIS rejection round trip               (14 checks)
 make corrections # corrections and retractions            (11 checks)
 make catalogue-test  # catalogue discovery, filters and guards (19 checks)
+make auth        # tokens, revocation, degraded mode, service keys
 make capture     # capture what OpenELIS really sends on release
 make prune       # run the retention sweep now
 ```
@@ -63,7 +65,7 @@ out.
 
 | Entry point | URL |
 |---|---|
-| HIS sandbox frontend | http://localhost:8090 |
+| HIS sandbox frontend | http://localhost:8090 — run `make token` and press Sign in |
 | HIS API (through Kong) | http://localhost:8090/api/health |
 | Consul UI | http://localhost:8500 |
 | Kong admin | http://localhost:8001 |
@@ -227,12 +229,13 @@ never leave the lab.
 compose/          data.yml (external DBs) · platform.yml · apps.yml · openelis.yml
 db/               HIS and bridge schemas, applied on first database start
 gateway/          Kong declarative routes · edge nginx config
-services/His.Api  Patient + Lab Order microservice (.NET 10)
+services/his-api  Patient + Lab Order microservice (Node 20 / TypeScript)
 services/Bridge   Kafka consumer + FHIR R4 server + result correlator (.NET 10)
 frontend/         static test client
 openelis/         volume assets, common.properties template, LOINC provisioning
 scripts/          config rendering and the four test phases
-docs/runbook.md   operational runbook
+docs/runbook.md   operational runbook, including the bridge
+docs/security.md  what is protected, how, and what is not
 ```
 
 ---

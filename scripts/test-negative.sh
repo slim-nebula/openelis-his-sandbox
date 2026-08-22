@@ -15,7 +15,9 @@ produce() {   # produce <topic> <json>
         /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server kafka:9092 --topic "$1" >/dev/null 2>&1
 }
 
-status_of() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+# Signed in, because everything it points at is behind the user token.
+# /health ignores the extra header.
+status_of() { api_status "$@"; }
 
 # ---------------------------------------------------------------------------
 section "Invalid references are rejected at the edge"
@@ -39,7 +41,7 @@ check "Unknown patient lookup returns 404" \
 # ---------------------------------------------------------------------------
 section "Duplicate event delivery is absorbed"
 
-ORDER_JSON=$(curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
+ORDER_JSON=$(api_curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
     -d "{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"$(any_active_test_code)\",
          \"orderingProvider\":\"Dr. Duplicate\",\"facilityCode\":\"FAC-001\"}")
 DUP_ORDER_ID=$(echo "$ORDER_JSON" | json_field "['orderId']")
@@ -150,7 +152,7 @@ section "OpenELIS unavailable"
 info "stopping openelis-webapp…"
 docker stop openelis-webapp >/dev/null 2>&1
 
-OFFLINE_JSON=$(curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
+OFFLINE_JSON=$(api_curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
     -d "{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"$(any_active_test_code)\",
          \"orderingProvider\":\"Dr. Offline\",\"facilityCode\":\"FAC-001\"}")
 OFFLINE_NUMBER=$(echo "$OFFLINE_JSON" | json_field "['orderNumber']")
@@ -200,7 +202,7 @@ sleep 3
 # With the transactional outbox, a broker outage is invisible to the caller:
 # the order and its event commit together and the relay drains the event when
 # the broker returns. Ordering must not depend on Kafka being up.
-KAFKA_DOWN_JSON=$(curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
+KAFKA_DOWN_JSON=$(api_curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
     -d "{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"$(any_active_test_code)\",
          \"orderingProvider\":\"Dr. NoKafka\",\"facilityCode\":\"FAC-001\"}")
 NOKAFKA_ORDER=$(echo "$KAFKA_DOWN_JSON" | json_field "['orderNumber']")
@@ -248,7 +250,7 @@ check "And the order reached the bridge without manual intervention" "
     exit 1"
 
 check "Sandbox recovers: a new order flows again" "
-    resp=\$(curl -sf -X POST ${API}/lab-orders -H 'Content-Type: application/json' \
+    resp=\$(api_curl -sf -X POST ${API}/lab-orders -H 'Content-Type: application/json' \
         -d '{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"$(any_active_test_code)\",
              \"orderingProvider\":\"Dr. Recovered\",\"facilityCode\":\"FAC-001\"}')
     number=\$(echo \"\$resp\" | python3 -c \"import json,sys; print(json.load(sys.stdin)['orderNumber'])\")
@@ -341,14 +343,31 @@ check "Right token: the same call is allowed through to the handler" \
 check "No token: the HIS catalogue refresh is refused" \
     "[[ \$(http_status his-api POST http://localhost:8080/admin/catalogue/refresh) == 401 ]]"
 
-# The endpoints that are deliberately open must STAY open. Locking the ordering
-# screen out of its own test menu would be a worse failure than leaving the
-# menu readable, and it is the failure this kind of change actually causes.
-check "The cached test menu is still readable without a token" \
-    "[[ \$(http_status his-api GET http://localhost:8080/test-catalogue) == 200 ]]"
+# The HIS's test menu USED to be asserted open here, on the grounds that
+# locking the ordering screen out of its own menu is a worse failure than
+# leaving the menu readable. That argument was about a screen with no
+# credential to present; the screen now holds a user token for everything else
+# it does, so the menu sits behind the same door as the orders placed from it.
+check "The HIS test menu needs a user token" \
+    "[[ \$(http_status his-api GET http://localhost:8080/test-catalogue) == 401 ]]"
 
+check "…and is served to a signed-in user" \
+    "[[ \$(http_status his-api GET http://localhost:8080/test-catalogue \
+           -H \"Authorization: Bearer \$HIS_TOKEN\") == 200 ]]"
+
+# The bridge's copy stays open: it is the laboratory's list of orderable tests,
+# read service-to-service by the HIS, and holds no patient data at all.
+check "The bridge's cached menu is still readable without a token" \
+    "[[ \$(http_status bridge GET http://localhost:8080/catalogue) == 200 ]]"
+
+# These must STAY open. A health check that can fail authentication reports an
+# outage that is not happening, and takes the service out of Kong's rotation
+# for a reason that has nothing to do with its health.
 check "Health checks are still readable without a token" \
     "[[ \$(http_status bridge GET http://localhost:8080/health) == 200 ]]"
+
+check "…and so are metrics, on both services" \
+    "[[ \$(http_status his-api GET http://localhost:8080/metrics) == 200 ]]"
 
 # The FHIR endpoint cannot use a token: OpenELIS 3.2.1.11 has no way to send
 # one. It is restricted by origin instead — so what has to be proved is that

@@ -5,7 +5,12 @@ import CatalogueContainer from '../containers/catalogue.container.js';
 
 const controller = CatalogueContainer.catalogueController;
 
-/** Read-only, open: the ordering screen needs it and it changes nothing. */
+/**
+ * Read-only, and mounted behind the user token in app.ts along with the rest of
+ * the clinical API. It changes nothing, but it is the list a doctor orders
+ * from, and the screen reading it already holds a token for everything else it
+ * does.
+ */
 export const catalogueRouter = Router();
 catalogueRouter.get('/', asyncRoute(controller.list));
 

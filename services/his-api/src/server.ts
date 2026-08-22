@@ -2,6 +2,7 @@ import app from './app.js';
 import { config } from '@config/env.js';
 import { logger, startLogShipping, stopLogShipping } from '@config/logger.js';
 import { waitForDatabase, pool } from '@config/db.js';
+import { closeRedis } from '@config/redis.js';
 import { eventPublisher } from '@config/kafka.js';
 import { ConsulRegistration } from '@config/consul.js';
 import { outboxRelay } from '@modules/messaging/outbox.relay.js';
@@ -50,6 +51,7 @@ const start = async (): Promise<void> => {
     await bridgeEventConsumer.stop().catch(() => undefined);
     await eventPublisher.disconnect().catch(() => undefined);
     await stopLogShipping();
+    await closeRedis().catch(() => undefined);
     await pool.end().catch(() => undefined);
     process.exit(0);
   };

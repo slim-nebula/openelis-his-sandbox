@@ -124,7 +124,7 @@ check "Result keeps its back-reference to the OpenELIS record" \
     "[[ \$(his_sql \"SELECT openelis_result_ref FROM his.lab_results_summary WHERE openelis_result_ref = 'DiagnosticReport/$DR_ID'\") == DiagnosticReport/$DR_ID ]]"
 
 check "Frontend can read it through the gateway" \
-    "curl -sf ${API}/patients/\$(his_sql \"SELECT patient_id FROM his.lab_orders WHERE order_number='$ORDER_NUMBER'\")/results | grep -q '$DR_ID'"
+    "api_curl -sf ${API}/patients/\$(his_sql \"SELECT patient_id FROM his.lab_orders WHERE order_number='$ORDER_NUMBER'\")/results | grep -q '$DR_ID'"
 
 section "6 · Redelivery is idempotent"
 push DiagnosticReport "$DR_ID" "{

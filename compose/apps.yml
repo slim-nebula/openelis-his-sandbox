@@ -24,6 +24,10 @@ services:
         condition: service_healthy
       consul:
         condition: service_healthy
+      # Ordering only. Neither service requires Redis to serve: a revocation
+      # check that cannot be made is degraded, not fatal.
+      redis:
+        condition: service_healthy
     environment:
       TZ: ${TZ}
       HIS_DATABASE_URL: "postgresql://${HIS_DB_USER}:${HIS_DB_PASSWORD}@${HIS_DB_HOST}:${HIS_DB_PORT}/${HIS_DB_NAME}"
@@ -40,6 +44,15 @@ services:
       # Guards /admin/catalogue/refresh, which replaces the menu every doctor
       # orders from. Empty means that endpoint refuses everything.
       HIS_ADMIN_TOKEN: ${HIS_ADMIN_TOKEN}
+      # Authentication. The secret verifies tokens IAM signed; Redis says
+      # whether the session behind one still exists. Unset secret means every
+      # clinical route answers 503 rather than letting requests through.
+      JWT_SECRET: ${JWT_SECRET}
+      LAB_ORDER_GROUP: ${LAB_ORDER_GROUP}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      # What the bridge must present on /internal/*.
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
       # Platform hooks: register with Consul, and put logs on the shared topic.
       # Same shapes the Node services use, so the estate cannot tell this one
       # apart from its neighbours.
@@ -71,6 +84,10 @@ services:
         condition: service_healthy
       consul:
         condition: service_healthy
+      # Ordering only. Neither service requires Redis to serve: a revocation
+      # check that cannot be made is degraded, not fatal.
+      redis:
+        condition: service_healthy
     environment:
       TZ: ${TZ}
       BRIDGE_DB_CONNECTION: "Host=${HIS_DB_HOST};Port=${HIS_DB_PORT};Database=${BRIDGE_DB_NAME};Username=${BRIDGE_DB_USER};Password=${BRIDGE_DB_PASSWORD};Include Error Detail=true"
@@ -93,6 +110,15 @@ services:
       # send one (see services/Bridge/Access.cs).
       BRIDGE_ADMIN_TOKEN: ${BRIDGE_ADMIN_TOKEN}
       BRIDGE_FHIR_ALLOWED_PEERS: ${BRIDGE_FHIR_ALLOWED_PEERS}
+      # /ops also opens to a signed-in HIS user, so reading the dead-letter
+      # queue does not mean passing the shared token around. Same secret, same
+      # Redis session, same degraded behaviour as the Node services.
+      JWT_SECRET: ${JWT_SECRET}
+      BRIDGE_OPS_GROUP: ${BRIDGE_OPS_GROUP}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      # Presented on every call to the HIS service's /internal/*.
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
       # Retention for the tables that otherwise grow for ever.
       RETENTION_RECEIVED_DAYS: ${RETENTION_RECEIVED_DAYS}
       RETENTION_EVENTS_DAYS: ${RETENTION_EVENTS_DAYS}

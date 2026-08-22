@@ -32,9 +32,10 @@ public sealed class BridgeOptions
 
     // --- Access -------------------------------------------------------------
     /// <summary>
-    /// Bearer token for the endpoints that change something or expose
-    /// operational detail. Empty means those endpoints refuse everything;
-    /// see AdminTokenFilter for why that direction and not the other.
+    /// Shared token for the endpoints that change something or expose
+    /// operational detail. Those endpoints also accept a user token from IAM;
+    /// see OpsAccessFilter for why both, and for why an unset value refuses
+    /// everything rather than allowing it.
     /// </summary>
     public string AdminToken { get; init; } = "";
 
@@ -87,6 +88,23 @@ public sealed class BridgeOptions
     /// <summary>Host OpenELIS names in its subscription, used to find our own entry.</summary>
     public string PublicFhirHost { get; init; } = "bridge";
 
+    // --- Estate identity ------------------------------------------------------
+    /// <summary>
+    /// The secret IAM signs user tokens with. Shared, because the estate signs
+    /// HS256: the key that verifies is the key that signs, so every holder can
+    /// also mint. Empty means /ops accepts the operator token only.
+    /// </summary>
+    public string JwtSecret { get; init; } = "";
+
+    /// <summary>IAM group a user token must carry to reach /ops. Empty allows any authenticated user.</summary>
+    public string OpsGroup { get; init; } = "";
+
+    /// <summary>host:port for the revocation check. Empty disables it - see HisTokenValidator.</summary>
+    public string RedisConfiguration { get; init; } = "";
+
+    /// <summary>Presented to the HIS service on /internal/*, in the estate's service-to-service header.</summary>
+    public string InternalApiKey { get; init; } = "";
+
     public static BridgeOptions FromEnvironment() => new()
     {
         ConnectionString = Require("BRIDGE_DB_CONNECTION"),
@@ -117,8 +135,33 @@ public sealed class BridgeOptions
         CatalogueMaxShrink = double.Parse(Env("CATALOGUE_MAX_SHRINK", "0.30")),
         ExportCheckMinutes = int.Parse(Env("EXPORT_CHECK_MINUTES", "5")),
         ExportStaleCycles = int.Parse(Env("EXPORT_STALE_CYCLES", "5")),
-        PublicFhirHost = Env("BRIDGE_PUBLIC_FHIR_HOST", "bridge")
+        PublicFhirHost = Env("BRIDGE_PUBLIC_FHIR_HOST", "bridge"),
+        JwtSecret = Env("JWT_SECRET", ""),
+        OpsGroup = Env("BRIDGE_OPS_GROUP", ""),
+        RedisConfiguration = RedisTarget(),
+        InternalApiKey = Env("INTERNAL_API_KEY", "")
     };
+
+    /// <summary>
+    /// Redis as StackExchange.Redis wants it: host:port.
+    ///
+    /// REDIS_URL is accepted in the shapes the estate's compose files use
+    /// (`redis:6379`, `redis://redis:6379`) because those are what a copied
+    /// deployment will set - and a mis-parsed address here fails silently, as a
+    /// service that never enforces revocation rather than one that errors.
+    /// </summary>
+    private static string RedisTarget()
+    {
+        var host = Env("REDIS_HOST", "");
+        var port = Env("REDIS_PORT", "6379");
+        if (host.Length > 0) return $"{host}:{port}";
+
+        var raw = Env("REDIS_URL", "");
+        if (raw.Length == 0) return "";
+
+        raw = raw.Replace("rediss://", "").Replace("redis://", "");
+        return raw.Contains(':') ? raw : $"{raw}:{port}";
+    }
 
     /// <summary>Catalogue discovery is optional; without credentials the endpoints refuse rather than crash the bridge.</summary>
     public bool CatalogueDiscoveryConfigured =>

@@ -35,7 +35,10 @@ his_api() {     # his_api <method> <path>
     if [[ $2 == /admin/* ]]; then
         his_admin "$1" "$2"
     else
-        docker exec his-api curl -sS -X "$1" --max-time 120 "http://localhost:8080$2"
+        # The menu a doctor orders from is clinical data, so it needs a user
+        # token — the same one a clinician's browser would carry.
+        docker exec his-api curl -sS -X "$1" --max-time 120 \
+            -H "Authorization: Bearer $HIS_TOKEN" "http://localhost:8080$2"
     fi
 }
 

@@ -8,6 +8,8 @@
 #   make results     result return path
 #   make rejection   LIS rejection round trip
 #   make negative    negative-path test    (brief phase 4)
+#   make auth        authentication test
+#   make token       sign in (stands in for IAM), prints a user token
 #   make down        stop applications, keep data
 #   make clean       destroy everything including volumes
 # =============================================================================
@@ -34,7 +36,7 @@ else
 endif
 
 .PHONY: help secrets config data-up app-up up down clean logs ps \
-        smoke e2e results rejection corrections catalogue-test negative capture \
+        smoke e2e results rejection corrections catalogue-test negative auth capture token \
         sync-catalogue catalogue export-status prune migrate psql-his psql-oe topics urls
 
 help:
@@ -165,6 +167,14 @@ capture: ## Capture what OpenELIS really sends on release (needs a lab user)
 
 negative: ## Phase 4 - negative paths
 	@bash scripts/test-negative.sh
+
+auth: ## User tokens, revocation, degraded mode and the internal key
+	@bash scripts/test-auth.sh
+
+token: ## Sign in as a sandbox user and print a token (USER=, NAME=, GROUPS=, TTL=)
+	@bash scripts/mint-token.sh \
+	  $(if $(USER),--user $(USER),) $(if $(NAME),--name $(NAME),) \
+	  $(if $(GROUPS),--groups $(GROUPS),) $(if $(TTL),--ttl $(TTL),)
 
 topics: ## List Kafka topics
 	@docker exec his-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list

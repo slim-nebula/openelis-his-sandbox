@@ -17,6 +17,10 @@
     <!-- Exposes /metrics in the same shape prom-client gives the Node services,
          so Prometheus and Alloy scrape this the same way they scrape those. -->
     <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
+    <!-- Verifies the estate's user tokens, and checks them against the same
+         Redis session the Node services check. See Identity.cs. -->
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="8.16.0" />
+    <PackageReference Include="StackExchange.Redis" Version="2.10.4" />
   </ItemGroup>
 
 </Project>

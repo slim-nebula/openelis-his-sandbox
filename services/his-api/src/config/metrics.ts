@@ -35,6 +35,21 @@ const httpLatencySummary = new Summary({
   percentiles: [0.5, 0.9, 0.99],
 });
 
+/**
+ * One series beyond the estate's four, because degraded authentication is
+ * otherwise invisible: the requests still succeed, so no error rate moves, and
+ * the only trace is a log line at the start of the outage.
+ *
+ * `result="degraded"` above zero means revocation is not being enforced —
+ * logouts are not taking effect. It is the series to alert on.
+ */
+export const authChecks = new Counter({
+  name: 'auth_revocation_checks_total',
+  help: 'Token revocation checks by outcome',
+  labelNames: ['result'],
+});
+
+register.registerMetric(authChecks);
 register.registerMetric(httpRequestCount);
 register.registerMetric(httpRequestDuration);
 register.registerMetric(inFlightRequests);

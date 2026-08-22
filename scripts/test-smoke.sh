@@ -26,7 +26,7 @@ check_contains "Kong routes /api/health to his-api" \
 check_contains "Kong stamps a correlation id" \
     "curl -sfD - -o /dev/null ${API}/health" 'X-Correlation-ID'
 check_contains "Test catalogue is reachable through the gateway" \
-    "curl -sf ${API}/test-catalogue" 'loincCode'
+    "api_curl -sf ${API}/test-catalogue" 'loincCode'
 
 section "Gateway configuration"
 check_contains "Kong loaded the declarative routes" \

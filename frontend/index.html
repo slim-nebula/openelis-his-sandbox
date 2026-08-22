@@ -11,6 +11,14 @@
     <h1>HIS Sandbox</h1>
     <p class="sub">Patient registration and lab ordering against OpenELIS</p>
     <div id="health" class="health">checking…</div>
+    <!-- The clinical API is behind the estate's user token. There is no login
+         form because there is no IAM here to log into: `make token` stands in
+         for it, and the token is pasted here the way a real session cookie
+         would arrive from a real sign-in. -->
+    <div id="session" class="session">
+      <span id="session-who">not signed in</span>
+      <button id="signin-btn" type="button">Sign in</button>
+    </div>
   </header>
 
   <main>

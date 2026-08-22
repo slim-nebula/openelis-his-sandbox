@@ -10,17 +10,73 @@ const API = '/api';
 let selectedPatient = null;
 let pollTimer = null;
 
+// --- session ---------------------------------------------------------------
+// The token is issued elsewhere — by IAM in the estate, by `make token` here —
+// and this page only carries it. It is kept in localStorage so a reload does
+// not end the session, which is what the estate's frontend does with it too.
+
+const SESSION_KEY = 'his-sandbox-token';
+
+const token = () => localStorage.getItem(SESSION_KEY) || '';
+
+// Reads the payload for display only. Nothing is trusted from here: the claims
+// shown are the ones the SERVER will verify, and a token edited in the console
+// would simply be rejected on the next request.
+function claimsOf(jwt) {
+  try {
+    const [, payload] = jwt.split('.');
+    return JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')));
+  } catch { return null; }
+}
+
+function renderSession() {
+  const who = document.getElementById('session-who');
+  const button = document.getElementById('signin-btn');
+  const claims = token() ? claimsOf(token()) : null;
+
+  if (!claims) {
+    who.textContent = 'not signed in';
+    who.className = 'signed-out';
+    button.textContent = 'Sign in';
+    return;
+  }
+
+  const expired = claims.exp * 1000 < Date.now();
+  who.textContent = expired
+    ? `${claims.usr_name} — session expired`
+    : `${claims.usr_full_name || claims.usr_name} (usr_id ${claims.usr_id})`;
+  who.className = expired ? 'signed-out' : 'signed-in';
+  button.textContent = 'Sign out';
+}
+
 // --- helpers ---------------------------------------------------------------
 
 async function api(path, options = {}) {
+  const current = token();
   const response = await fetch(API + path, {
-    headers: { 'Content-Type': 'application/json' },
     ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(current ? { Authorization: `Bearer ${current}` } : {}),
+      ...(options.headers || {}),
+    },
   });
+
+  // 401 means the session is gone — expired, revoked, or never present. Saying
+  // so plainly beats "Authorization token is required" appearing in a toast
+  // over an empty patient list.
+  if (response.status === 401) {
+    renderSession();
+    throw new Error('Not signed in. Run `make token` and use the Sign in button.');
+  }
+
   if (!response.ok) {
     const body = await response.text();
     let message = body;
-    try { message = JSON.parse(body).error ?? body; } catch { /* plain text */ }
+    try {
+      const parsed = JSON.parse(body);
+      message = parsed.error ?? parsed.message ?? body;
+    } catch { /* plain text */ }
     throw new Error(message || `${response.status} ${response.statusText}`);
   }
   return response.status === 204 ? null : response.json();
@@ -229,11 +285,54 @@ document.getElementById('order-form').addEventListener('submit', async (event) =
   }
 });
 
+document.getElementById('signin-btn').addEventListener('click', async () => {
+  if (token()) {
+    // Local only. The Redis session stays until it expires or someone calls
+    // IAM's logout — this page cannot revoke a token, and pretending otherwise
+    // would teach the wrong thing about where sessions live.
+    localStorage.removeItem(SESSION_KEY);
+    renderSession();
+    toast('Signed out of this browser');
+    return;
+  }
+
+  const pasted = window.prompt(
+    'Paste a token from `make token`:\n\n' +
+    'There is no login form because there is no IAM in the sandbox. In the ' +
+    'estate this token arrives from /api/auth/login.'
+  );
+  if (!pasted) return;
+
+  const trimmed = pasted.trim();
+  if (!claimsOf(trimmed)) {
+    toast('That does not look like a JWT', true);
+    return;
+  }
+
+  localStorage.setItem(SESSION_KEY, trimmed);
+  renderSession();
+
+  try {
+    await loadCatalogue();
+    await loadPatients();
+    toast('Signed in');
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
 // --- boot ------------------------------------------------------------------
 
 (async function boot() {
+  renderSession();
   await refreshHealth();
   setInterval(refreshHealth, 15000);
+
+  if (!token()) {
+    toast('Not signed in — run `make token`, then use the Sign in button', true);
+    return;
+  }
+
   try {
     await loadCatalogue();
     await loadPatients();

@@ -29,7 +29,7 @@ RESULT_TIMEOUT="${RESULT_TIMEOUT:-600}"
 # ---------------------------------------------------------------------------
 section "1 · Create a patient (frontend -> proxy -> Kong -> his-api)"
 
-PATIENT_JSON=$(curl -sf -X POST "${API}/patients" \
+PATIENT_JSON=$(api_curl -sf -X POST "${API}/patients" \
     -H 'Content-Type: application/json' \
     -d '{"firstName":"Ibrahim","lastName":"Diallo","sex":"M",
          "dateOfBirth":"1979-11-02","phone":"+22370000042","nationalId":"NID-E2E-001"}')
@@ -50,7 +50,7 @@ check "Patient is persisted in the HIS sandbox database" \
 # ---------------------------------------------------------------------------
 section "2 · Place a lab order"
 
-ORDER_JSON=$(curl -sf -X POST "${API}/lab-orders" \
+ORDER_JSON=$(api_curl -sf -X POST "${API}/lab-orders" \
     -H 'Content-Type: application/json' \
     -d "{\"patientId\":\"$PATIENT_ID\",\"testCode\":\"$TEST_CODE\",
          \"orderingProvider\":\"Dr. Konate\",\"facilityCode\":\"FAC-001\",\"priority\":\"routine\"}")
@@ -210,7 +210,7 @@ if [[ -n "$RESULT_FOUND" ]]; then
     check "Order status advanced to RESULT_AVAILABLE" \
         "[[ \$(his_sql \"SELECT order_status FROM his.lab_orders WHERE order_number = '$ORDER_NUMBER'\") == RESULT_AVAILABLE ]]"
     check "Frontend can read the result through the gateway" \
-        "curl -sf ${API}/patients/${PATIENT_ID}/results | grep -q openelisResultRef"
+        "api_curl -sf ${API}/patients/${PATIENT_ID}/results | grep -q openelisResultRef"
 else
     bad "Released result stored in the HIS sandbox database" \
         "nothing arrived within $((RESULT_TIMEOUT/60)) min. Check: docker logs bridge | grep -i correlat"

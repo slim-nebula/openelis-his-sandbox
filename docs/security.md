@@ -15,12 +15,15 @@ Three surfaces, and they cannot be treated alike:
 | Surface | Callers | Control |
 |---|---|---|
 | `/fhir` on the bridge | OpenELIS | **Origin restriction.** A credential is impossible — see §3 |
-| `/ops/*`, `/catalogue/sync`, `/admin/catalogue/refresh` | operators, `make` targets | **Bearer token**, fail-closed |
-| `/patients`, `/lab-orders`, `/test-catalogue` | clinicians via the browser | **None yet** — see §7 |
+| `/patients`, `/lab-orders`, `/test-catalogue` | clinicians via the browser | **User token** from IAM, verified and checked for revocation — §4 |
+| `/internal/*` on the HIS | the bridge | **Service key** in `x-internal-api-key` — §5 |
+| `/ops/*`, `/catalogue/sync` on the bridge | operators, `make` targets | **Operator token or user token**, fail-closed — §6 |
+| `/admin/catalogue/refresh` on the HIS | the deployment | **Operator token**, fail-closed — §6 |
 
-The middle row is ours on both ends, so it gets real authentication. The top
-row is constrained by what OpenELIS can do. The bottom row is the largest
-remaining gap and needs per-user identity, not a shared token.
+Four different controls, because there are four different kinds of caller. The
+distinction that matters is not read-versus-write but *who is asking*: a
+clinician has an identity worth auditing, the bridge has none because it is not
+a person, and OpenELIS cannot present one at all.
 
 ---
 
@@ -107,7 +110,199 @@ it, which is exactly why it is the right answer here.
 
 ---
 
-## 4. The administrative surface
+## 4. User authentication
+
+The clinical API is behind the estate's own scheme, implemented the way the
+estate implements it rather than the way this repository would have chosen. The
+point of a reference implementation is that a developer can copy from it.
+
+### The pattern
+
+IAM signs a token at login and writes the session to Redis. Every other service
+only verifies:
+
+```
+POST /api/auth/login        IAM: check password
+                            → jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' })
+                            → HSET user:{usr_id} token <jwt>  |  EXPIRE 24h
+
+GET  /patients/search       this service: verify the signature
+                            → HGET user:{usr_id} token
+                            → equal? serve.  missing or different? 401.
+```
+
+The claims are IAM's, unchanged: `usr_id`, `usr_name`, `usr_full_name`,
+`group_names`, `group_ids`, `business_unit_ids`.
+
+**Why both halves.** The signature proves the token was issued by IAM and has
+not been altered. It cannot express *"this person logged out four minutes ago"* —
+a signed token stays valid until it expires, whatever happens in between. The
+Redis session is what makes a logout take effect now, and a session hash that a
+password change deletes is what makes a compromised account recoverable.
+
+The sandbox has no IAM, so `make token` performs IAM's two write steps and
+nothing else. It is not a login: no password, no user table, no lockout.
+
+```
+make token                                    # sign in as a default user
+make token USER=7 NAME=dr.reed GROUPS=lab-orders,lab-ops
+```
+
+### Three differences from the estate's copy
+
+Each is a small change to `patient-service`'s middleware, and each is there for
+a reason that showed up in this sandbox.
+
+**1. The algorithm is pinned.** `jwt.verify(token, secret, { algorithms: ['HS256'] })`.
+Without the third argument the library accepts any algorithm the key can verify.
+For a string secret that is the HMAC family only, so this is *not* the classic
+algorithm-confusion hole — but it costs one line and removes the question for
+whoever later changes the key type.
+
+**2. The outage is logged at its edges, not per request.** The estate's version
+logs a warning inside the per-request catch block. An outage is precisely when
+traffic does not fall, so at any real rate that is thousands of identical lines
+a minute, on a Kafka topic shared with every service in the estate — the same
+failure mode the framework log filter exists to prevent. One line when Redis
+goes, one when it returns.
+
+**3. Whether the session was verified is carried forward.** `req.user.degraded`
+and a metric, `auth_revocation_checks_total{result="degraded"}`. Without it
+there is no way to answer, afterwards, which requests were served without a
+revocation check — the requests succeed, so no error rate moves.
+
+### When Redis is down
+
+The estate's choice, kept: **verify the signature, skip the revocation check,
+serve the request**. A cache outage does not stop a hospital ordering blood
+tests. The cost is real and worth stating — a token revoked before the outage
+works during it — but the alternative is worse.
+
+What did have to change is that the estate's fallback **does not actually fall
+back**:
+
+```ts
+// services/his-api/src/config/redis.ts
+enableOfflineQueue: false,
+```
+
+ioredis, by default, *queues* commands issued while the connection is down and
+replays them when it returns. Combined with a degraded-mode catch block that
+produces the opposite of what the catch block intends: instead of failing fast
+and continuing, every request waits in the offline queue. The fallback is never
+reached, because the command never errors — it just does not finish.
+
+With the queue off, a command issued while disconnected rejects in
+microseconds. `make auth` asserts the clinical API answers **in under five
+seconds** with Redis stopped, which is the assertion that would fail on the
+estate's current settings.
+
+The .NET side has the same trap under a different name.
+`ConnectionMultiplexer.Connect` throws when Redis is unreachable unless
+`AbortOnConnectFail = false`, and a service that catches that throw ends up
+holding no connection at all — serving happily, silently never checking
+revocation again, until someone restarts it.
+
+### What HS256 costs
+
+Two properties follow from the estate's choice of a shared symmetric secret, and
+neither can be fixed in a consuming service:
+
+**Every verifier is also an issuer.** The key that checks a signature is the key
+that makes one. Any service holding `JWT_SECRET` — and they all do, because they
+all verify — can mint a token for any user, with any groups. `mint-token.sh`
+demonstrates this by signing inside the `his-api` container: it is not a
+shortcut taken for the sandbox, it is what the design permits.
+
+**Nothing scopes a token to one service.** IAM's payload has no `aud` claim, so
+a token minted for the appointment service is equally valid at the laboratory
+API and at the bridge. There is nothing to validate, which is why
+`ValidateAudience` is `false` in `Identity.cs` — turning it on would reject
+every real token.
+
+**The fix belongs in IAM, not here.** Sign RS256: IAM holds the private key,
+every other service gets the public one and can only verify. Add `aud`, and let
+each service require its own. Both are changes to one service, and neither
+breaks a consumer that already ignores those fields.
+
+### Two services in the estate verify nothing
+
+Found while reading the estate's middleware, and worth acting on:
+
+| Service | Line | What it does |
+|---|---|---|
+| `HIS-org-setup-service` | `src/middleware/auth.middleware.ts:31` | `jwt.decode(token)` |
+| `file-upload-service` | `src/middleware/auth.middleware.ts:32` | `jwt.decode(token)` |
+
+`jwt.decode` **does not verify the signature and does not check expiry.** It
+base64-decodes the payload and returns it. `patient-service` was corrected —
+the comment there still reads *"CRITICAL SECURITY FIX: verify the signature, do
+not just decode it"* — but the other two were not.
+
+What saves them today is the Redis lookup two lines later: a forged token for
+`usr_id: 1` is compared against the real session for user 1 and does not match,
+so the request is refused. That is an accident of ordering, not a control. It
+fails the moment either service adds the degraded-mode fallback
+`patient-service` already has — at which point a token anyone can write, for any
+user, is accepted whenever Redis blinks.
+
+Expiry is a live problem there regardless: `decode` ignores `exp`, so an expired
+token keeps working until the 24-hour session hash expires, however short
+`JWT_EXPIRE` is set.
+
+**The fix is one word in each file**, `decode` → `verify`, plus the secret and
+the algorithm.
+
+There is also a hardcoded fallback secret in
+`file-upload-service/src/middleware/file-auth.middleware.ts:8`:
+
+```ts
+const secret = process.env.SIGNING_JWT_SECRET || 'your-secret-key';
+```
+
+If that variable is ever unset, download links are signed and verified with a
+string that is in the repository. It should fail closed instead.
+
+### Sessions live in memory
+
+The estate's Redis runs without persistence, so a Redis restart signs out every
+user in the hospital at once. Tokens stay signed and valid, but no session hash
+exists to match them against, so every request is refused until each user logs
+in again. `make auth` demonstrates it: after a Redis restart the suite must sign
+in again to continue.
+
+Worth knowing before Redis is restarted during a working day. If that is not
+acceptable, the answer is `appendonly yes` on the session instance — the session
+data is small and rewriting it on restart costs nothing compared to a
+hospital-wide logout.
+
+---
+
+## 5. Service-to-service
+
+The bridge calls `/internal/*` on the HIS service directly, and presents
+`x-internal-api-key` — the header the estate's gateway already uses for internal
+calls.
+
+**Why not a user token.** The bridge is not a person. Giving it one would mean
+inventing a user for it, storing that user's password somewhere, and producing
+audit records naming a clinician who did nothing.
+
+**Why a credential at all, when the endpoint is not routed by Kong.** The
+network boundary answers "can the internet reach this" — no; Kong has no route
+to `/internal/*`. It does not answer "can everything already inside the sandbox
+network read every patient in the hospital", and that list includes Kong, the
+frontend container and Redis. The key is what answers the second question.
+
+Same three properties as the operator tokens: fail-closed when unset,
+fixed-time comparison, never logged.
+
+**Not a substitute for the boundary — an addition to it.** If the key leaks, the
+attacker still has to be on the sandbox network to use it.
+
+---
+
+## 6. The administrative surface
 
 `/ops/*` and the catalogue sync sit behind `BRIDGE_ADMIN_TOKEN`;
 `/admin/catalogue/refresh` on the HIS sits behind `HIS_ADMIN_TOKEN`.
@@ -134,18 +329,26 @@ does not become public because it is a GET.
 
 **What is deliberately left open**, and must stay that way:
 
-- `/healthz` on both services — a health check that needs a credential is a
-  health check that reports unhealthy when the credential is wrong
-- `GET /catalogue` on the bridge and `GET /test-catalogue` on the HIS — the
-  read-only test menu. Locking the ordering screen out of its own menu is a
-  worse failure than leaving the menu readable, and it is the failure this kind
-  of change actually causes
-- `/internal/*` on the HIS — governed by network membership, as it always has
-  been. The bridge reaches it directly over `sandbox`; it is not routed by Kong
+- `/health` and `/metrics` on both services — a health check that can fail
+  authentication reports an outage that is not happening, and takes the service
+  out of Kong's rotation for a reason that has nothing to do with its health
+- `GET /catalogue` on the bridge — the cached test menu, read by the HIS
+  service. It is the laboratory's list of orderable tests and contains no
+  patient data at all; the endpoint that *changes* it is behind a token
+
+**What used to be on that list and no longer is.** `GET /test-catalogue` on the
+HIS was argued here as necessarily open, on the grounds that locking the
+ordering screen out of its own menu is a worse failure than leaving the menu
+readable. That argument was about a screen with no credential to present. The
+screen now holds a user token for everything else it does, so the premise is
+gone, and the menu is behind the same door as the orders placed from it.
+
+`/internal/*` has moved the other way, from "governed by network membership" to
+network membership **and** a service key — §5.
 
 ---
 
-## 5. Data that does not grow for ever
+## 7. Data that does not grow for ever
 
 Four bridge tables accumulated with traffic and nothing removed from any of
 them. In this sandbox that is invisible; in a laboratory running a few thousand
@@ -183,7 +386,7 @@ make prune        # run the sweep now and report what it removed
 
 ---
 
-## 6. Durability of the message bus
+## 8. Durability of the message bus
 
 The producers already write with `acks=all` and idempotence enabled. That was
 never the gap. The gap is that `min.insync.replicas=1` on a single broker means
@@ -208,16 +411,27 @@ broker failure loses orders. Nothing in the code has to change for it.
 
 ---
 
-## 7. What is still open
+## 9. What is still open
 
 Ordered by how much it would matter in a hospital.
 
-**No per-user authentication on the clinical API.** Anyone who can reach the
-edge can create a patient, place an order, and read any patient's results.
-This is the big one. It needs real identity — OIDC against the hospital's
-directory, with the clinician's identity carried through to `orderingProvider`
-rather than accepted as a free-text field. A shared token is not the answer
-here; the point is *which clinician*, and audit that can name them.
+**`orderingProvider` is still free text.** The clinical API now knows which
+clinician is calling — `req.user` carries IAM's claims — but the order record
+takes the ordering provider from the request body, so the name on the order and
+the name on the token can differ. Audit that can be typed is not audit. Filling
+it from the token is a small change and a real one.
+
+**Authorisation is one group name per surface.** `LAB_ORDER_GROUP` and
+`BRIDGE_OPS_GROUP` are membership checks, not permissions. The estate does real
+authorisation with Casbin against policies IAM owns; a second, differently
+shaped permission model in a reference service would be a worse example than an
+obviously partial one. A service adopting this should call Casbin.
+
+**Nothing enforces business-unit scope.** The token carries
+`business_unit_ids`, and no query filters by it. A clinician authenticated for
+one hospital can read patients from another.
+
+**HS256 and no `aud`** — §4, "What HS256 costs". The fix is in IAM.
 
 **No TLS inside the sandbox.** Bridge ↔ OpenELIS is plain HTTP
 (`allowHTTP=true`). Patient results cross that hop in clear text. Terminating
@@ -241,7 +455,7 @@ and it needs the same encryption, backup and access controls as the first.
 
 ---
 
-## 8. What is tested
+## 10. What is tested
 
 Access control is asserted on **status codes**, not response bodies. A refusal
 that returns 200 with an error message in it passes any test that greps the
@@ -263,6 +477,30 @@ In `make negative`:
   asserted against, including a sweep that is broken
 - the sweep reports the windows *this deployment configured*, which catches a
   variable added to `.env` and never wired through compose
+
+In `make auth`, thirty-odd assertions across six groups. The ones worth naming:
+
+- **a token signed with a different secret is refused** — the case
+  `jwt.decode` accepts, and two estate services still use it (§4)
+- **a correctly signed token whose Redis session was deleted is refused**, and
+  told *"Session ended or token revoked"* rather than *"invalid token"*: the
+  distinction between a bad token and an ended session
+- **a second sign-in for the same user ends the first session** — one `token`
+  field per user, so signing in on a phone signs out the desktop
+- with Redis stopped: **the clinical API still answers**, **in under five
+  seconds**, and **a revoked token is accepted**. The last of those is not a
+  bug being tolerated; it is what degraded mode costs, asserted rather than
+  footnoted
+- **ten requests during the outage add no further log lines**, asserted
+  causally — sampling the log tail would test what the service did last week
+- **the bridge enforces revocation again once Redis returns**, having first
+  reached for Redis *during* the outage. That is the assertion that fails if
+  `AbortOnConnectFail` is left at its default
+- `/internal/*` refuses no key and a wrong key, and **a user token is not a
+  service key**
+- the bridge's `/ops` takes either the operator token or a user token in
+  `BRIDGE_OPS_GROUP`, refuses one without the group with **403 rather than
+  401**, and **names the user in the log**
 
 In `make smoke`: the search cap, the `_count` clamp, the topic replication
 factor and `min.insync.replicas`.

@@ -13,6 +13,27 @@ API="http://localhost:${EDGE_HTTP_PORT}/api"
 PASS=0
 FAIL=0
 
+# --- Signing in ---------------------------------------------------------------
+# The clinical API is behind the estate's user token, so a suite has to sign in
+# the same way a clinician does. Minted once per run rather than per request:
+# the estate stores ONE session per user, so a second sign-in for the same user
+# ends the first — two tokens minted mid-suite would revoke each other.
+#
+# Minted only if the sandbox is up, because several scripts source this file
+# with nothing running and must not fail here.
+HIS_TOKEN="${HIS_TOKEN:-}"
+if [[ -z "$HIS_TOKEN" ]] && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx his-api; then
+    HIS_TOKEN=$("$ROOT/scripts/mint-token.sh" --quiet --user 1 --name suite.runner \
+        ${LAB_ORDER_GROUP:+--groups "$LAB_ORDER_GROUP"} 2>/dev/null) || HIS_TOKEN=""
+fi
+export HIS_TOKEN
+
+# curl as a signed-in user. Use these for anything under /api that reads or
+# writes patient data; /health and /metrics answer without a credential and can
+# use plain curl.
+api_curl()   { curl -H "Authorization: Bearer $HIS_TOKEN" "$@"; }
+api_status() { curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $HIS_TOKEN" "$@"; }
+
 green() { printf '\033[32m%s\033[0m' "$1"; }
 red()   { printf '\033[31m%s\033[0m' "$1"; }
 dim()   { printf '\033[2m%s\033[0m' "$1"; }

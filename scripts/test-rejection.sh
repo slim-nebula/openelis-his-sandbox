@@ -48,7 +48,7 @@ check "No OpenELIS test carries LOINC $UNMAPPED_LOINC" \
 # ---------------------------------------------------------------------------
 section "2 · The HIS accepts the order — it cannot know the LIS will refuse"
 
-ORDER_JSON=$(curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
+ORDER_JSON=$(api_curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
     -d "{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"$UNMAPPED_CODE\",
          \"orderingProvider\":\"Dr. Drift\",\"facilityCode\":\"FAC-001\"}")
 ORDER_NUMBER=$(echo "$ORDER_JSON" | json_field "['orderNumber']")

@@ -1,7 +1,19 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY Bridge.csproj .
-RUN dotnet restore
+# --disable-parallel, and more patience than the defaults.
+#
+# NuGet fetches packages concurrently and abandons a download that receives no
+# data for 60 seconds. On a slow or contended link — which includes this image
+# building under emulation on Apple Silicon — the parallel streams starve each
+# other, every large package trips that timeout at once, and the restore fails
+# with what looks like "the feed is invalid". Serial downloads are slower on a
+# fast link and are the difference between building and not building on a slow
+# one.
+ENV NUGET_ENABLE_ENHANCED_HTTP_RETRY=true \
+    NUGET_ENHANCED_MAX_NETWORK_TRY_COUNT=10 \
+    NUGET_ENHANCED_NETWORK_RETRY_DELAY_MILLISECONDS=2000
+RUN dotnet restore --disable-parallel
 COPY . .
 RUN dotnet publish -c Release -o /app --no-restore
 

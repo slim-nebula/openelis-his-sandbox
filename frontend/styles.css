@@ -34,6 +34,29 @@ header .sub { margin: 4px 0 0; color: #9fb3d0; font-size: 13px; }
   color: #9fb3d0;
 }
 
+/* Who is signed in, beside the health line — the two things that explain an
+   empty screen. */
+.session {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.session .signed-in  { color: #7fd39b; }
+.session .signed-out { color: #f2a2a2; }
+.session button {
+  background: transparent;
+  border: 1px solid #3c567f;
+  color: #cfe0f6;
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.session button:hover { background: #1b3358; }
+
 main {
   max-width: 1040px;
   margin: 24px auto;

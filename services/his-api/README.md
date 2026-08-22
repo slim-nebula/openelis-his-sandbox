@@ -77,6 +77,28 @@ frontend, the test suites and the bridge were built against that shape; changing
 it would break a published contract for cosmetic consistency. **Errors do use
 the envelope**, since those were never part of the contract.
 
+## Authentication
+
+`core/middleware/auth.middleware.ts` is `patient-service`'s middleware with
+three changes: the algorithm is pinned, a Redis outage is logged once at each
+edge rather than once per request, and whether the session was verified is
+carried on `req.user` and counted in a metric.
+
+The consequential file is `config/redis.ts`, not the middleware. The estate
+creates the client with host and port only, which leaves `enableOfflineQueue`
+at its default — so during an outage ioredis *queues* the revocation check
+instead of failing it, and the degraded-mode catch block is never reached.
+Requests hang rather than degrade. See docs/security.md §4.
+
+Routes are grouped by who calls them:
+
+| | |
+|---|---|
+| `/patients`, `/lab-orders`, `/test-catalogue` | user token, plus `LAB_ORDER_GROUP` |
+| `/internal/*` | `x-internal-api-key` — the bridge is a service, not a person |
+| `/admin/*` | shared operator token — run by the deployment, which has no user |
+| `/health`, `/metrics` | nothing. A health check that can fail authentication reports an outage that is not happening |
+
 ## The two things worth copying
 
 **The outbox.** `modules/lab-orders/models/lab-order.model.ts` commits the order

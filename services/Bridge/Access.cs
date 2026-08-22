@@ -20,52 +20,108 @@ namespace Bridge;
 /// read-only and internal, governed by the same network membership that has
 /// always protected /internal/* on the HIS service.
 /// </summary>
-public sealed class AdminTokenFilter(BridgeOptions options, ILogger<AdminTokenFilter> log) : IEndpointFilter
+/// <summary>
+/// Guards /ops and the catalogue sync. Two credentials are accepted on the same
+/// header, and which one a caller uses says what kind of caller it is:
+///
+///   the shared operator token   scripts, `make` targets, the deployment. No
+///                               person is signed in, so there is no user to be.
+///   an estate user token        a human. Issued by IAM at login, checked here
+///                               exactly as the Node services check it.
+///
+/// The shared token stays because removing it would mean the deployment needs a
+/// user account and a password that never expires, which is worse than a secret
+/// held by the deployment alone. The user token is what stops that secret being
+/// pasted into a chat window every time someone wants to look at the queue.
+/// </summary>
+public sealed class OpsAccessFilter(
+    BridgeOptions options,
+    HisTokenValidator tokens,
+    ILogger<OpsAccessFilter> log) : IEndpointFilter
 {
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext ctx, EndpointFilterDelegate next)
     {
         var request = ctx.HttpContext.Request;
+        var peer = ctx.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
         // Fail closed. An endpoint that changes the doctor's test menu must not
         // become world-writable because a deployment forgot a variable - that
         // is precisely the mistake that only shows up once it has been made.
-        if (options.AdminToken.Length == 0)
+        if (options.AdminToken.Length == 0 && !tokens.Configured)
         {
-            log.LogError("Refused {Method} {Path}: BRIDGE_ADMIN_TOKEN is not set",
+            log.LogError("Refused {Method} {Path}: neither BRIDGE_ADMIN_TOKEN nor JWT_SECRET is set",
                 request.Method, request.Path);
             return Results.Problem(
                 "Administrative access is not configured on this bridge.",
                 statusCode: StatusCodes.Status503ServiceUnavailable);
         }
 
-        if (!Presented(request, options.AdminToken))
+        var presented = Bearer(request);
+        if (presented is null)
         {
-            // The token itself is never logged, at any level. A rejected
-            // credential is often a correct credential for somewhere else.
-            log.LogWarning("Refused {Method} {Path} from {Peer}: bad or missing bearer token",
-                request.Method, request.Path,
-                ctx.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown");
+            log.LogWarning("Refused {Method} {Path} from {Peer}: no bearer token",
+                request.Method, request.Path, peer);
             return Results.Problem(
                 "A valid bearer token is required for this endpoint.",
                 statusCode: StatusCodes.Status401Unauthorized);
         }
 
+        if (options.AdminToken.Length > 0 && Matches(presented, options.AdminToken))
+            return await next(ctx);
+
+        // Not the shared token, so the only remaining possibility is a user.
+        var principal = tokens.Configured
+            ? await tokens.ValidateAsync(presented, ctx.HttpContext.RequestAborted)
+            : null;
+
+        if (principal is null)
+        {
+            // The token itself is never logged, at any level. A rejected
+            // credential is often a correct credential for somewhere else.
+            log.LogWarning("Refused {Method} {Path} from {Peer}: bad, expired or revoked token",
+                request.Method, request.Path, peer);
+            return Results.Problem(
+                "A valid bearer token is required for this endpoint.",
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        if (options.OpsGroup.Length > 0 && !principal.Groups.Contains(options.OpsGroup))
+        {
+            log.LogWarning("Refused {Method} {Path} for user {User}: not in group {Group}",
+                request.Method, request.Path, principal.UserId, options.OpsGroup);
+            return Results.Problem(
+                $"This endpoint requires membership of {options.OpsGroup}.",
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        // Who did it, on every operational action. The shared token cannot
+        // answer this question, which is the other reason for accepting user
+        // tokens at all.
+        log.LogInformation("{Method} {Path} by user {User}{Degraded}",
+            request.Method, request.Path, principal.UserId,
+            principal.Degraded ? " (session unverified: Redis unreachable)" : "");
+
+        ctx.HttpContext.Items["his-principal"] = principal;
         return await next(ctx);
     }
 
-    private static bool Presented(HttpRequest request, string expected)
+    private static string? Bearer(HttpRequest request)
     {
         var header = request.Headers.Authorization.FirstOrDefault();
         if (header is null || !header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
-            return false;
+            return null;
 
+        var value = header["Bearer ".Length..].Trim();
+        return value.Length > 0 ? value : null;
+    }
+
+    private static bool Matches(string presented, string expected) =>
         // Fixed-time comparison: a plain string compare returns sooner the
         // earlier it finds a difference, which leaks the token a character at
         // a time to anyone patient enough to measure.
-        return CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(header["Bearer ".Length..].Trim()),
+        CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(presented),
             Encoding.UTF8.GetBytes(expected));
-    }
 }
 
 /// <summary>

@@ -8,6 +8,8 @@ import { config } from '@config/env.js';
 import { register, metricsMiddleware } from '@config/metrics.js';
 import { correlation } from '@core/middleware/correlation.middleware.js';
 import { errorHandler } from '@core/middleware/error.middleware.js';
+import { authenticateUser, requireGroup } from '@core/middleware/auth.middleware.js';
+import { requireInternalKey } from '@core/middleware/internal.middleware.js';
 import patientRoutes from '@modules/patients/routes/patient.routes.js';
 import patientInternalRoutes from '@modules/patients/routes/internal.routes.js';
 import labOrderRoutes from '@modules/lab-orders/routes/lab-order.routes.js';
@@ -87,19 +89,28 @@ app.get('/', (_req, res) => {
 });
 
 // --- Client-facing API ------------------------------------------------------
-// Routed through the reverse proxy and Kong.
-app.use('/patients', patientRoutes);
-app.use('/lab-orders', labOrderRoutes);
-app.use('/test-catalogue', catalogueRouter);
+// Routed through the reverse proxy and Kong, and behind the estate's user
+// token: everything below reads or writes patient data, so the service needs to
+// know *which clinician* is asking, not merely that somebody is.
+const asUser = [authenticateUser, requireGroup(config.auth.labGroup)];
+
+app.use('/patients', asUser, patientRoutes);
+app.use('/lab-orders', asUser, labOrderRoutes);
+app.use('/test-catalogue', asUser, catalogueRouter);
+
+// The catalogue refresh keeps its shared operator token rather than a user
+// token. It is run by a script and by the deployment, neither of which is a
+// person with an IAM account.
 app.use('/admin/catalogue', catalogueAdminRouter);
 
 // --- Internal API -----------------------------------------------------------
 // Bridge-facing only, and deliberately NOT routed by Kong: the bridge reaches
 // this service directly over the sandbox network, so integration traffic never
-// transits the public edge.
-app.use('/internal/patients', patientInternalRoutes);
-app.use('/internal/lab-orders', labOrderInternalRoutes);
-app.use('/internal/lab-results', internalResultRoutes);
+// transits the public edge. The key is what stops anything *else* on that
+// network reading the same endpoints.
+app.use('/internal/patients', requireInternalKey, patientInternalRoutes);
+app.use('/internal/lab-orders', requireInternalKey, labOrderInternalRoutes);
+app.use('/internal/lab-results', requireInternalKey, internalResultRoutes);
 
 // Last: Express dispatches to the error handler only from here.
 app.use(errorHandler);

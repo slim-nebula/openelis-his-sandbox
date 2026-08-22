@@ -39,10 +39,20 @@ builder.Services.AddHostedService<ResultCorrelator>();
 builder.Services.AddHostedService<ExportMonitor>();
 builder.Services.AddHostedService<RetentionService>();
 
+// Singleton: it holds one Redis multiplexer and one signing key, neither of
+// which is worth rebuilding per request.
+builder.Services.AddSingleton<HisTokenValidator>();
+
 builder.Services.AddHttpClient("his-api", client =>
 {
     client.BaseAddress = new Uri(options.HisApiBaseUrl);
     client.Timeout = TimeSpan.FromSeconds(15);
+
+    // The estate's service-to-service credential, on every call to /internal/*.
+    // Set once here rather than at each call site, so a request added later
+    // cannot be the one that forgets it.
+    if (options.InternalApiKey.Length > 0)
+        client.DefaultRequestHeaders.Add("x-internal-api-key", options.InternalApiKey);
 });
 
 var app = builder.Build();
@@ -119,9 +129,12 @@ app.MapGet("/catalogue", async (BridgeStore store, CancellationToken ct) =>
 // because an unauthenticated caller could empty the doctor's test menu, the
 // second because "which orders are outstanding and which failed" is a
 // description of real patients' care.
+//
+// Two credentials open these: the shared operator token for scripts and the
+// deployment, and an estate user token for a person. See OpsAccessFilter.
 
-var ops = app.MapGroup("/ops").AddEndpointFilter<AdminTokenFilter>();
-var catalogue = app.MapGroup("/catalogue").AddEndpointFilter<AdminTokenFilter>();
+var ops = app.MapGroup("/ops").AddEndpointFilter<OpsAccessFilter>();
+var catalogue = app.MapGroup("/catalogue").AddEndpointFilter<OpsAccessFilter>();
 
 // Useful during testing: shows exactly what the bridge is publishing for
 // OpenELIS to poll, and what it could not correlate.

@@ -50,7 +50,7 @@ The relay claims rows with `FOR UPDATE SKIP LOCKED` so several instances can
 drain it concurrently without publishing the same event twice, and stops at the
 first failure so per-aggregate ordering holds.
 
-The sandbox implements this end to end — `services/His.Api/OutboxRelay.cs` and
+The sandbox implements this end to end — `services/his-api/src/modules/messaging/outbox.relay.ts` and
 `db/his/002_outbox.sql` — and `make negative` proves it by stopping the broker
 mid-flight: orders are still accepted, the event is queued durably, nothing is
 marked failed, and the relay drains it unattended when Kafka returns.

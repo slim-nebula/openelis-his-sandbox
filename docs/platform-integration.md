@@ -9,10 +9,18 @@ document, the same Consul registration, the same metric names, the same log
 envelope. A service that is correct but shaped differently teaches the wrong
 lesson to whoever copies it, and is invisible to the tooling that has to run it.
 
-Both .NET services now carry these. `services/*/Platform.cs` holds them, and the
-two copies are deliberately identical — the services share no project, because
-each Dockerfile builds from its own directory, so it is duplicated rather than
-referenced. **When one changes, change both.**
+Both services carry them, in their own language:
+
+| | |
+|---|---|
+| `services/his-api/src/config/` | `consul.ts`, `metrics.ts`, `logger.ts` — the estate's own libraries, laid out as `patient-service` lays them out |
+| `services/Bridge/Platform.cs` | the same four contracts, written against the same wire formats |
+
+The bridge is the interesting one. It is not in the estate's stack and never
+will be, so it is the proof that these are **contracts** rather than a shared
+library: a service in any language joins the platform by answering the same
+health document, registering the same way, exposing the same metric names and
+writing the same log envelope. Nothing about it is Node-specific.
 
 ---
 
@@ -41,15 +49,18 @@ which is what makes Consul mark it critical and take it out of rotation.
 
 ### 2. A registry outage does not stop the laboratory
 
-The Node services call `process.exit(1)` if Consul registration fails. These log
-the error and carry on.
+The estate's services call `process.exit(1)` if Consul registration fails. Both
+services here log the error and carry on.
 
-The reasoning is specific to what the bridge does: it moves patient results, and
-it can do that perfectly well unregistered — OpenELIS polls it by hostname and
-Kafka does not consult a registry. Refusing to start would convert a discovery
-problem into a clinical one.
+The reasoning is what each service can still do while unregistered, which in
+both cases is everything. The bridge moves patient results: OpenELIS polls it by
+hostname and Kafka consults no registry. The HIS service serves every request it
+has; only Kong needs the registry to find it, and Kong is one of the callers,
+not the work.
 
-This is a genuine divergence from the Node services, and a deliberate one.
+So refusing to start over a registry outage converts a discovery problem into a
+clinical one. This is a genuine divergence from the estate, and a deliberate
+one.
 
 ### 3. Log shipping is filtered, bounded, and never blocks
 
@@ -81,9 +92,9 @@ Two further properties, neither optional:
 This one caused a real failure and is worth reading before copying the Node
 implementation anywhere else.
 
-`ConsulRegistration` in the Node services takes **eth0**. That is correct for
-them: each sits on a single Docker network, so it has one address and eth0 is
-it.
+`ConsulRegistration` in the estate's services takes **eth0**. That is correct
+for them: each sits on a single Docker network, so it has one address and eth0
+is it.
 
 The bridge sits on **three** networks — that multi-homing *is* the architectural
 boundary between the HIS estate and OpenELIS. Taking eth0 registered it at its
