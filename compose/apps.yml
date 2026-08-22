@@ -15,7 +15,7 @@ services:
   # --- Patient + Lab Order microservice --------------------------------------
   his-api:
     build:
-      context: ../services/His.Api
+      context: ../services/his-api
     image: his-sandbox/his-api:local
     container_name: his-api
     restart: unless-stopped
@@ -26,7 +26,7 @@ services:
         condition: service_healthy
     environment:
       TZ: ${TZ}
-      HIS_DB_CONNECTION: "Host=${HIS_DB_HOST};Port=${HIS_DB_PORT};Database=${HIS_DB_NAME};Username=${HIS_DB_USER};Password=${HIS_DB_PASSWORD};Include Error Detail=true"
+      HIS_DATABASE_URL: "postgresql://${HIS_DB_USER}:${HIS_DB_PASSWORD}@${HIS_DB_HOST}:${HIS_DB_PORT}/${HIS_DB_NAME}"
       KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP}
       TOPIC_ORDER_CREATED: ${TOPIC_ORDER_CREATED}
       TOPIC_ORDER_SENT: ${TOPIC_ORDER_SENT}

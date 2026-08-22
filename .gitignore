@@ -12,6 +12,13 @@ services/**/obj/
 .DS_Store
 *.log
 
-# Only needed to regenerate the shared data-flow page
-node_modules/
-package-lock.json
+# Only needed to regenerate the shared data-flow page. Rooted, so it does not
+# also swallow the lockfiles of real services — an unpinned service build is
+# not reproducible, which is the opposite of what a reference implementation
+# should demonstrate.
+/node_modules/
+/package-lock.json
+
+# Node build output for the HIS service
+services/his-api/node_modules/
+services/his-api/dist/
