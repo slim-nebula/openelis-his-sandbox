@@ -12,6 +12,9 @@
     <PackageReference Include="Npgsql" Version="10.0.3" />
     <PackageReference Include="Dapper" Version="2.1.79" />
     <PackageReference Include="Confluent.Kafka" Version="2.15.0" />
+    <!-- Exposes /metrics in the same shape prom-client gives the Node services,
+         so Prometheus and Alloy scrape this the same way they scrape those. -->
+    <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
   </ItemGroup>
 
 </Project>

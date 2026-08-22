@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Dapper;
 using His.Api;
 using Npgsql;
+using Prometheus;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -12,6 +13,7 @@ if (string.IsNullOrWhiteSpace(connectionString))
     throw new InvalidOperationException("HIS_DB_CONNECTION is required.");
 
 var kafkaOptions = KafkaOptions.FromEnvironment();
+var platform = PlatformOptions.FromEnvironment("his-api-service");
 
 // --- Dapper conventions -----------------------------------------------------
 DefaultTypeMap.MatchNamesWithUnderscores = true;   // order_number -> OrderNumber
@@ -24,8 +26,13 @@ builder.Logging.AddJsonConsole(o =>
     o.IncludeScopes = true;
     o.JsonWriterOptions = new JsonWriterOptions { Indented = false };
 });
+// Console stays: `docker logs his-api` must keep working during an incident,
+// which is exactly when the log topic is least trustworthy.
+builder.Logging.AddProvider(new KafkaLogProvider(platform, kafkaOptions.Bootstrap));
 
 builder.Services.AddSingleton(kafkaOptions);
+builder.Services.AddSingleton(platform);
+builder.Services.AddHostedService<ConsulRegistration>();
 builder.Services.AddSingleton(_ => new NpgsqlDataSourceBuilder(connectionString).Build());
 builder.Services.AddScoped<Repository>();
 builder.Services.AddScoped<CatalogueMirror>();
@@ -56,6 +63,10 @@ app.Use(async (ctx, next) =>
         await next();
 });
 
+// Records http_requests_total / http_request_duration_seconds against the route
+// template, the same series the Node services expose through prom-client.
+app.UseHttpMetrics();
+
 app.UseExceptionHandler(handler => handler.Run(async ctx =>
 {
     var feature = ctx.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>();
@@ -79,12 +90,32 @@ static string Correlation(HttpContext ctx) => (string)ctx.Items["CorrelationId"]
 // Client-facing API — routed through the reverse proxy and Kong
 // =============================================================================
 
-app.MapGet("/healthz", async (NpgsqlDataSource ds, CancellationToken ct) =>
+app.MapMetrics();   // GET /metrics
+
+app.MapGet("/health", async (NpgsqlDataSource ds, CancellationToken ct) =>
 {
-    await using var conn = await ds.OpenConnectionAsync(ct);
-    await conn.ExecuteScalarAsync<int>("SELECT 1");
-    return Results.Ok(new { status = "ok", component = "his-api" });
+    // Reaching the database is the honest test. A service that answers "healthy"
+    // while unable to read its own state gets left in Kong's rotation, and every
+    // request routed to it fails.
+    try
+    {
+        await using var conn = await ds.OpenConnectionAsync(ct);
+        await conn.ExecuteScalarAsync<int>("SELECT 1");
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new
+        {
+            service = platform.ServiceName,
+            status = "unhealthy",
+            detail = ex.Message
+        }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+
+    return Results.Ok(PlatformExtensions.HealthDocument(platform));
 });
+
+app.MapGet("/", () => Results.Ok(new { message = "his-api service" }));
 
 // Served from the local mirror, never live from the bridge: the ordering screen
 // must keep working while the bridge restarts, and a menu one sync out of date

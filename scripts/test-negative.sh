@@ -290,7 +290,7 @@ check "The cached test menu is still readable without a token" \
     "[[ \$(http_status his-api GET http://localhost:8080/test-catalogue) == 200 ]]"
 
 check "Health checks are still readable without a token" \
-    "[[ \$(http_status bridge GET http://localhost:8080/healthz) == 200 ]]"
+    "[[ \$(http_status bridge GET http://localhost:8080/health) == 200 ]]"
 
 # The FHIR endpoint cannot use a token: OpenELIS 3.2.1.11 has no way to send
 # one. It is restricted by origin instead — so what has to be proved is that
@@ -326,6 +326,12 @@ if [[ ${RET_BEFORE_DONE:-0} -ge 1 && ${RET_BEFORE_OPEN:-0} -ge 1 ]]; then
                   SELECT resource_type, resource_id FROM bridge.received_resources
                   WHERE processed = false LIMIT 1)" >/dev/null
 
+    # Counted, not assumed. Each run of this suite ages one more row, so the
+    # aged-and-uncorrelated set grows across runs — an assertion of "exactly 1"
+    # passes once and then fails for ever, which says nothing about the sweep.
+    AGED_OPEN_BEFORE=$(bridge_sql "SELECT count(*) FROM bridge.received_resources
+                                   WHERE processed = false AND received_at < now() - interval '390 days'")
+
     bridge_admin POST /ops/retention/sweep >/dev/null
 
     check "The aged, already-correlated resource is removed" \
@@ -336,9 +342,10 @@ if [[ ${RET_BEFORE_DONE:-0} -ge 1 && ${RET_BEFORE_OPEN:-0} -ge 1 ]]; then
     # that has not reached the patient's record yet; its age is not evidence
     # that it never will, and a sweep that treats age as permission to delete
     # would lose it silently.
-    check "The aged resource that has NOT been correlated is kept" \
+    check "The aged resource that has NOT been correlated is kept ($AGED_OPEN_BEFORE of them)" \
         "[[ \$(bridge_sql \"SELECT count(*) FROM bridge.received_resources
-                            WHERE processed = false AND received_at < now() - interval '390 days'\") -eq 1 ]]"
+                            WHERE processed = false AND received_at < now() - interval '390 days'\") \
+            -eq ${AGED_OPEN_BEFORE:-0} && ${AGED_OPEN_BEFORE:-0} -ge 1 ]]"
 else
     info "skipped: needs at least one processed and one unprocessed mirror row"
 fi

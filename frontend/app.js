@@ -76,7 +76,7 @@ const fmtDate = (v) => (v ? new Date(v).toLocaleString() : '—');
 async function refreshHealth() {
   const el = document.getElementById('health');
   try {
-    const health = await api('/healthz');
+    const health = await api('/health');
     el.textContent = `edge → kong → ${health.component}: ${health.status}`;
   } catch (err) {
     el.textContent = `API unreachable: ${err.message}`;

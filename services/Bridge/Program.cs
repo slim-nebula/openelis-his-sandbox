@@ -2,10 +2,12 @@ using System.Text.Json;
 using Bridge;
 using Dapper;
 using Npgsql;
+using Prometheus;
 
 var builder = WebApplication.CreateBuilder(args);
 
 var options = BridgeOptions.FromEnvironment();
+var platform = PlatformOptions.FromEnvironment("bridge-service");
 
 DefaultTypeMap.MatchNamesWithUnderscores = true;
 SqlMapper.AddTypeHandler(new DateOnlyTypeHandler());
@@ -17,8 +19,13 @@ builder.Logging.AddJsonConsole(o =>
     o.IncludeScopes = true;
     o.JsonWriterOptions = new JsonWriterOptions { Indented = false };
 });
+// Console stays: `docker logs bridge` must keep working during an incident,
+// which is exactly when the log topic is least trustworthy.
+builder.Logging.AddProvider(new KafkaLogProvider(platform, options.KafkaBootstrap));
 
 builder.Services.AddSingleton(options);
+builder.Services.AddSingleton(platform);
+builder.Services.AddHostedService<ConsulRegistration>();
 builder.Services.AddSingleton(_ => new NpgsqlDataSourceBuilder(options.ConnectionString).Build());
 builder.Services.AddScoped<BridgeStore>();
 builder.Services.AddScoped<ExportHealthProbe>();
@@ -42,27 +49,55 @@ var app = builder.Build();
 
 await WaitForDatabaseAsync(app);
 
+// Records http_requests_total / http_request_duration_seconds against the route
+// template, the same series the Node services expose through prom-client.
+app.UseHttpMetrics();
+
 // Before routing, so it covers every /fhir handler including the bare POST for
 // the result bundle - and any added later without remembering to guard them.
 app.UseFhirPeerGuard();
 
-// --- Public surface ---------------------------------------------------------
-// Reachable without a credential, and deliberately so: liveness, and the
-// read-only cached menu the HIS service mirrors. Neither changes anything, and
-// both are already behind network membership.
+// --- Platform surface -------------------------------------------------------
+// What the estate reads: Consul's check, Prometheus's scrape. Both must answer
+// without a credential — a health check that can fail authentication reports
+// an outage that is not happening.
 
-app.MapGet("/healthz", async (NpgsqlDataSource ds, CancellationToken ct) =>
+app.MapMetrics();   // GET /metrics
+
+app.MapGet("/health", async (NpgsqlDataSource ds, CancellationToken ct) =>
 {
-    await using var conn = await ds.OpenConnectionAsync(ct);
-    await conn.ExecuteScalarAsync<int>("SELECT 1");
-    return Results.Ok(new
+    // Reaching the database is the honest test. A service that answers "healthy"
+    // while unable to read its own state gets left in Kong's rotation, and every
+    // request routed to it fails.
+    try
     {
-        status = "ok",
-        component = "bridge",
-        fhirEndpoint = "/fhir",
-        labOwner = options.LabOwnerReference
-    });
+        await using var conn = await ds.OpenConnectionAsync(ct);
+        await conn.ExecuteScalarAsync<int>("SELECT 1");
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new
+        {
+            service = platform.ServiceName,
+            status = "unhealthy",
+            detail = ex.Message
+        }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+
+    return Results.Ok(PlatformExtensions.HealthDocument(platform));
 });
+
+// What this service is, for a human who has just found it in the Consul UI.
+app.MapGet("/", () => Results.Ok(new
+{
+    message = "bridge service",
+    fhirEndpoint = "/fhir",
+    labOwner = options.LabOwnerReference
+}));
+
+// --- Public surface ---------------------------------------------------------
+// Read-only and internal: the cached menu the HIS service mirrors. Changes
+// nothing, and is already behind network membership.
 
 // Served from the cache, never live: the ordering screen must not go blank
 // because OpenELIS is restarting, and syncedAt lets the caller show how old the

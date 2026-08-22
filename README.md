@@ -42,7 +42,7 @@ make secrets     # generate .env from .env.example        ← first run only
 make up          # render config, start databases, build and start everything
 make sync-catalogue  # read the orderable test menu from OpenELIS  ← required
 make migrate     # apply any new schema migrations to a running database
-make smoke       # phase 1: platform smoke test          (41 checks)
+make smoke       # phase 1: platform smoke test          (51 checks)
 make e2e         # phase 2/3: place an order and follow it into OpenELIS
 make results     # result return: bridge correlation + HIS projection (14 checks)
 make negative    # phase 4: negative paths and access control (34 checks)
@@ -64,7 +64,8 @@ out.
 | Entry point | URL |
 |---|---|
 | HIS sandbox frontend | http://localhost:8090 |
-| HIS API (through Kong) | http://localhost:8090/api/healthz |
+| HIS API (through Kong) | http://localhost:8090/api/health |
+| Consul UI | http://localhost:8500 |
 | Kong admin | http://localhost:8001 |
 | OpenELIS UI | https://localhost/ — `admin` / `adminADMIN!` |
 | HIS database | `psql -h localhost -p 55432 -U his_app -d his_sandbox` |
@@ -318,6 +319,19 @@ means adding it to the example; adding a secret means adding it as
 
 Security posture — what is protected, what is not, and why the FHIR endpoint
 cannot use a token — is in [`docs/security.md`](docs/security.md).
+
+## Platform integration
+
+Both services present the same four hooks the real HIS platform expects, in the
+same shapes its Node services use: `GET /health`, `GET /metrics`, Consul
+self-registration, and application logs on the shared Kafka `logs` topic. The
+sandbox runs its own Consul so that registration path is exercised rather than
+assumed.
+
+The reasoning — including why a registry outage must not stop the laboratory,
+why log shipping is filtered and bounded, and why the advertised address comes
+from the routing table rather than `eth0` — is in
+[`docs/platform-integration.md`](docs/platform-integration.md).
 
 ## Troubleshooting
 

@@ -17,14 +17,14 @@ for container in his-db-external openelis-db-external his-kafka his-kong his-edg
 done
 
 section "Edge routing"
-check_contains "Reverse proxy answers /healthz" \
-    "curl -sf http://localhost:${EDGE_HTTP_PORT}/healthz" '"status":"ok"'
+check_contains "Reverse proxy answers /health" \
+    "curl -sf http://localhost:${EDGE_HTTP_PORT}/health" '"status":"healthy"'
 check_contains "Frontend is served at /" \
     "curl -sf http://localhost:${EDGE_HTTP_PORT}/" 'HIS Sandbox'
-check_contains "Kong routes /api/healthz to his-api" \
-    "curl -sf ${API}/healthz" '"component":"his-api"'
+check_contains "Kong routes /api/health to his-api" \
+    "curl -sf ${API}/health" '"service":"his-api-service"'
 check_contains "Kong stamps a correlation id" \
-    "curl -sfD - -o /dev/null ${API}/healthz" 'X-Correlation-ID'
+    "curl -sfD - -o /dev/null ${API}/health" 'X-Correlation-ID'
 check_contains "Test catalogue is reachable through the gateway" \
     "curl -sf ${API}/test-catalogue" 'loincCode'
 
@@ -64,7 +64,7 @@ check "Topics are replicated as this deployment configured" \
         == ${KAFKA_REPLICATION_FACTOR} ]]"
 
 section "Bridge FHIR endpoint"
-check_contains "Bridge is healthy" "in_sandbox http://localhost:8080/healthz" '"status":"ok"'
+check_contains "Bridge is healthy" "in_sandbox http://localhost:8080/health" '"status":"healthy"'
 check_contains "CapabilityStatement declares FHIR R4" \
     "in_sandbox http://localhost:8080/fhir/metadata" '4.0.1'
 check_contains "Task search responds with a searchset bundle" \
@@ -92,6 +92,92 @@ import json,sys
 b = json.load(sys.stdin)
 assert len(b.get('entry', [])) <= ${BRIDGE_MAX_SEARCH_RESULTS}, 'cap not applied'
 \""
+
+section "Platform integration"
+
+# The sandbox is a reference for the real HIS platform, so both services have to
+# be visible to it the same way the Node services are: discoverable in Consul,
+# scrapeable by Prometheus, and writing to the shared log topic.
+
+for svc in bridge-service his-api-service; do
+    check "$svc is registered in Consul" \
+        "[[ \$(curl -sf http://localhost:${CONSUL_HTTP_PORT}/v1/catalog/service/$svc \
+              | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))') -ge 1 ]]"
+
+    # Registration alone proves nothing. The first attempt registered the bridge
+    # at its DATA-network address while Consul watches the sandbox network: it
+    # appeared in the catalogue and every check failed. A service in the
+    # catalogue that Consul cannot reach is worse than one that never
+    # registered, because Kong will route to it.
+    check "Consul can reach the address $svc advertised" \
+        "[[ \$(curl -sf http://localhost:${CONSUL_HTTP_PORT}/v1/health/service/$svc \
+              | python3 -c \"
+import json,sys
+bad = [c['Status'] for e in json.load(sys.stdin) for c in e['Checks']
+       if c['Name'].endswith('-health') and c['Status'] != 'passing']
+print('critical' if bad else 'passing')\") == passing ]]"
+
+    check "$svc carries the estate's Consul tags" \
+        "[[ \$(curl -sf http://localhost:${CONSUL_HTTP_PORT}/v1/catalog/service/$svc \
+              | python3 -c \"
+import json,sys
+tags = set(json.load(sys.stdin)[0]['ServiceTags'])
+print('ok' if {'hospital','microservice','load-balanced'} <= tags else f'missing from {tags}')\") == ok ]]"
+done
+
+check_contains "The bridge exposes Prometheus request histograms" \
+    "docker exec bridge curl -sf http://localhost:8080/metrics" 'http_request_duration_seconds_bucket'
+check_contains "The HIS service exposes them too" \
+    "docker exec his-api curl -sf http://localhost:8080/metrics" 'http_request_duration_seconds_bucket'
+
+# The log topic is SHARED with every other service in the estate. Two things
+# have to hold: application logs arrive, and framework request chatter does not.
+# Before the category filter, an idle bridge put ~2,800 lines on it in five
+# minutes — none of them about a patient.
+LOGS_SAMPLE=$(
+    part=$(docker exec his-kafka /opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server kafka:9092 \
+             --topic "$TOPIC_LOGS" 2>/dev/null | sort -t: -k3 -n | tail -1)
+    p=$(cut -d: -f2 <<< "$part"); end=$(cut -d: -f3 <<< "$part")
+    start=$(( end > 40 ? end - 40 : 0 ))
+    docker exec his-kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 \
+        --topic "$TOPIC_LOGS" --partition "$p" --offset "$start" --max-messages 40 2>/dev/null
+)
+
+check "Application logs reach the shared topic, in the estate's envelope" \
+    "python3 -c \"
+import json,sys
+rows=[json.loads(l) for l in sys.stdin if l.strip().startswith('{')]
+assert rows, 'no messages on the log topic'
+want={'service','level','message','timestamp'}
+assert all(want <= set(r) for r in rows), f'envelope mismatch: {sorted(rows[0])}'
+\" <<< \"\$LOGS_SAMPLE\""
+
+# This one has to be CAUSAL, not historical. Sampling the tail of the topic
+# tests whatever the service was doing last week; the question is what it does
+# now. So: note the end offsets, generate requests, and look only at what those
+# requests produced.
+LOG_END_BEFORE=$(docker exec his-kafka /opt/kafka/bin/kafka-get-offsets.sh \
+    --bootstrap-server kafka:9092 --topic "$TOPIC_LOGS" 2>/dev/null | awk -F: '{s+=$3} END {print s}')
+
+for _ in $(seq 1 8); do
+    docker exec bridge curl -sf -o /dev/null http://localhost:8080/health 2>/dev/null
+    docker exec his-api curl -sf -o /dev/null http://localhost:8080/health 2>/dev/null
+done
+sleep 4
+
+LOG_END_AFTER=$(docker exec his-kafka /opt/kafka/bin/kafka-get-offsets.sh \
+    --bootstrap-server kafka:9092 --topic "$TOPIC_LOGS" 2>/dev/null | awk -F: '{s+=$3} END {print s}')
+
+# 16 requests, each of which ASP.NET describes in four Information lines. Before
+# the category filter that was ~64 messages on a topic shared with every service
+# in the estate, none of them about a patient.
+PRODUCED=$(( LOG_END_AFTER - LOG_END_BEFORE ))
+if [[ $PRODUCED -le 8 ]]; then
+    ok "16 health requests added $PRODUCED log message(s), not ~64 of framework chatter"
+else
+    bad "Framework request chatter is kept off the shared topic" \
+        "16 requests produced $PRODUCED messages; the category filter is not applied"
+fi
 
 section "Data tier"
 check "HIS schema is present" \

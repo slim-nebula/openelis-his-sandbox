@@ -28,7 +28,7 @@ services:
       - ../gateway/proxy/nginx.conf:/etc/nginx/nginx.conf:ro
     networks: [sandbox]
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -110,7 +110,8 @@ services:
         for t in ${TOPIC_ORDER_CREATED} ${TOPIC_ORDER_SENT} ${TOPIC_ORDER_FAILED} \
                  ${TOPIC_RESULT_RELEASED} ${TOPIC_RESULT_FAILED} \
                  ${TOPIC_ORDER_CREATED}.dlq ${TOPIC_ORDER_SENT}.dlq \
-                 ${TOPIC_ORDER_FAILED}.dlq ${TOPIC_RESULT_RELEASED}.dlq; do
+                 ${TOPIC_ORDER_FAILED}.dlq ${TOPIC_RESULT_RELEASED}.dlq \
+                 ${TOPIC_LOGS}; do
           /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
             --create --if-not-exists --topic "$$t" --partitions 3 \
             --replication-factor ${KAFKA_REPLICATION_FACTOR}
@@ -124,6 +125,28 @@ services:
         done
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
     networks: [sandbox]
+
+  # --- Service discovery ------------------------------------------------------
+  # Mirrors the real HIS platform, where every service registers itself and Kong
+  # routes to `<name>.service.consul` rather than to a hostname someone typed.
+  #
+  # Dev mode: single node, in memory, no persistence. The registry is rebuilt by
+  # the services re-registering on start, so there is nothing here worth keeping
+  # across a restart — and a registry that survives a restart with stale entries
+  # is worse than one that starts empty.
+  consul:
+    image: hashicorp/consul:1.20
+    container_name: his-consul
+    restart: unless-stopped
+    command: ["agent", "-dev", "-client=0.0.0.0", "-ui"]
+    ports:
+      - "${CONSUL_HTTP_PORT}:8500"
+    networks: [sandbox]
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   # --- Cache ------------------------------------------------------------------
   # Provisioned because the brief lists it as an optional support component and

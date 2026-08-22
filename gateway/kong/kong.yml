@@ -72,7 +72,7 @@ services:
         strip_path: false
 
       - name: his-health
-        paths: ["/healthz"]
+        paths: ["/health"]
         methods: [GET]
         strip_path: false
 
