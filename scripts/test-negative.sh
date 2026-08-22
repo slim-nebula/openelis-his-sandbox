@@ -263,6 +263,64 @@ DLQ=$(bridge_sql "SELECT count(*) FROM bridge.dead_letters")
 info "bridge dead-letter rows: ${DLQ:-0}  (inspect with: bridge_admin GET /ops/dead-letters)"
 
 # ---------------------------------------------------------------------------
+section "An unhealthy service leaves the rotation by itself"
+
+# Kong used to address his-api by its Docker hostname, cached the address, and
+# once served a request for the HIS API from the BRIDGE after Docker reassigned
+# it. Routing by Consul service name fixes that, and buys something further:
+# Consul only answers with instances whose health check passes, so a service
+# that cannot reach its database stops receiving traffic instead of being
+# routed to and failing every request.
+info "stopping his-api…"
+docker stop his-api >/dev/null 2>&1
+
+DROPPED=""
+for _ in $(seq 1 12); do
+    [[ $(curl -s "http://localhost:${CONSUL_HTTP_PORT}/v1/health/service/his-api-service?passing" \
+         | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null) == "0" ]] \
+        && { DROPPED=yes; break; }
+    sleep 5
+done
+
+if [[ -n "$DROPPED" ]]; then
+    ok "Consul withdrew the failed instance from service discovery"
+else
+    bad "Consul withdrew the failed instance from service discovery" \
+        "it is still being advertised as passing"
+fi
+
+# Withdrawal is eventual, not instantaneous: Consul notices within its 10s check
+# interval, and Kong may serve a cached record for up to dns_stale_ttl after
+# that. Asserting on the instant Consul drops it tests the propagation delay
+# rather than the behaviour — which is what this did on its first run, catching
+# Kong mid-cache with a 502.
+#
+# What must hold is that Kong stops returning SUCCESS. 503 (no address to route
+# to) and 502 (routed to a container that is gone) are both refusals; 200 from a
+# stopped service would be a lie.
+GONE_CODE=""
+for _ in $(seq 1 10); do
+    GONE_CODE=$(status_of "${API}/health")
+    [[ "$GONE_CODE" =~ ^5 ]] && break
+    sleep 3
+done
+
+if [[ "$GONE_CODE" =~ ^5 ]]; then
+    ok "Kong refuses rather than routing to an instance that is gone (http $GONE_CODE)"
+else
+    bad "Kong refuses rather than routing to an instance that is gone" \
+        "got http $GONE_CODE — a stopped service is still being served"
+fi
+
+info "restarting his-api…"
+docker start his-api >/dev/null 2>&1
+bash "$(dirname "${BASH_SOURCE[0]}")/wait-for.sh" "his-api" \
+    "curl -sf -o /dev/null ${API}/health" 180 || true
+
+check "And it returns to rotation without anyone touching Kong" \
+    "[[ \$(status_of ${API}/health) == 200 ]]"
+
+# ---------------------------------------------------------------------------
 section "Callers without the right to act are refused"
 
 # These assert on the STATUS CODE rather than the body. A refusal that returns

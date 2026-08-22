@@ -10,7 +10,13 @@ _transform: true
 
 services:
   - name: his-patient-laborder-service
-    url: http://his-api:8080
+    # Resolved through Consul (see KONG_DNS_RESOLVER), which returns only
+    # instances whose health check is passing. A service that cannot reach its
+    # database drops out of DNS and stops receiving traffic, instead of being
+    # routed to and failing every request.
+    protocol: http
+    host: his-api-service.service.consul
+    port: 8080
     connect_timeout: 5000
     read_timeout: 30000
     write_timeout: 30000

@@ -46,6 +46,21 @@ services:
       KONG_PROXY_ACCESS_LOG: /dev/stdout
       KONG_PROXY_ERROR_LOG: /dev/stderr
       KONG_LOG_LEVEL: notice
+      # Route by service discovery, not by Docker hostname. Kong previously
+      # cached an address that Docker later reassigned to another container and
+      # served a request for the HIS API from the bridge; addressing
+      # <name>.service.consul makes a moved container a registry update rather
+      # than a stale cache.
+      KONG_DNS_RESOLVER: ${CONSUL_IP}:8600
+      # A records only. Consul answers SRV for these names too, but its SRV
+      # targets point at synthetic .addr.<dc>.consul names that need a second
+      # resolution step; A records carry the healthy instance addresses
+      # directly and the port is already declared on the service.
+      KONG_DNS_ORDER: A,CNAME
+      # Consul serves records with TTL 0, meaning "do not cache". Kong needs a
+      # floor or it re-resolves on every request; 5s is short enough that a
+      # failover is noticed quickly and long enough not to be a DNS flood.
+      KONG_DNS_STALE_TTL: 5
     volumes:
       - ../gateway/kong/kong.yml:/etc/kong/kong.yml:ro
     ports:
@@ -141,7 +156,12 @@ services:
     command: ["agent", "-dev", "-client=0.0.0.0", "-ui"]
     ports:
       - "${CONSUL_HTTP_PORT}:8500"
-    networks: [sandbox]
+    networks:
+      sandbox:
+        # Fixed, because Kong's dns_resolver takes an address rather than a
+        # name. Everything else on this network keeps a dynamic one — that is
+        # the point of registering.
+        ipv4_address: ${CONSUL_IP}
     healthcheck:
       test: ["CMD", "consul", "members"]
       interval: 10s
@@ -168,6 +188,13 @@ networks:
   sandbox:
     name: oe-sandbox-net
     driver: bridge
+    # An explicit subnet exists for one reason: Kong's `dns_resolver` accepts IP
+    # addresses, not hostnames, so Consul needs an address that survives a
+    # container being recreated. The real HIS solves this the same way — its
+    # CONSUL_HOST default is a fixed 10.10.0.12.
+    ipam:
+      config:
+        - subnet: ${SANDBOX_SUBNET}
   integration:
     name: oe-integration-net
     driver: bridge

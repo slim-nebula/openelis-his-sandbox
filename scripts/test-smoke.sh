@@ -31,6 +31,13 @@ check_contains "Test catalogue is reachable through the gateway" \
 section "Gateway configuration"
 check_contains "Kong loaded the declarative routes" \
     "curl -sf http://localhost:${KONG_ADMIN_PORT}/routes" 'lab-orders-create'
+
+# Addressing a Docker hostname let Kong cache an address that Docker later
+# reassigned to another container — it served a request for the HIS API from
+# the bridge. Routing by registered service name makes a moved container a
+# registry update instead of a stale cache.
+check_contains "Kong addresses the HIS by its Consul service name, not a container hostname" \
+    "curl -sf http://localhost:${KONG_ADMIN_PORT}/services" 'his-api-service.service.consul'
 check "Internal bridge API is NOT exposed through Kong" \
     "[[ \$(curl -s -o /dev/null -w '%{http_code}' ${API}/internal/lab-orders/00000000-0000-0000-0000-000000000000) == 404 ]]"
 

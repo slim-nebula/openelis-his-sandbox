@@ -113,26 +113,77 @@ second network, its eth0 registration becomes a coin flip.
 
 ---
 
-## Still pointing at Docker DNS, not Consul
+## Kong routes through Consul
 
-Kong routes to `http://his-api:8080` — a Docker hostname — while the real
-platform routes to `<name>.service.consul`.
+Kong used to address `http://his-api:8080` — a Docker hostname — while the real
+platform addresses `<name>.service.consul`.
 
-That difference produced a live fault during this work. Both services were
-recreated, Docker reassigned their addresses, and Kong served a request for
-`/api/health` **from the bridge**, because it had cached the address that now
-belonged to the other container:
+That difference produced a live fault. Both services were recreated, Docker
+reassigned their addresses, and Kong served a request for `/api/health`
+**from the bridge**, because it had cached the address that now belonged to the
+other container:
 
 ```
 $ curl localhost:8090/api/health
 {"service":"bridge-service", ...}      # expected his-api-service
 ```
 
-`make up` already restarts Kong to work around this. The real fix is the one the
-HIS platform already uses: point Kong's resolver at Consul and address services
-by `<name>.service.consul`, so a moved container is a registry update rather
-than a stale cache. Now that the sandbox runs Consul and both services register
-with it, that change is small — and it is the next piece of this work.
+Kong now resolves through Consul, as the HIS platform does:
+
+```yaml
+# gateway/kong/kong.yml
+- name: his-patient-laborder-service
+  protocol: http
+  host: his-api-service.service.consul
+  port: 8080
+```
+
+**Consul needs a fixed address for this**, because Kong's `dns_resolver` takes
+an address rather than a name — the same constraint the real HIS solves with its
+`CONSUL_HOST` default of `10.10.0.12`. So the sandbox network has an explicit
+subnet (`SANDBOX_SUBNET`) and Consul has a pinned address in it (`CONSUL_IP`).
+Nothing else is pinned; the whole point of registering is that everything else
+can move.
+
+`A` records only (`KONG_DNS_ORDER: A,CNAME`). Consul answers SRV for these names
+too, but its SRV targets point at synthetic `.addr.<dc>.consul` names needing a
+second resolution step, and the port is already declared on the service.
+
+### What this buys beyond fixing the stale cache
+
+Consul only answers with instances whose **health check is passing**. So a
+service that cannot reach its database — which is what `/health` actually tests
+— drops out of DNS and stops receiving traffic, rather than being routed to and
+failing every request.
+
+Measured:
+
+| | |
+|---|---|
+| `docker stop his-api` | Consul withdrew it in **~5 s** |
+| `GET /api/health` | **503**, rather than routing to a dead container |
+| `docker start his-api` | back in rotation automatically, Kong untouched |
+
+503 is the right answer here. Routing anyway and returning whatever a stopped
+container produces would be worse; returning 200 would be a lie.
+
+**Withdrawal is eventual, not instantaneous.** Consul notices within its 10s
+check interval, and Kong may serve a cached record for up to `dns_stale_ttl`
+after that. Steady state is 503 — confirmed from Kong directly and through the
+edge — but during the transition Kong has been observed returning 500 or 502
+while it still holds an address for a container that is gone.
+
+So the test asserts Kong stops returning *success*, not that it returns one
+particular code at one particular instant. The first version demanded 503
+immediately and caught Kong mid-cache, which was a race in the test rather than
+a fault in the system.
+
+Shortening that window means a shorter check interval and more health traffic.
+10s matches what the Node services register, and matching them matters more here
+than shaving three seconds.
+
+`make up` still restarts Kong, which is now belt-and-braces rather than the
+mitigation it used to be.
 
 ---
 
