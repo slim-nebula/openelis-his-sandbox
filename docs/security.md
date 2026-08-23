@@ -108,6 +108,46 @@ In production, put mutual TLS between the two containers at the proxy layer, or
 an mTLS-terminating sidecar. That works without OpenELIS knowing anything about
 it, which is exactly why it is the right answer here.
 
+### This pattern has a name, and the gap it leaves has a name too
+
+Worth knowing before defending this design to an assessor: it is not improvised.
+
+**IHE ATNA defines a *Secure Application Actor*** for exactly this situation — a
+product that cannot meet the Secure Node requirements on its own. The profile's
+answer is not to waive the requirement but to surround such a system with a
+conformant boundary that performs node authentication and audit on its behalf.
+That is what the bridge is.
+
+**The reference OpenELIS deployments do the same thing.** DIGI/ITECH implementer
+guidance gives two supported ways to reach a remote FHIR store: client
+certificates, or routing through **OpenHIM** and using HTTP Basic auth there.
+Both put a mediator in front of the credential-incapable system. In those
+deployments the bridge's position is OpenHIM's position — so this is the
+ecosystem's own pattern, arrived at independently here.
+
+**But the boundary is only conformant once mTLS is real.** ATNA requires
+node authentication to be *bidirectional and certificate-based*, and is explicit
+that PHI must not cross a link that is not bidirectionally node-authenticated.
+An origin allowlist authenticates a network location, not a node: it produces no
+cryptographic identity, no audit evidence, and no protection against anything
+already inside the segment.
+
+So the honest statement is narrower than "we follow ATNA":
+
+| | |
+|---|---|
+| The **pattern** — a mediator fronting a system that cannot authenticate | ATNA-sanctioned, and what real OpenELIS deployments do |
+| The **implementation** today — origin allowlist over plain HTTP | a stopgap. Not node authentication, and not conformant |
+| What closes it | mTLS at the proxy, which needs no change to OpenELIS |
+
+**Do not claim SMART on FHIR Backend Services conformance for this hop.** That
+flow requires the *client* to hold a private key and sign a client assertion
+(RFC 7523). OpenELIS cannot, on this path — which is the whole finding above.
+The standard has no accommodation for a client that structurally cannot
+authenticate; it simply assumes one can. The bridge could act as a conformant
+Backend Services client toward *other* systems, and that is where the claim
+would be true.
+
 ---
 
 ## 4. User authentication
@@ -415,6 +455,25 @@ broker failure loses orders. Nothing in the code has to change for it.
 
 Ordered by how much it would matter in a hospital.
 
+**No audit trail in the form an assessor expects.** This is the gap most likely
+to be missed, because the system does not feel like it is missing anything: the
+HIS writes an audit row for every order transition (`his.lab_order_events`), the
+bridge keeps `order_tracking` and `dead_letters`, and both services put
+structured application logs on the estate's shared Kafka topic.
+
+None of that is what IHE ATNA means by an audit trail. ATNA requires **security
+audit events** — who accessed which patient's data, from where, and whether it
+succeeded — recorded in the RFC 3881 / DICOM Supplement 95 schema and forwarded
+to a central **Audit Record Repository** over syslog with TLS. What exists here
+is *clinical* history plus operational logging. Neither answers "which user read
+this patient's results last Tuesday", which is the question an audit trail is
+kept to answer.
+
+Two things make this cheaper than it sounds now that authentication exists: the
+identity to record is already on `req.user`, and the transport to a repository
+is the same shipping path the log topic already uses. It is a schema and a
+destination, not new plumbing.
+
 **`orderingProvider` is still free text.** The clinical API now knows which
 clinician is calling — `req.user` carries IAM's claims — but the order record
 takes the ordering provider from the request body, so the name on the order and
@@ -435,8 +494,12 @@ one hospital can read patients from another.
 
 **No TLS inside the sandbox.** Bridge ↔ OpenELIS is plain HTTP
 (`allowHTTP=true`). Patient results cross that hop in clear text. Terminating
-TLS at the proxy is also where mutual TLS would go (§3), so these are one
-piece of work.
+TLS at the proxy is also where mutual TLS would go (§3), so these are one piece
+of work — and it is the piece that turns the origin allowlist from a stopgap
+into a conformant boundary. **Rank it above every other item on this list**,
+including anything to do with token algorithms: ATNA is explicit that PHI must
+not cross a link that is not bidirectionally node-authenticated, and no
+improvement to what the bridge checks changes what is readable on the wire.
 
 **Self-signed certificates**, and `OE_REST_ACCEPT_ANY_CERT=true`. That flag
 must be `false` anywhere real; it is configuration rather than an unconditional
