@@ -105,7 +105,7 @@ Routes are grouped by who calls them:
 row, its audit row and the `lab.order.created` event in one transaction, and
 publishes nothing. `modules/messaging/outbox.relay.ts` drains it. That single
 commit is what makes "the order exists but billing never heard about it"
-impossible — see `docs/his-kafka-findings.md`.
+impossible — see `docs/his-findings.md`.
 
 **The producer settings.** `config/kafka.ts` sets `idempotent: true` and bounds
 in-flight requests. Without it a retry can land *after* a message produced

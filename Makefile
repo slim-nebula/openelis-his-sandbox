@@ -170,7 +170,7 @@ capture: ## Capture what OpenELIS really sends on release (needs a lab user)
 negative: ## Phase 4 - negative paths
 	@bash scripts/test-negative.sh
 
-auth: ## User tokens, revocation, degraded mode and the internal key
+auth: ## User tokens, revocation, degraded mode, the audit trail and the internal key
 	@bash scripts/test-auth.sh
 
 certs: ## Issue the certificates for the OpenELIS <-> bridge hop (FORCE=true to regenerate)

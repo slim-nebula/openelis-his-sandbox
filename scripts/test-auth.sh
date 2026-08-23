@@ -225,7 +225,58 @@ check "…and enforces revocation again once Redis is back" \
     "[[ \$(in_bridge /ops/orders -H 'Authorization: Bearer $RECOVERED') == 401 ]]"
 
 # ---------------------------------------------------------------------------
-section "5 · The bridge is a service, not a person"
+section "5 · The audit trail records who, not just what"
+
+# The distinction this table exists for: a READ leaves no other trace anywhere.
+# Nothing in lab_order_events, nothing in the order row. If it is not here, the
+# question "who opened this patient's record" has no answer at all.
+AUDIT_BEFORE=$(his_sql "SELECT count(*) FROM his.audit_events")
+AUDIT_USER=$(mint --user 21 --name auditor.test --groups "$LAB_ORDER_GROUP")
+code_for "$CLINICAL" -H "Authorization: Bearer $AUDIT_USER" >/dev/null
+sleep 1
+
+check "A successful read is recorded" \
+    "[[ \$(his_sql \"SELECT count(*) FROM his.audit_events WHERE actor_id = '21' AND event_type = 'patient.search' AND outcome = '0'\") -ge 1 ]]"
+
+check "...naming the user from the VERIFIED token, and the caller's address" \
+    "[[ -n \$(his_sql \"SELECT actor_ip FROM his.audit_events WHERE actor_id = '21' ORDER BY audit_id DESC LIMIT 1\") ]]"
+
+# Refusals matter more than successes. A trail holding only what worked answers
+# "who read this" but not "who tried".
+code_for "$CLINICAL" -H "Authorization: Bearer $FORGED" >/dev/null
+sleep 1
+check "A refused request is recorded too, as a failure outcome" \
+    "[[ \$(his_sql \"SELECT count(*) FROM his.audit_events WHERE event_type = 'auth.rejected' AND outcome = '4'\") -ge 1 ]]"
+
+check "The trail grew" \
+    "[[ \$(his_sql 'SELECT count(*) FROM his.audit_events') -gt ${AUDIT_BEFORE:-0} ]]"
+
+# What makes it evidence rather than a log. A trail its own subjects can rewrite
+# proves nothing, so the application role has INSERT and SELECT and nothing
+# else - enforced by the database, not by agreement.
+audit_sql_fails() {
+    ! docker exec -e PGPASSWORD="$HIS_DB_PASSWORD" his-db-external \
+        psql -qX -U "$HIS_DB_USER" -d "$HIS_DB_NAME" -c "$1" >/dev/null 2>&1
+}
+
+check "The application cannot alter what an audit row says" \
+    "audit_sql_fails \"UPDATE his.audit_events SET actor_id = 'someone-else'\""
+
+check "...and cannot delete one" \
+    "audit_sql_fails 'DELETE FROM his.audit_events'"
+
+# The one exception, column-scoped: the relay records that a row was shipped
+# without being able to change what the row says.
+check "...but can still mark a row as shipped to the repository" \
+    "! audit_sql_fails 'UPDATE his.audit_events SET shipped_at = now() WHERE audit_id = (SELECT min(audit_id) FROM his.audit_events)'"
+
+# The trail must not become a second copy of the patient database. It records
+# THAT a record was read; the columns to hold contents do not exist.
+check "The trail holds references, never patient data" \
+    "[[ \$(his_sql \"SELECT count(*) FROM information_schema.columns WHERE table_schema='his' AND table_name='audit_events' AND column_name IN ('first_name','last_name','date_of_birth','result_value','payload')\") == 0 ]]"
+
+# ---------------------------------------------------------------------------
+section "6 · The bridge is a service, not a person"
 
 check "/internal/* refuses a call with no key" \
     "[[ \$(in_his GET '$INTERNAL_UNKNOWN') == 401 ]]"
@@ -242,7 +293,7 @@ check "A user token is NOT a service key" \
     "[[ \$(in_his GET '$INTERNAL_UNKNOWN' -H 'Authorization: Bearer $HIS_TOKEN') == 401 ]]"
 
 # ---------------------------------------------------------------------------
-section "6 · The bridge's operational views take either credential"
+section "7 · The bridge's operational views take either credential"
 
 check "/ops refuses an anonymous caller" \
     "[[ \$(in_bridge /ops/orders) == 401 ]]"

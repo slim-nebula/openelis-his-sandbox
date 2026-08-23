@@ -4,6 +4,7 @@ import { config } from '@config/env.js';
 import { logger } from '@config/logger.js';
 import { redis } from '@config/redis.js';
 import { authChecks } from '@config/metrics.js';
+import { auditAuthFailure } from '@core/audit/audit.middleware.js';
 
 /**
  * The estate's authentication, as `patient-service` performs it: verify an
@@ -40,7 +41,20 @@ interface JwtPayload {
   business_unit_ids?: number[];
 }
 
-const unauthorized = (res: Response, message: string): void => {
+/**
+ * Refuse, and record the refusal.
+ *
+ * Every 401 from here is an audit event. A trail holding only the accesses that
+ * succeeded answers "who read this patient's record" but not "who tried and was
+ * turned away", and the second question is where an investigation starts.
+ */
+const unauthorized = (
+  req: Request,
+  res: Response,
+  message: string,
+  actorId?: string,
+): void => {
+  auditAuthFailure(req, message, actorId);
   res.status(401).json({ status: false, message, data: null });
 };
 
@@ -83,7 +97,7 @@ export const authenticateUser = async (
 
   const token = bearerFrom(req.headers.authorization);
   if (!token) {
-    unauthorized(res, 'Authorization token is required');
+    unauthorized(req, res, 'Authorization token is required');
     return;
   }
 
@@ -102,12 +116,12 @@ export const authenticateUser = async (
   } catch {
     // Forged, altered, or expired. The token is never logged — a rejected
     // credential here is often a valid credential for somewhere else.
-    unauthorized(res, 'Invalid or expired token');
+    unauthorized(req, res, 'Invalid or expired token');
     return;
   }
 
   if (payload.usr_id === undefined || payload.usr_id === null || payload.usr_id === '') {
-    unauthorized(res, 'Invalid token structure');
+    unauthorized(req, res, 'Invalid token structure');
     return;
   }
 
@@ -126,7 +140,7 @@ export const authenticateUser = async (
     // changed, or the 24h session TTL expired.
     if (!session || session !== token) {
       authChecks.labels('revoked').inc();
-      unauthorized(res, 'Session ended or token revoked');
+      unauthorized(req, res, 'Session ended or token revoked', userId);
       return;
     }
 
@@ -186,6 +200,7 @@ export const requireGroup =
       logger.warn(
         `Refused ${req.method} ${req.originalUrl} for user ${req.user?.usr_id}: not in group ${group}`,
       );
+      auditAuthFailure(req, `not in group ${group}`, req.user?.usr_id);
       res.status(403).json({
         status: false,
         message: `This endpoint requires membership of ${group}.`,
