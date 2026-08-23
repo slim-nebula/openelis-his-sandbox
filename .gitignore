@@ -22,3 +22,8 @@ services/**/obj/
 # Node build output for the HIS service
 services/his-api/node_modules/
 services/his-api/dist/
+
+# Certificates for the OpenELIS <-> bridge hop, including private keys.
+# `make certs` recreates them; the CA is then imported into OpenELIS's
+# truststore by `make up`, so regenerating means re-running that too.
+certs/

@@ -40,6 +40,8 @@ Apple Silicon).
 ```bash
 make secrets     # generate .env from .env.example        ← first run only
 make up          # render config, start databases, build and start everything
+make certs       # issue the OpenELIS <-> bridge certificates ← first run only
+make trust-bridge  # teach OpenELIS to trust them, and restart it
 make sync-catalogue  # read the orderable test menu from OpenELIS  ← required
 make migrate     # apply any new schema migrations to a running database
 make token       # sign in — the clinical API needs a user token

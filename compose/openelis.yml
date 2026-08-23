@@ -27,6 +27,54 @@ services:
       - oe-certs:/etc/ssl/certs/
     networks: [openelis]
 
+  # --- Teach OpenELIS to trust the bridge ------------------------------------
+  # One keytool import, additive: our CA is added beside certgen's own entry,
+  # which stays untouched. Runs on every `make up` because certgen may recreate
+  # the store, and an import that happened once is not a guarantee.
+  #
+  # This is the ONLY change made to anything OpenELIS reads, and it is the
+  # change its own installation guide describes: "build a truststore containing
+  # the peer's certificate". No image, no code, no database.
+  oe-trust-bridge:
+    # The OpenELIS image itself, not a JRE image. Two reasons: it is already
+    # pulled, so this adds nothing to a deployment; and its keytool is the same
+    # one whose Tomcat will read the store, so a PKCS12 written here is one that
+    # side can certainly open.
+    image: itechuw/openelis-global-2:develop
+    platform: linux/amd64
+    container_name: openelis-trust-bridge
+    restart: "no"
+    depends_on:
+      oe-certs:
+        condition: service_completed_successfully
+    volumes:
+      - oe-key-trust-store:/etc/openelis-global
+      - ../certs:/certs:ro
+    environment:
+      TRUSTSTORE_PW: ${SSL_TRUSTSTORE_PASSWORD}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        if [ ! -f /certs/ca.crt ]; then
+          echo "No /certs/ca.crt — run 'make certs'. Leaving the truststore alone."
+          exit 0
+        fi
+        # -noprompt overwrites the alias if it is already there, so re-running
+        # after regenerating the CA picks up the new one rather than silently
+        # keeping the old.
+        keytool -delete -alias his-bridge-ca \
+          -keystore /etc/openelis-global/truststore \
+          -storepass "$$TRUSTSTORE_PW" -storetype PKCS12 2>/dev/null || true
+        keytool -importcert -noprompt -alias his-bridge-ca \
+          -file /certs/ca.crt \
+          -keystore /etc/openelis-global/truststore \
+          -storepass "$$TRUSTSTORE_PW" -storetype PKCS12
+        echo "Imported the HIS bridge CA into OpenELIS's truststore:"
+        keytool -list -keystore /etc/openelis-global/truststore \
+          -storepass "$$TRUSTSTORE_PW" -storetype PKCS12 | grep -i "trustedCertEntry\|PrivateKey"
+    networks: [openelis]
+
   # --- LIS application -------------------------------------------------------
   oe.openelis.org:
     image: itechuw/openelis-global-2:develop
@@ -35,6 +83,9 @@ services:
     restart: unless-stopped
     depends_on:
       oe-certs:
+        condition: service_completed_successfully
+      # Must finish first: the truststore is read once, when Tomcat starts.
+      oe-trust-bridge:
         condition: service_completed_successfully
     ports:
       - "${OE_HTTP_PORT}:8080"

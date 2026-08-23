@@ -1,24 +1,24 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using Prometheus;
 using Task = System.Threading.Tasks.Task;
 
 namespace Bridge;
 
 /// <summary>
-/// Who may call what.
+/// Who may call what. The bridge serves three populations, and each is
+/// answered differently because each can prove a different amount:
 ///
-/// The bridge serves two populations on one port, and they need opposite
-/// treatment:
+///   /fhir        OpenELIS, on a separate mutually authenticated port. It
+///                proves who it is with a client certificate (MutualTls.cs).
+///   /ops, sync   operators and `make` targets. The shared operator token, or
+///                a signed-in user's token from IAM.
+///   /health      nothing. A health check that can fail authentication reports
+///   /metrics     an outage that is not happening.
 ///
-///   /fhir        OpenELIS. Cannot present a credential (see FhirPeerGuard),
-///                so it is restricted by WHERE the request comes from.
-///   /ops, sync   operators and `make` targets. Fully under our control, so
-///                they are restricted by WHAT the caller knows.
-///
-/// Everything else - /healthz and the cached /catalogue the HIS reads - is
-/// read-only and internal, governed by the same network membership that has
-/// always protected /internal/* on the HIS service.
+/// GET /catalogue is open as well: it is the laboratory's list of orderable
+/// tests, read service-to-service by the HIS, and holds no patient data.
 /// </summary>
 /// <summary>
 /// Guards /ops and the catalogue sync. Two credentials are accepted on the same
@@ -125,9 +125,17 @@ public sealed class OpsAccessFilter(
 }
 
 /// <summary>
-/// Restricts /fhir to the OpenELIS containers.
+/// Restricts /fhir to the OpenELIS containers by source address.
 ///
-/// WHY THIS IS NOT A TOKEN
+/// SUPERSEDED, AND KEPT ON PURPOSE
+/// With BRIDGE_MTLS_ENABLED this is no longer the control on the live path: the
+/// mutually authenticated port proves identity with a certificate, and does not
+/// consult this guard at all. What it still governs is the plaintext port,
+/// which mutual TLS restricts to loopback anyway - so it is now a second lock
+/// on a door that is already shut, and the fallback if mutual TLS is turned off
+/// to bisect a problem.
+///
+/// WHY THIS WAS EVER THE ANSWER, AND WHY IT IS NOT A TOKEN
 /// OpenELIS 3.2.1.11 has no way to authenticate to a remote FHIR source. Two
 /// independent facts in the shipped webapp establish it:
 ///
@@ -143,15 +151,15 @@ public sealed class OpsAccessFilter(
 /// populate them either.
 ///
 /// So a bearer token on /fhir would not secure the integration, it would end
-/// it. Restricting the origin is the strongest control available without
-/// modifying OpenELIS, which is out of scope by standing constraint: it is the
-/// accredited component.
+/// it. That much is still true, and is why the answer is a certificate at the
+/// transport layer rather than a credential in a header.
 ///
-/// This is weaker than authentication and should be read that way. What it
-/// removes is the ability of anything else on the sandbox network - the HIS
-/// service, the frontend, Kong, Redis - to inject a result or read the order
-/// stream. What it does not survive is an attacker who can spoof a source
-/// address or take over an OpenELIS container.
+/// The claim once made here - that origin restriction was the strongest control
+/// available without modifying OpenELIS - was wrong, and worth recording as
+/// wrong. Mutual TLS was also available without modifying OpenELIS, because its
+/// shared HTTP client already presents a client certificate; nothing had ever
+/// asked it for one. An address allowlist authenticates a network location, not
+/// a node, and IHE ATNA requires the latter.
 /// </summary>
 public sealed class FhirPeerGuard
 {
@@ -254,6 +262,24 @@ public static class AccessExtensions
         {"resourceType":"OperationOutcome","issue":[{"severity":"error","code":"forbidden","diagnostics":"Caller is not a permitted FHIR peer."}]}
         """;
 
+    private const string PlaintextRefusedOutcome = """
+        {"resourceType":"OperationOutcome","issue":[{"severity":"error","code":"security","diagnostics":"This endpoint requires a mutually authenticated TLS connection."}]}
+        """;
+
+    /// <summary>
+    /// How each FHIR request arrived. Worth a metric rather than a log line:
+    /// "is the laboratory link actually mutually authenticated, right now"
+    /// is a question worth alerting on, and a configuration file cannot answer
+    /// it - a setting can be true while nothing is using the port.
+    ///
+    /// transport="plaintext" above zero, on a deployment that believes it has
+    /// mutual TLS, means something is still coming in the other way.
+    /// </summary>
+    private static readonly Counter FhirRequests = Metrics.CreateCounter(
+        "bridge_fhir_requests_total",
+        "FHIR requests by how the connection was authenticated",
+        "transport");
+
     /// <summary>
     /// Guards /fhir at the pipeline rather than per-route: the FHIR surface is
     /// mapped across several handlers plus a bare POST /fhir for the result
@@ -269,8 +295,61 @@ public static class AccessExtensions
                 return;
             }
 
+            // With mutual TLS on, the plaintext port stops being a way in.
+            //
+            // Without this the whole exercise is decorative: a caller that did
+            // not want to present a certificate could simply use the other port
+            // and be back to an address check. Loopback is still allowed, since
+            // a request from inside this container is already past every
+            // boundary here - it is how the test suites reach /fhir, and
+            // anything able to make one could edit the configuration instead.
+            var mtls = ctx.RequestServices.GetRequiredService<MutualTlsOptions>();
+            var remote = ctx.Connection.RemoteIpAddress;
+            var loopback = remote is not null &&
+                IPAddress.IsLoopback(remote.IsIPv4MappedToIPv6 ? remote.MapToIPv4() : remote);
+            var onMtlsPort = mtls.Enabled && ctx.Connection.LocalPort == mtls.Port;
+
+            // Counted here, before any decision, so a REFUSED plaintext attempt
+            // is counted too. Those are the interesting ones: they are how a
+            // caller still using the old address announces itself.
+            FhirRequests.WithLabels(onMtlsPort ? "mtls" : loopback ? "loopback" : "plaintext").Inc();
+
+            if (mtls.Enabled && !onMtlsPort && !loopback)
+            {
+                app.Logger.LogWarning(
+                    "Refused {Method} {Path} from {Peer}: /fhir requires the mutually " +
+                    "authenticated port {Port}",
+                    ctx.Request.Method, ctx.Request.Path, remote?.ToString() ?? "unknown", mtls.Port);
+
+                ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+                ctx.Response.ContentType = "application/fhir+json";
+                await ctx.Response.WriteAsync(PlaintextRefusedOutcome, ctx.RequestAborted);
+                return;
+            }
+
+            // On the mutually authenticated port the certificate IS the control,
+            // and the address allowlist is not consulted.
+            //
+            // This was not the first design. Both checks were kept at first, on
+            // the reasoning that two controls are better than one. Turning it on
+            // showed why that is wrong here: the handshake succeeded, the
+            // certificate was accepted, and the allowlist then refused the
+            // request anyway — because Docker's DNS answers `openelis-webapp`
+            // with its address on ONE of the networks the two containers share,
+            // and the connection arrives from a different one.
+            //
+            // A weaker check that can veto a stronger one is not defence in
+            // depth. It is a second thing that can fail, guarding a door that is
+            // already locked better. The certificate proves identity
+            // cryptographically; an address does not, and cannot.
+            if (onMtlsPort)
+            {
+                await next();
+                return;
+            }
+
             var guard = ctx.RequestServices.GetRequiredService<FhirPeerGuard>();
-            if (await guard.IsAllowedAsync(ctx.Connection.RemoteIpAddress, ctx.RequestAborted))
+            if (await guard.IsAllowedAsync(remote, ctx.RequestAborted))
             {
                 await next();
                 return;

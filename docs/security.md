@@ -14,16 +14,17 @@ Three surfaces, and they cannot be treated alike:
 
 | Surface | Callers | Control |
 |---|---|---|
-| `/fhir` on the bridge | OpenELIS | **Origin restriction.** A credential is impossible — see §3 |
+| `/fhir` on the bridge | OpenELIS | **Mutual TLS**, peer pinned to one certificate. A *bearer token* is impossible — see §3 |
 | `/patients`, `/lab-orders`, `/test-catalogue` | clinicians via the browser | **User token** from IAM, verified and checked for revocation — §4 |
 | `/internal/*` on the HIS | the bridge | **Service key** in `x-internal-api-key` — §5 |
 | `/ops/*`, `/catalogue/sync` on the bridge | operators, `make` targets | **Operator token or user token**, fail-closed — §6 |
 | `/admin/catalogue/refresh` on the HIS | the deployment | **Operator token**, fail-closed — §6 |
 
 Four different controls, because there are four different kinds of caller. The
-distinction that matters is not read-versus-write but *who is asking*: a
-clinician has an identity worth auditing, the bridge has none because it is not
-a person, and OpenELIS cannot present one at all.
+distinction that matters is not read-versus-write but *who is asking*, and what
+that caller is able to prove: a clinician has an identity worth auditing, the
+bridge is a service and has no user to be, and OpenELIS can prove itself with a
+certificate but cannot carry a token.
 
 ---
 
@@ -55,14 +56,15 @@ environment should be able to do no more than the container needs.
 
 ---
 
-## 3. Why the FHIR endpoint has no token
+## 3. Why the FHIR endpoint has no token — and how it is secured instead
 
-This is the part most worth reading, because the obvious criticism of this
-system — "the FHIR endpoint is unauthenticated" — is correct, and the obvious
-fix does not exist.
+This is the part most worth reading. The obvious criticism — "the FHIR endpoint
+is unauthenticated" — *was* correct, and the obvious fix genuinely does not
+exist. The fix that does exist is a layer lower, and the distinction is the
+whole lesson.
 
-OpenELIS 3.2.1.11 **cannot present a credential to a remote FHIR source.** Two
-independent facts in the shipped webapp establish it. Both were read out of the
+OpenELIS 3.2.1.11 **cannot present a bearer token or HTTP credential to a
+remote FHIR source.** Two independent facts in the shipped webapp establish it. Both were read out of the
 deployed classes, not inferred from documentation:
 
 **1. There is no configuration key to put one in.** `FhirConfig` declares
@@ -90,63 +92,89 @@ laboratory. Modifying OpenELIS is out of scope by standing constraint — it is
 the accredited component, and changing it is what would actually put the
 laboratory's certification at risk.
 
-**What was done instead.** `/fhir` is restricted by origin:
-`BRIDGE_FHIR_ALLOWED_PEERS` names the OpenELIS containers, the bridge resolves
-them to addresses, and everything else gets 403.
+**The first answer was an origin allowlist.** `BRIDGE_FHIR_ALLOWED_PEERS` named
+the OpenELIS containers, the bridge resolved them to addresses, everything else
+got 403. It closed a real hole — anything else on the network could previously
+inject a fabricated `DiagnosticReport`, which is a fabricated patient result —
+but it authenticates a *network location*, not a node, and IHE ATNA requires the
+latter.
 
-This is genuinely weaker than authentication and should be read that way.
+It is still in the code, and still runs on the plaintext port. It is no longer
+the control on the live path. What replaced it is below.
 
-| Removed | Not removed |
-|---|---|
-| Any *other* container on the sandbox network — the HIS service, the frontend, Kong, Redis — injecting a fabricated result or reading the order stream | An attacker who can spoof a source address on the Docker network |
-| A misconfigured service accidentally writing to the FHIR endpoint | An attacker who has taken over an OpenELIS container |
+### Mutual TLS: what it is now, and why it needed no OpenELIS change
 
-The first column used to be wide open, and a fabricated `DiagnosticReport` is a
-fabricated patient result. That is the gap this closes.
+**The origin allowlist is no longer the control on this hop.** OpenELIS reaches
+the bridge on a separate port that will not complete a TLS handshake without a
+client certificate, and the bridge pins that certificate to exactly one peer.
 
-In production, put mutual TLS between the two containers at the proxy layer, or
-an mTLS-terminating sidecar. That works without OpenELIS knowing anything about
-it, which is exactly why it is the right answer here.
-
-### This pattern has a name, and the gap it leaves has a name too
-
-Worth knowing before defending this design to an assessor: it is not improvised.
-
-**IHE ATNA defines a *Secure Application Actor*** for exactly this situation — a
-product that cannot meet the Secure Node requirements on its own. The profile's
-answer is not to waive the requirement but to surround such a system with a
-conformant boundary that performs node authentication and audit on its behalf.
-That is what the bridge is.
-
-**The reference OpenELIS deployments do the same thing.** DIGI/ITECH implementer
-guidance gives two supported ways to reach a remote FHIR store: client
-certificates, or routing through **OpenHIM** and using HTTP Basic auth there.
-Both put a mediator in front of the credential-incapable system. In those
-deployments the bridge's position is OpenHIM's position — so this is the
-ecosystem's own pattern, arrived at independently here.
-
-**But the boundary is only conformant once mTLS is real.** ATNA requires
-node authentication to be *bidirectional and certificate-based*, and is explicit
-that PHI must not cross a link that is not bidirectionally node-authenticated.
-An origin allowlist authenticates a network location, not a node: it produces no
-cryptographic identity, no audit evidence, and no protection against anything
-already inside the segment.
-
-So the honest statement is narrower than "we follow ATNA":
+The surprise is how little it took. **OpenELIS has always presented a client
+certificate on every FHIR call** — nothing had ever asked it for one. Three
+facts, read from the deployed webapp:
 
 | | |
 |---|---|
-| The **pattern** — a mediator fronting a system that cannot authenticate | ATNA-sanctioned, and what real OpenELIS deployments do |
-| The **implementation** today — origin allowlist over plain HTTP | a stopgap. Not node authentication, and not conformant |
-| What closes it | mTLS at the proxy, which needs no change to OpenELIS |
+| `common.properties` — which this repository renders | sets `server.ssl.key-store` and `server.ssl.trust-store` to the certgen stores |
+| `org.openelisglobal.config.HttpClientConfig` | builds the shared Apache `HttpClient` with `loadKeyMaterial(keystore)` **and** `loadTrustMaterial(truststore)` |
+| `FhirConfig` | hands that client to every FHIR client it creates — the remote-source poll and the subscriber push included |
 
-**Do not claim SMART on FHIR Backend Services conformance for this hop.** That
-flow requires the *client* to hold a private key and sign a client assertion
-(RFC 7523). OpenELIS cannot, on this path — which is the whole finding above.
-The standard has no accommodation for a client that structurally cannot
-authenticate; it simply assumes one can. The bridge could act as a conformant
-Backend Services client toward *other* systems, and that is where the claim
-would be true.
+So the earlier claim in this section — that origin restriction was *"the
+strongest control available without modifying OpenELIS"* — **was wrong**. Mutual
+TLS was equally available, and it is what ATNA actually asks for. The mistake
+was assuming that a system which cannot send a *bearer token* also cannot prove
+its identity. Those are different layers.
+
+**What changed, in full:**
+
+1. `make certs` creates a small CA, issues the bridge a server certificate for
+   `bridge.openelis.org`, and **exports** OpenELIS's certificate from OpenELIS's
+   own truststore.
+2. One `keytool -importcert` adds our CA beside certgen's entry, which is left
+   untouched. This is the only change to anything OpenELIS reads, and it is the
+   step its own installation guide describes: *"build a truststore containing
+   the peer's certificate"*.
+3. `BRIDGE_FHIR_BASE` becomes `https://bridge.openelis.org:8443/fhir`.
+
+No image, no code, no schema, no database. Set `BRIDGE_MTLS_ENABLED=false` and
+everything reverts to the previous behaviour, which is how to bisect a fault:
+if it survives that, it is not TLS.
+
+**The bridge never holds OpenELIS's private key.** It stores only the public
+certificate, so it can recognise OpenELIS and cannot impersonate it.
+
+**The peer is pinned, not merely CA-trusted.** Exactly one machine may ever
+connect, so "is this that machine" is the question worth asking. `make negative`
+proves the difference: a certificate freshly signed **by our own CA** is still
+refused.
+
+### Two things this exposed
+
+**The traffic was not on the network everyone believed it was.** Docker resolves
+a plain container name to its address on *one* of the networks the two
+containers share, and it was choosing `oe-data-net`. So FHIR traffic between
+OpenELIS and the bridge had been crossing the **data** network, not
+`integration` — the boundary was true of network *membership* but not of the
+packets. The fix is incidental to TLS and worth copying: the bridge's alias
+`bridge.openelis.org` exists **only** on `integration`, so the name itself pins
+the route.
+
+**A weaker check can veto a stronger one.** Both controls were kept at first —
+certificate *and* allowlist. Turning it on produced a successful handshake
+followed by a 403, because the allowlist resolved the peer to its address on the
+other network. That is not defence in depth; it is a second thing that can fail,
+guarding a door already locked better. On the mutually authenticated port the
+certificate is now the only check.
+
+### What is still missing here
+
+`bridge_fhir_requests_total{transport="mtls"|"plaintext"|"loopback"}` counts how
+each FHIR request actually arrived, because a setting can say mutual TLS is on
+while nothing uses the port. **`transport="plaintext"` above zero in a real
+deployment means a caller is still using the old address.**
+
+Still absent: certificate **rotation** (these are ten-year certificates with no
+renewal process), any **CRL or OCSP** — revocation checking is off, because a
+two-member private CA publishes neither — and the ATNA **audit** half, §9.
 
 ---
 
@@ -492,14 +520,17 @@ one hospital can read patients from another.
 
 **HS256 and no `aud`** — §4, "What HS256 costs". The fix is in IAM.
 
-**No TLS inside the sandbox.** Bridge ↔ OpenELIS is plain HTTP
-(`allowHTTP=true`). Patient results cross that hop in clear text. Terminating
-TLS at the proxy is also where mutual TLS would go (§3), so these are one piece
-of work — and it is the piece that turns the origin allowlist from a stopgap
-into a conformant boundary. **Rank it above every other item on this list**,
-including anything to do with token algorithms: ATNA is explicit that PHI must
-not cross a link that is not bidirectionally node-authenticated, and no
-improvement to what the bridge checks changes what is readable on the wire.
+**TLS covers the OpenELIS hop and nothing else.** Bridge ↔ OpenELIS is now
+mutually authenticated TLS (§3). Every other hop inside the sandbox is still
+plain HTTP: browser → edge → Kong → his-api, his-api → bridge, and both
+services to Postgres, Kafka and Redis. Those carry patient data too. The
+OpenELIS hop was ranked first because it crosses an organisational boundary and
+was the one an assessor would open with — it is not the last of this work.
+
+**No certificate rotation.** The integration certificates are valid for ten
+years and there is no renewal path. Ten-year certificates are what you issue
+when you have no rotation process, and they are how an outage arrives with no
+warning nine years later.
 
 **Self-signed certificates**, and `OE_REST_ACCEPT_ANY_CERT=true`. That flag
 must be `false` anywhere real; it is configuration rather than an unconditional

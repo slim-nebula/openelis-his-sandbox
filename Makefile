@@ -10,6 +10,7 @@
 #   make negative    negative-path test    (brief phase 4)
 #   make auth        authentication test
 #   make token       sign in (stands in for IAM), prints a user token
+#   make certs       issue the certificates for the OpenELIS <-> bridge hop
 #   make down        stop applications, keep data
 #   make clean       destroy everything including volumes
 # =============================================================================
@@ -37,6 +38,7 @@ endif
 
 .PHONY: help secrets config data-up app-up up down clean logs ps \
         smoke e2e results rejection corrections catalogue-test negative auth capture token \
+        certs trust-bridge \
         sync-catalogue catalogue export-status prune migrate psql-his psql-oe topics urls
 
 help:
@@ -97,7 +99,7 @@ ps: ## Show container status
 
 urls: ## Print the entry points
 	@echo "  HIS sandbox frontend   http://localhost:$(EDGE_HTTP_PORT)"
-	@echo "  HIS API (via Kong)     http://localhost:$(EDGE_HTTP_PORT)/api/healthz"
+	@echo "  HIS API (via Kong)     http://localhost:$(EDGE_HTTP_PORT)/api/health"
 	@echo "  Kong admin             http://localhost:$(KONG_ADMIN_PORT)"
 	@echo "  OpenELIS UI            https://localhost:$(OE_UI_HTTPS_PORT)   (admin / $(OE_DEFAULT_PASSWORD))"
 	@echo "  Bridge FHIR endpoint   docker exec bridge curl -s http://localhost:8080/fhir/metadata"
@@ -170,6 +172,14 @@ negative: ## Phase 4 - negative paths
 
 auth: ## User tokens, revocation, degraded mode and the internal key
 	@bash scripts/test-auth.sh
+
+certs: ## Issue the certificates for the OpenELIS <-> bridge hop (FORCE=true to regenerate)
+	@bash scripts/init-mtls.sh $(if $(FORCE),--force,)
+
+trust-bridge: ## Import our CA into OpenELIS's truststore, then restart it
+	@$(APP) up oe-trust-bridge
+	@echo "==> Restarting OpenELIS: the truststore is read once, at startup"
+	@docker restart openelis-webapp >/dev/null
 
 token: ## Sign in as a sandbox user and print a token (USER=, NAME=, GROUPS=, TTL=)
 	@bash scripts/mint-token.sh \

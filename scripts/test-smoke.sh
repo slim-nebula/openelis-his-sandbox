@@ -77,8 +77,25 @@ check_contains "CapabilityStatement declares FHIR R4" \
 check_contains "Task search responds with a searchset bundle" \
     "in_sandbox 'http://localhost:8080/fhir/Task?status=requested&owner=${OE_REMOTE_SOURCE_IDENTIFIER}'" \
     'searchset'
-check_contains "OpenELIS can reach the bridge's FHIR endpoint" \
-    "docker exec openelis-webapp curl -sf ${BRIDGE_FHIR_BASE}/metadata" '4.0.1'
+# Reachability used to be asserted with a plain curl from the OpenELIS
+# container. That stopped being possible, and the reason is the point: the FHIR
+# endpoint now requires a client certificate, and curl there has none. Only
+# OpenELIS's own HTTP client — built with loadKeyMaterial from its keystore —
+# can complete the handshake.
+#
+# So reachability is asserted from the far end instead: the bridge counts how
+# each FHIR request arrived. Counters reset when the process does, so any
+# mutually authenticated request at all means OpenELIS has polled successfully
+# since THIS bridge started.
+if [[ "${BRIDGE_MTLS_ENABLED:-false}" == "true" ]]; then
+    MTLS_SEEN=$(fhir_transport_count mtls)
+    check "OpenELIS has reached the bridge over mutual TLS since it started" \
+        "[[ ${MTLS_SEEN:-0} -gt 0 ]]"
+    info "mutually authenticated FHIR requests since start: ${MTLS_SEEN:-0}"
+else
+    check_contains "OpenELIS can reach the bridge's FHIR endpoint" \
+        "docker exec openelis-webapp curl -sf ${BRIDGE_FHIR_BASE}/metadata" '4.0.1'
+fi
 
 # A search that returns everything ever published gets slower as the deployment
 # gets older, and is slowest exactly when the laboratory is busiest. The bundle

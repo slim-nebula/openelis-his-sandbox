@@ -122,7 +122,16 @@ info "the token has not expired — the session behind it is gone"
 # the first. Worth asserting because it is a real, user-visible consequence:
 # signing in on a phone ends the session on the desktop.
 FIRST=$(mint --user 10 --name two.devices --groups "$LAB_ORDER_GROUP")
+# One second apart, deliberately. `iat` has one-second resolution, so two tokens
+# minted for the same user in the same second are byte-identical — and the test
+# would then "pass" or fail on whether two docker exec calls happened to straddle
+# a second boundary. Asserting they differ makes the precondition explicit
+# instead of leaving it to luck.
+sleep 1
 SECOND=$(mint --user 10 --name two.devices --groups "$LAB_ORDER_GROUP")
+check "The two sign-ins really produced different tokens" \
+    "[[ '$FIRST' != '$SECOND' ]]"
+
 check "A second sign-in ends the first session" \
     "[[ \$(code_for '$CLINICAL' -H 'Authorization: Bearer $FIRST') == 401 ]]"
 check "…and the newer token works" \

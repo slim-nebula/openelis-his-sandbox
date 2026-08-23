@@ -117,6 +117,13 @@ http_status() {  # http_status <container> <method> <url> [curl args...]
         -X "$method" --max-time 30 "$@" "$url" 2>/dev/null
 }
 
+# How many FHIR requests reached the bridge over each kind of connection.
+# `mtls`, `plaintext` or `loopback` — see services/Bridge/Access.cs.
+fhir_transport_count() {
+    docker exec bridge curl -sf --max-time 10 http://localhost:8080/metrics 2>/dev/null \
+        | grep "bridge_fhir_requests_total{transport=\"$1\"}" | awk '{print $2}' | tail -1
+}
+
 json_field() { python3 -c "import json,sys; print(json.load(sys.stdin)$1)" 2>/dev/null; }
 
 # Any test the HIS will currently accept an order for.

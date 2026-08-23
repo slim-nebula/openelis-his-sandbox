@@ -145,7 +145,28 @@ services:
       EXPORT_CHECK_MINUTES: ${EXPORT_CHECK_MINUTES}
       EXPORT_STALE_CYCLES: ${EXPORT_STALE_CYCLES}
       BRIDGE_PUBLIC_FHIR_HOST: ${BRIDGE_PUBLIC_FHIR_HOST}
-    networks: [sandbox, integration, data]
+      # Mutual TLS on the OpenELIS hop. Off leaves the plaintext port serving
+      # /fhir exactly as before; on adds a second listener that will not
+      # complete a handshake without OpenELIS's certificate, and closes /fhir
+      # on the plaintext port to everything except loopback.
+      BRIDGE_MTLS_ENABLED: ${BRIDGE_MTLS_ENABLED}
+      BRIDGE_MTLS_PORT: ${BRIDGE_MTLS_PORT}
+      BRIDGE_MTLS_CERT: /certs/bridge.crt
+      BRIDGE_MTLS_KEY: /certs/bridge.key
+      BRIDGE_MTLS_PEER_CERT: /certs/openelis-client.crt
+    volumes:
+      # Read-only, and only the public certificate of the peer: the bridge can
+      # recognise OpenELIS and cannot impersonate it.
+      - ../certs:/certs:ro
+    networks:
+      sandbox:
+      data:
+      integration:
+        aliases:
+          # The name on the bridge's certificate. OpenELIS verifies the
+          # hostname against the certificate's SAN after it trusts the chain,
+          # so reaching it as `bridge` would fail even with the CA imported.
+          - bridge.openelis.org
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health || exit 1"]
       interval: 10s

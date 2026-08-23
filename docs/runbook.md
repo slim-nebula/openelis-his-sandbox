@@ -162,7 +162,19 @@ this reason.
 
 **Do not set `BRIDGE_FHIR_ALLOWED_PEERS` to empty to fix a 403.** That opens the
 result-injection path to everything on the network. See §8, *Adding a new FHIR
-peer*.
+peer*. With mutual TLS on, that list no longer governs the live path anyway — a
+403 there is far more likely to be the one below.
+
+**A 403 saying "requires a mutually authenticated TLS connection" is correct
+behaviour.** Something reached `/fhir` on the plaintext port. Find out what, and
+point it at `https://bridge.openelis.org:8443/fhir` — do not turn mutual TLS off
+to make it go away. `bridge_fhir_requests_total{transport="plaintext"}` counts
+these.
+
+**Do not regenerate the certificates to fix a handshake failure.** A new CA is
+one OpenELIS's truststore does not contain, so it converts a handshake problem
+into a definitely-broken link. `make certs` deliberately keeps what exists; if
+you do regenerate with `FORCE=true`, `make trust-bridge` must follow.
 
 **Do not put a token on `/fhir`.** OpenELIS 3.2.1.11 cannot send one — the
 integration would stop, silently. `docs/security.md` §3 has the evidence.
@@ -286,6 +298,44 @@ reason (`docs/platform-integration.md` §4). If it advertised a `data` or
 
 A critical service in the catalogue is **worse than an unregistered one**,
 because Kong will route to it.
+
+### The FHIR handshake is failing
+
+Symptoms: OpenELIS logs `could not process Task import workflow using remote
+address: https://bridge.openelis.org:8443/fhir`, and orders stop being imported.
+
+```bash
+# Is the listener up, and is anything getting through?
+docker exec bridge curl -sf http://localhost:8080/metrics | grep bridge_fhir_requests_total
+docker logs bridge --since 10m | grep -i "fhir\|handshake"
+```
+
+| What you see | What it means |
+|---|---|
+| `transport="mtls"` climbing | working — the fault is elsewhere, look at OpenELIS's own errors |
+| `transport="plaintext"` climbing | something is still using the old `http://bridge:8080/fhir` address |
+| neither moving | no connection is being made at all — name resolution or the certificate |
+
+The three things that break it, in order of likelihood:
+
+1. **The CA is not in OpenELIS's truststore.** After `make clean`, or after
+   regenerating certificates. `make trust-bridge` re-imports and restarts.
+   ```bash
+   docker exec openelis-webapp keytool -list \
+     -keystore /etc/openelis-global/truststore -storepass "$SSL_TRUSTSTORE_PASSWORD" \
+     -storetype PKCS12 | grep his-bridge-ca
+   ```
+2. **The hostname does not match the certificate.** Java verifies the name
+   *after* it trusts the chain, so a wrong name fails even with the CA present.
+   `BRIDGE_FHIR_BASE` must use `bridge.openelis.org` — a SAN on the bridge's
+   certificate, and an alias that exists only on the `integration` network.
+3. **OpenELIS's certificate changed.** certgen regenerates the keystore on a
+   fresh volume, and the bridge pins the old one. Re-export it:
+   `make certs FORCE=true && make trust-bridge`, then restart the bridge.
+
+To bisect, turn it off: `BRIDGE_MTLS_ENABLED=false` and
+`BRIDGE_FHIR_BASE=http://bridge:8080/fhir`, then `make config` and restart both.
+If the fault survives that, it is not TLS.
 
 ### Redis is down
 

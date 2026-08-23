@@ -8,6 +8,10 @@ var builder = WebApplication.CreateBuilder(args);
 
 var options = BridgeOptions.FromEnvironment();
 var platform = PlatformOptions.FromEnvironment("bridge-service");
+var mutualTls = MutualTlsOptions.FromEnvironment();
+
+// Before anything else builds: the listeners have to exist before the host does.
+MutualTls.Configure(builder, mutualTls);
 
 DefaultTypeMap.MatchNamesWithUnderscores = true;
 SqlMapper.AddTypeHandler(new DateOnlyTypeHandler());
@@ -25,6 +29,7 @@ builder.Logging.AddProvider(new KafkaLogProvider(platform, options.KafkaBootstra
 
 builder.Services.AddSingleton(options);
 builder.Services.AddSingleton(platform);
+builder.Services.AddSingleton(mutualTls);
 builder.Services.AddHostedService<ConsulRegistration>();
 builder.Services.AddSingleton(_ => new NpgsqlDataSourceBuilder(options.ConnectionString).Build());
 builder.Services.AddScoped<BridgeStore>();

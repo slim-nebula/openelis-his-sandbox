@@ -25,7 +25,14 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app .
-ENV ASPNETCORE_URLS=http://0.0.0.0:8080 \
+# No ASPNETCORE_URLS: the listeners are configured in code (MutualTls.Configure),
+# because one of them needs a certificate and a client-certificate requirement
+# that a URL string cannot express. Setting both would make Kestrel ignore one
+# of them and say so only in a startup warning.
+# The aspnet base image sets ASPNETCORE_HTTP_PORTS=8080, which Kestrel then
+# reports it is overriding on every start. Cleared, because a warning printed
+# at every boot is how people learn to stop reading warnings.
+ENV ASPNETCORE_HTTP_PORTS= \
     DOTNET_gcServer=0
 EXPOSE 8080
 USER $APP_UID

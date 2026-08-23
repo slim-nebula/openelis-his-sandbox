@@ -369,10 +369,10 @@ check "Health checks are still readable without a token" \
 check "…and so are metrics, on both services" \
     "[[ \$(http_status his-api GET http://localhost:8080/metrics) == 200 ]]"
 
-# The FHIR endpoint cannot use a token: OpenELIS 3.2.1.11 has no way to send
-# one. It is restricted by origin instead — so what has to be proved is that
-# the restriction distinguishes OpenELIS from everything else that shares a
-# network with the bridge, and that it has not simply been left off.
+# The FHIR endpoint cannot use a bearer token: OpenELIS 3.2.1.11 has no way to
+# send one. It uses a client CERTIFICATE instead, which OpenELIS has always been
+# able to present — its shared HTTP client is built with loadKeyMaterial, and
+# nothing had ever asked it for one.
 check "A container that is not OpenELIS cannot reach the FHIR endpoint" \
     "[[ \$(http_status his-api GET http://bridge:8080/fhir/metadata) == 403 ]]"
 
@@ -381,8 +381,68 @@ check "A container that is not OpenELIS cannot push a result either" \
            -H 'Content-Type: application/fhir+json' \
            -d '{\"resourceType\":\"Bundle\",\"type\":\"transaction\"}') == 403 ]]"
 
-check "OpenELIS itself still reaches the FHIR endpoint" \
-    "[[ \$(http_status openelis-webapp GET http://bridge:8080/fhir/metadata) == 200 ]]"
+if [[ "${BRIDGE_MTLS_ENABLED:-false}" == "true" ]]; then
+    # The plaintext port stops being a way in. Without this the certificate is
+    # decorative: anything unwilling to present one just uses the other port.
+    check "Even OpenELIS is refused on the plaintext port" \
+        "[[ \$(http_status openelis-webapp GET http://bridge:8080/fhir/metadata) == 403 ]]"
+
+    check_contains "…and is told why, in FHIR" \
+        "docker exec openelis-webapp curl -s --max-time 10 http://bridge:8080/fhir/metadata" \
+        'requires a mutually authenticated TLS connection'
+
+    # 000 is curl reporting that no HTTP response happened at all. That is the
+    # point: the refusal is in the TLS handshake, before any request is sent.
+    check "A caller with no client certificate cannot complete the handshake" \
+        "[[ \$(http_status openelis-webapp GET https://bridge.openelis.org:8443/fhir/metadata -k) == 000 ]]"
+
+    # Signed by the CA the bridge's own certificate comes from, and still
+    # refused — because the peer is PINNED, not merely required to be
+    # well-signed. Anyone who can get a certificate from the CA is not thereby
+    # OpenELIS.
+    openssl req -newkey rsa:2048 -sha256 -nodes -keyout "$ROOT/certs/rogue.key" \
+        -out "$ROOT/certs/rogue.csr" -subj "/CN=impostor" 2>/dev/null
+    openssl x509 -req -in "$ROOT/certs/rogue.csr" -CA "$ROOT/certs/ca.crt" \
+        -CAkey "$ROOT/certs/ca.key" -CAcreateserial -out "$ROOT/certs/rogue.crt" \
+        -days 1 -sha256 2>/dev/null
+
+    check "A certificate signed by our own CA is still refused" \
+        "[[ \$(http_status bridge GET https://bridge.openelis.org:8443/fhir/metadata \
+               -k --cert /certs/rogue.crt --key /certs/rogue.key) == 000 ]]"
+    info "the peer is pinned to one certificate, not trusted by issuer"
+
+    rm -f "$ROOT/certs/rogue."{key,csr,crt}
+
+    # The one thing configuration cannot fake: OpenELIS's own traffic, counted
+    # as it arrives. BRIDGE_MTLS_ENABLED can be true while nothing is using the
+    # port — the setting says what is allowed, the counter says what happened.
+    #
+    # Asserted as an INCREASE, not as non-zero. A non-zero counter would pass on
+    # traffic from before this suite ran, including from a deployment where it
+    # has since broken.
+    MTLS_BEFORE=$(fhir_transport_count mtls)
+    info "waiting for OpenELIS's next poll (every ${OE_REMOTE_POLL_FREQUENCY}ms)…"
+    MTLS_AFTER=$MTLS_BEFORE
+    for _ in $(seq 1 40); do
+        MTLS_AFTER=$(fhir_transport_count mtls)
+        [[ ${MTLS_AFTER:-0} -gt ${MTLS_BEFORE:-0} ]] && break
+        sleep 3
+    done
+
+    check "OpenELIS keeps arriving over mutual TLS, live" \
+        "[[ ${MTLS_AFTER:-0} -gt ${MTLS_BEFORE:-0} ]]"
+    info "mutually authenticated FHIR requests: $MTLS_BEFORE -> $MTLS_AFTER"
+
+    # Plaintext attempts are counted too, refusals included — which is why this
+    # is not asserted to be zero: the checks above deliberately made some. The
+    # counter exists so that a REAL deployment can alert on it, where anything
+    # arriving in plaintext is a caller still using the old address.
+    info "plaintext attempts so far (all refused): $(fhir_transport_count plaintext)"
+else
+    check "OpenELIS itself still reaches the FHIR endpoint" \
+        "[[ \$(http_status openelis-webapp GET http://bridge:8080/fhir/metadata) == 200 ]]"
+    info "BRIDGE_MTLS_ENABLED is false: the hop is plaintext, guarded by origin only"
+fi
 
 # ---------------------------------------------------------------------------
 section "Retention removes what is finished and keeps what is not"
