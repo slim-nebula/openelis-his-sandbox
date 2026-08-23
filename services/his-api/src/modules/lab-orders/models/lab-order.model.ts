@@ -14,6 +14,7 @@ import type {
 
 const ORDER_COLUMNS = `order_id, order_number, patient_id, test_code, test_name, order_status,
                        ordering_provider, facility_code, priority, status_detail,
+                       lab_progress, lab_progress_at, lab_accession,
                        created_at, updated_at`;
 
 const RESULT_COLUMNS = `result_id, order_id, patient_id, test_code, test_name, result_value,
@@ -31,6 +32,11 @@ const toOrder = (row: Row): ILabOrder => ({
   facilityCode: String(row.facility_code),
   priority: String(row.priority),
   statusDetail: row.status_detail === null ? null : String(row.status_detail),
+  labProgress: row.lab_progress === null || row.lab_progress === undefined
+    ? null : String(row.lab_progress),
+  labProgressAt: toIso(row.lab_progress_at),
+  labAccession: row.lab_accession === null || row.lab_accession === undefined
+    ? null : String(row.lab_accession),
   createdAt: toIso(row.created_at),
   updatedAt: toIso(row.updated_at),
 });
@@ -191,6 +197,66 @@ export class LabOrderModel {
    * writes an audit row, so the trail stays a history of the order rather than
    * a log of how chatty the LIS was.
    */
+  /**
+   * Records laboratory progress, and never lets it go backwards.
+   *
+   * The `rank` comparison is the whole point. Kafka orders messages within a
+   * partition and these are keyed by order number, so they normally arrive in
+   * order — until a partition is added, a consumer group rebalances mid-flight,
+   * or someone replays a topic to recover from an incident. Any of those can
+   * deliver IN_LABORATORY after AWAITING_VALIDATION.
+   *
+   * A progress display that goes backwards is worse than one that lags: it
+   * makes a ward ring the laboratory about a test that is already finished.
+   *
+   * The accession number is written whenever one arrives, independently of
+   * rank — a later message carrying it should fill it in even if the progress
+   * state itself is not an advance.
+   */
+  async recordProgress(
+    orderNumber: string,
+    progress: string,
+    accessionNumber: string | null,
+    correlationId: string | null,
+  ): Promise<void> {
+    await transaction(async (client) => {
+      const changed = await client.query(
+        `UPDATE his.lab_orders
+            SET lab_progress    = CASE
+                                    WHEN his.lab_progress_rank($2) > his.lab_progress_rank(lab_progress)
+                                    THEN $2 ELSE lab_progress
+                                  END,
+                lab_progress_at = CASE
+                                    WHEN his.lab_progress_rank($2) > his.lab_progress_rank(lab_progress)
+                                    THEN now() ELSE lab_progress_at
+                                  END,
+                lab_accession   = COALESCE($3::varchar, lab_accession),
+                updated_at      = now()
+          WHERE order_number = $1
+            AND (his.lab_progress_rank($2) > his.lab_progress_rank(lab_progress)
+                 OR ($3::varchar IS NOT NULL AND lab_accession IS DISTINCT FROM $3::varchar))
+        RETURNING order_id, lab_progress`,
+        [orderNumber, progress, accessionNumber],
+      );
+
+      if (changed.rowCount === 0) {
+        // Either the order is unknown, or this is an older state arriving
+        // late. Both are ordinary; neither is worth an error.
+        return;
+      }
+
+      const row = changed.rows[0] as Row;
+      await appendEvent(
+        client,
+        String(row.order_id),
+        `LAB_${String(row.lab_progress)}`,
+        accessionNumber ? `accession ${accessionNumber}` : null,
+        correlationId,
+        null,
+      );
+    });
+  }
+
   async updateStatus(
     orderNumber: string,
     status: string,

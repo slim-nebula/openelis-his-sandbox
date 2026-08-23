@@ -50,6 +50,7 @@ export const config = {
     topics: {
       orderCreated: env('TOPIC_ORDER_CREATED', 'lab.order.created'),
       orderSent: env('TOPIC_ORDER_SENT', 'lab.order.sent'),
+      orderProgress: env('TOPIC_ORDER_PROGRESS', 'lab.order.progress'),
       orderFailed: env('TOPIC_ORDER_FAILED', 'lab.order.failed'),
       resultReleased: env('TOPIC_RESULT_RELEASED', 'lab.result.released'),
       resultFailed: env('TOPIC_RESULT_FAILED', 'lab.result.failed'),

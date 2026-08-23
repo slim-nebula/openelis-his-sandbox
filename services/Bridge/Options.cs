@@ -11,6 +11,9 @@ public sealed class BridgeOptions
     public string TopicOrderFailed { get; init; } = "lab.order.failed";
     public string TopicResultReleased { get; init; } = "lab.result.released";
     public string TopicResultFailed { get; init; } = "lab.result.failed";
+
+    /// <summary>Where an order has got to inside the laboratory. See ProgressTracker.</summary>
+    public string TopicOrderProgress { get; init; } = "lab.order.progress";
     public string ConsumerGroup { get; init; } = "bridge";
 
     /// <summary>
@@ -115,6 +118,7 @@ public sealed class BridgeOptions
         TopicOrderFailed = Env("TOPIC_ORDER_FAILED", "lab.order.failed"),
         TopicResultReleased = Env("TOPIC_RESULT_RELEASED", "lab.result.released"),
         TopicResultFailed = Env("TOPIC_RESULT_FAILED", "lab.result.failed"),
+        TopicOrderProgress = Env("TOPIC_ORDER_PROGRESS", "lab.order.progress"),
         LabOwnerReference = Env("OE_REMOTE_SOURCE_IDENTIFIER", "Practitioner/openelis-sandbox-lab"),
         MaxRetries = int.Parse(Env("BRIDGE_MAX_RETRIES", "5")),
         RetryBaseDelaySeconds = int.Parse(Env("BRIDGE_RETRY_BASE_DELAY_SECONDS", "2")),

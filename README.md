@@ -53,6 +53,7 @@ make rejection   # LIS rejection round trip               (14 checks)
 make corrections # corrections and retractions            (11 checks)
 make catalogue-test  # catalogue discovery, filters and guards (19 checks)
 make auth        # tokens, revocation, degraded mode, service keys
+make progress    # phase 4b: laboratory progress within an order
 make capture     # capture what OpenELIS really sends on release
 make prune       # run the retention sweep now
 ```

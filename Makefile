@@ -9,6 +9,7 @@
 #   make rejection   LIS rejection round trip
 #   make negative    negative-path test    (brief phase 4)
 #   make auth        authentication test
+#   make progress    laboratory progress inside an order
 #   make token       sign in (stands in for IAM), prints a user token
 #   make certs       issue the certificates for the OpenELIS <-> bridge hop
 #   make down        stop applications, keep data
@@ -38,7 +39,7 @@ endif
 
 .PHONY: help secrets config data-up app-up up down clean logs ps \
         smoke e2e results rejection corrections catalogue-test negative auth capture token \
-        certs trust-bridge \
+        certs trust-bridge progress \
         sync-catalogue catalogue export-status prune migrate psql-his psql-oe topics urls
 
 help:
@@ -172,6 +173,9 @@ negative: ## Phase 4 - negative paths
 
 auth: ## User tokens, revocation, degraded mode, the audit trail and the internal key
 	@bash scripts/test-auth.sh
+
+progress: ## Phase 4b - where an order has got to inside the laboratory
+	@bash scripts/test-progress.sh $(ORDER)
 
 certs: ## Issue the certificates for the OpenELIS <-> bridge hop (FORCE=true to regenerate)
 	@bash scripts/init-mtls.sh $(if $(FORCE),--force,)

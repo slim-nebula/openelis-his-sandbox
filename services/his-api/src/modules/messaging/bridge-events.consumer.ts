@@ -7,6 +7,7 @@ import LabOrdersContainer from '@modules/lab-orders/containers/lab-orders.contai
 import type {
   IOrderLifecycleMessage,
   IReleasedResultMessage,
+  ILabProgressMessage,
 } from '@modules/lab-orders/types/lab-order.types.js';
 
 /** A message that can never succeed, however many times it is retried. */
@@ -33,6 +34,7 @@ export class BridgeEventConsumer {
       config.kafka.topics.resultReleased,
       config.kafka.topics.orderSent,
       config.kafka.topics.orderFailed,
+      config.kafka.topics.orderProgress,
     ];
 
     this.consumer = kafka.consumer({
@@ -73,6 +75,21 @@ export class BridgeEventConsumer {
           ...result,
           correlationId: result.correlationId ?? correlationId,
         });
+        return;
+      }
+
+      // Where the order has got to inside the laboratory. Deliberately not
+      // folded into order_status: this is a refinement underneath
+      // ACCEPTED_BY_LIS, and the status is a contract the frontend and the
+      // suites are written against.
+      if (topic === config.kafka.topics.orderProgress) {
+        const progress = parsed as ILabProgressMessage;
+        await orders.recordProgress(
+          progress.orderNumber,
+          progress.progress,
+          progress.accessionNumber ?? null,
+          progress.correlationId ?? correlationId,
+        );
         return;
       }
 

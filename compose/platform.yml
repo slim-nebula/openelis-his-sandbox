@@ -123,6 +123,7 @@ services:
       - |
         set -e
         for t in ${TOPIC_ORDER_CREATED} ${TOPIC_ORDER_SENT} ${TOPIC_ORDER_FAILED} \
+                 ${TOPIC_ORDER_PROGRESS} \
                  ${TOPIC_RESULT_RELEASED} ${TOPIC_RESULT_FAILED} \
                  ${TOPIC_ORDER_CREATED}.dlq ${TOPIC_ORDER_SENT}.dlq \
                  ${TOPIC_ORDER_FAILED}.dlq ${TOPIC_RESULT_RELEASED}.dlq \

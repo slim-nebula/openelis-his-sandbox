@@ -9,6 +9,11 @@ export interface ILabOrder {
   facilityCode: string;
   priority: string;
   statusDetail: string | null;
+  /** Laboratory-side progress within ACCEPTED_BY_LIS. Null until the lab says so. */
+  labProgress: string | null;
+  labProgressAt: string | null;
+  /** The laboratory's own accession number — what a ward quotes on the phone. */
+  labAccession: string | null;
   createdAt: string | null;
   updatedAt: string | null;
 }
@@ -68,6 +73,16 @@ export interface IReleasedResultMessage {
   interpretation?: string | null;
   resultStatus: string;
   releasedAt: string;
+}
+
+/** Where an order has got to inside the laboratory. See ProgressTracker.cs. */
+export interface ILabProgressMessage {
+  eventId?: string;
+  correlationId?: string | null;
+  orderNumber: string;
+  progress: string;
+  accessionNumber?: string | null;
+  occurredAt?: string;
 }
 
 export interface IOrderLifecycleMessage {

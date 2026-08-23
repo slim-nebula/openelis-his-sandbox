@@ -73,8 +73,17 @@ public sealed class ResultCorrelator(
 
             if (!ReleasedStatuses.Contains(status))
             {
-                // Not validated yet. Mark handled; an updated push resets the
-                // processed flag and brings it back through here.
+                // Not validated yet, so the VALUE stays in the laboratory. But
+                // the fact that a result exists and is waiting on a signature is
+                // safe to tell the ward, and is the difference between "no news"
+                // and "nearly there".
+                //
+                // Publishing the number here instead would be a patient safety
+                // incident waiting to happen: an unvalidated potassium looks
+                // exactly like a validated one on a screen.
+                if (await ResolveOrderAsync(store, report, ct) is { } pending)
+                    await PublishProgressAsync(store, pending, "AWAITING_VALIDATION", ct);
+
                 log.LogDebug("DiagnosticReport/{Id} is {Status}; not a released result", report.Id, status);
                 await store.MarkProcessedAsync("DiagnosticReport", report.Id!, ct);
                 continue;
@@ -157,6 +166,37 @@ public sealed class ResultCorrelator(
                 return match;
         }
         return null;
+    }
+
+    /// <summary>
+    /// Same claim-once behaviour as ProgressTracker: OpenELIS re-pushes a
+    /// preliminary report every time the technician touches it, and the ward
+    /// does not need telling twice.
+    /// </summary>
+    private async Task PublishProgressAsync(
+        BridgeStore store, TrackedOrder tracked, string progress, CancellationToken ct)
+    {
+        var key = $"progress:{tracked.OrderNumber}:{progress}";
+        if (!await store.TryClaimEventAsync(key, "lab.order.progress", ct))
+            return;
+
+        try
+        {
+            await publisher.PublishAsync(options.TopicOrderProgress, tracked.OrderNumber, new
+            {
+                eventId = key,
+                eventType = "lab.order.progress",
+                orderNumber = tracked.OrderNumber,
+                progress,
+                accessionNumber = (string?)null,
+                occurredAt = DateTimeOffset.UtcNow
+            }, tracked.CorrelationId ?? key, ct);
+        }
+        catch
+        {
+            await store.ReleaseEventClaimAsync(key, ct);
+            throw;
+        }
     }
 
     private async Task ForwardAsync(

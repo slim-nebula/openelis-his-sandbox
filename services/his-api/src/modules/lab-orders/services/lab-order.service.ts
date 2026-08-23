@@ -78,4 +78,14 @@ export class LabOrderService {
   ): Promise<void> {
     return this.orders.updateStatus(orderNumber, status, detail, correlationId);
   }
+
+  /** Laboratory-side progress. Advances only — see the model. */
+  recordProgress(
+    orderNumber: string,
+    progress: string,
+    accessionNumber: string | null,
+    correlationId: string | null,
+  ): Promise<void> {
+    return this.orders.recordProgress(orderNumber, progress, accessionNumber, correlationId);
+  }
 }

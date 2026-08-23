@@ -41,6 +41,7 @@ builder.Services.AddSingleton<EventPublisher>();
 builder.Services.AddSingleton<FhirPeerGuard>();
 builder.Services.AddHostedService<OrderConsumer>();
 builder.Services.AddHostedService<ResultCorrelator>();
+builder.Services.AddHostedService<ProgressTracker>();
 builder.Services.AddHostedService<ExportMonitor>();
 builder.Services.AddHostedService<RetentionService>();
 

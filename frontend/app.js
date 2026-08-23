@@ -97,6 +97,23 @@ function formOf(form) {
   );
 }
 
+// The laboratory's own progress, shown UNDER the status rather than instead of
+// it. A ward asking "where is my test?" wants the sample's position in the lab,
+// and the accession number is what they will be asked for on the telephone.
+function progressNote(order) {
+  if (!order.labProgress && !order.labAccession) return '';
+
+  const label = {
+    IN_LABORATORY: 'in the laboratory',
+    AWAITING_VALIDATION: 'result awaiting validation',
+  }[order.labProgress] ?? order.labProgress;
+
+  const parts = [];
+  if (label) parts.push(label);
+  if (order.labAccession) parts.push(`accession <span class="mono">${order.labAccession}</span>`);
+  return `<div class="progress">${parts.join(' · ')}</div>`;
+}
+
 function statusBadge(status) {
   const cls = {
     CREATED: 'wait',
@@ -225,7 +242,7 @@ async function refreshPatientData() {
           (o) => `<tr>
             <td class="mono">${o.orderNumber}</td>
             <td>${o.testName}</td>
-            <td>${statusBadge(o.orderStatus)}</td>
+            <td>${statusBadge(o.orderStatus)}${progressNote(o)}</td>
             <td>${fmtDate(o.createdAt)}</td>
           </tr>`
         )
