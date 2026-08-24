@@ -439,6 +439,44 @@ other three are not.
    repeating every 60 seconds — four executions a minute where 30000 ms
    configures two — so the over-firing is inside a single instance.
 
+   **Root cause, from the shipped source.** An earlier note here guessed Quartz
+   — a missing `@DisallowConcurrentExecution`, or misfire recovery. That was
+   wrong, and worth recording as wrong: Quartz in this codebase runs a separate
+   scheduler registering only `sendSiteIndicators` and
+   `sendMalariaSurviellanceReport`. The FHIR poll is not a Quartz job, so
+   `quartz.properties` and `misfireThreshold` have no bearing on it whatsoever.
+
+   It is Spring, and three ordinary choices that combine badly:
+
+   ```java
+   @Scheduled(initialDelay = 10 * 1000,
+              fixedRateString = "${org.openelisglobal.remote.poll.frequency:120000}")
+   public void pollForRemoteTasks() { processWorkflow(ResourceType.Task); }
+
+   @Async
+   public void processWorkflow(ResourceType resourceType) { ... }
+   ```
+
+   `fixedRate` schedules the next run from the *start* of the previous one, not
+   its completion. `@Async` hands each firing to `AsyncConfig`'s executor, which
+   is a `SimpleAsyncTaskExecutor` — a new thread per submission, no pool bound,
+   no mutual exclusion. So whenever one poll takes longer than the interval,
+   the next simply starts alongside it. Nothing anywhere serialises them.
+
+   The duplicate patient follows directly: `saveRemoteTaskAsLocalTask` de-dupes
+   by *searching the local store* for a Patient with a matching service
+   identifier, then creating one if absent. Two overlapping executions both run
+   that search before either commits, both find nothing, and both create.
+   Check-then-act with no lock.
+
+   **This is why the mitigation had to be a delivery lease and not a longer
+   poll interval.** Raising `remote.poll.frequency` lowers the probability of
+   overlap and cannot remove it, because the trigger is "an execution outran
+   the interval" — which a longer interval makes rarer, never impossible. There
+   is no supported property that serialises the job, caps retries, or marks a
+   Task terminally failed. Withholding the Task is the only place outside
+   OpenELIS where the overlap can actually be prevented.
+
 1. **Requester never populates.**
 
    **`provider.external_id` is a dead end in 3.2.1.11 — do not spend time on it.**
@@ -467,8 +505,33 @@ other three are not.
    provider row exists, is `active`, and its `fhir_uuid` matches the
    Practitioner our ServiceRequest references. So the blank requester is **not**
    an identifier-mapping problem, and writing to `clinlims.provider` would be
-   both useless and a breach of the no-cross-database rule. Look at how the view
-   resolves `ServiceRequest.requester` into that UUID instead. `LabOrderSearchProvider` returns `requester: ""`
+   both useless and a breach of the no-cross-database rule.
+
+   **The second hypothesis is also refuted.** `LabOrderSearchProvider` resolves
+   the requester by reading a Practitioner out of OpenELIS's *own* FHIR store —
+   `task.getOwner()` first, falling back to `serviceRequest.getRequester()` —
+   and only then enriches it via `getProviderByFhirId`. The obvious explanation
+   is therefore that OpenELIS reassigns ids on import, so those reads miss.
+
+   It does not. Both resources are in the local store under exactly the ids we
+   publish, neither deleted (`clinlims.hfj_resource`, which the HAPI store
+   shares with the OpenELIS database):
+
+   ```
+   0e11c5a0-0000-4000-a000-000000000001 | Practitioner | deleted: f   <- Task.owner
+   3537c59e-aaf8-51b4-92f0-3d5c15b137e9 | Practitioner | deleted: f   <- ServiceRequest.requester
+   ```
+
+   So three explanations are eliminated with evidence: it is not
+   `provider.external_id` (no such lookup exists in the deployed code), not a
+   missing or inactive `clinlims.provider` row, and not a reassigned id in the
+   local FHIR store. `Task.owner` — which the code reads *first* — resolves to
+   the laboratory Practitioner we publish, and it is present. Whatever empties
+   `<requester>` happens after a read that should succeed.
+
+   That is worth reporting as it stands. A defect report that has ruled out the
+   three obvious causes with evidence is more useful to a maintainer than one
+   that proposes a fourth guess. `LabOrderSearchProvider` returns `requester: ""`
    although `Task.requester` and `ServiceRequest.requester` both point at a
    Practitioner that OpenELIS imported into `clinlims.provider` with a matching
    `fhir_uuid` and `active = true`. Setting `provider.external_id` made no
@@ -478,13 +541,40 @@ other three are not.
    `order.crosstest`; the provider emits `order.crosstests`. The chooser is fed an
    empty array and never renders, so an ambiguous order gives the accessioner no
    prompt at all. We route around it rather than through it.
+
+   The precise shape, which makes this reportable rather than merely observed:
+   `LabOrderSearchProvider.addCrosstests` emits a `<crosstests>` wrapper around
+   `<crosstest>` children, matching its own `<crosspanels>`/`<crosspanel>`. The
+   frontend then reads it **two different ways in the same file**. The
+   notification builder reads `order.crosstests?.crosstest` — correct. The line
+   that actually populates the chooser reads `order.crosstest`, a top-level
+   singular key the backend never emits, so it is always falsy, `setCrossTests`
+   receives `[]`, and the chooser's `length > 0` guard never opens.
+
+   The part worth putting in the report: **the unit test passes because its
+   fixture was written to match the bug.** `IndexCrossTests.test.jsx` mocks a
+   payload with a top-level `crosstest` key — the shape the server does not
+   send. So the broken path has green coverage, which is why this has survived.
+
 3. **`?ID=` lost by the Enter Order button.** `EOrder.jsx saveEntry` builds
    `SamplePatientEntry?ID=<externalOrderId>&labNumber=...` via
    `window.open(..., "_blank")`. Opening that URL directly works every time;
    through the button the wizard arrived empty at least once. Not reproduced since.
-   Needs the address bar captured at the moment it fails.
 
-Worth reporting upstream together against 3.2.1.11.
+   **Do not file this one yet.** The URL is built by a single synchronous string
+   concatenation immediately before `window.open`, with no async gap and no
+   state race — there is nothing in the function that could drop the query
+   string. One unreproduced occurrence against code that looks correct points at
+   a popup blocker or an extension rather than a defect, and filing it invites a
+   "cannot reproduce" close that makes the other three easier to dismiss. It
+   needs a second reproduction with the Network tab capturing the URL actually
+   navigated to. The only oddity in the file is a real inconsistency but not an
+   explanation: `editOrder` calls `window.open(url)` with no target while
+   `saveEntry` passes `"_blank"`.
+
+Worth reporting upstream together against 3.2.1.11 — defects 0, 1 and 2. A
+search of DIGI-UW/OpenELIS-Global-2 issues, PRs and release notes found no
+existing ticket for any of them, so none is a duplicate.
 
 ## Left over from this session
 

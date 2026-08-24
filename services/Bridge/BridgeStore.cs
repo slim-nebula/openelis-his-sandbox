@@ -168,6 +168,35 @@ public sealed class BridgeStore(
     }
 
     /// <summary>
+    /// Records which HIS clinician a published Practitioner stands for.
+    ///
+    /// The id is still derived from the user id, so this is not what makes the
+    /// mapping work — it is what stops the mapping DEPENDING on the id's
+    /// content, which FHIR says is opaque and not ours to read. It also makes
+    /// the reverse direction possible at all: a hash does not run backwards.
+    ///
+    /// Orders placed before the HIS recorded identity have no user id. Those are
+    /// skipped rather than stored under a placeholder — a row claiming to
+    /// identify a clinician it cannot is worse than no row.
+    /// </summary>
+    public async Task RecordPractitionerIdentityAsync(
+        string? hisUserId, string practitionerId, string? displayName, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(hisUserId)) return;
+
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO bridge.practitioner_identities
+                   (his_user_id, fhir_practitioner_id, display_name)
+            VALUES (@hisUserId, @practitionerId, @displayName)
+            ON CONFLICT (his_user_id) DO UPDATE
+               SET fhir_practitioner_id = excluded.fhir_practitioner_id,
+                   display_name         = excluded.display_name,
+                   last_seen            = now();
+            """, new { hisUserId, practitionerId, displayName }, cancellationToken: ct));
+    }
+
+    /// <summary>
     /// Releases the lease once the LIS has given its verdict. Not required for
     /// correctness — the Task leaves `requested` at the same moment, so the poll
     /// stops matching it either way — but it keeps the table to live orders and

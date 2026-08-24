@@ -372,6 +372,24 @@ check_contains "…and the practitioner carries the HIS user id, not only a name
     "docker exec bridge curl -s http://127.0.0.1:8080/fhir/\${FIRST_REQUESTER}" \
     'his-sandbox.local/user'
 
+# Recorded, not merely computable.
+#
+# The id IS derived from the user id, so this mapping could be recomputed — but
+# FHIR is explicit that a logical id is opaque and that "external systems need
+# not and should not attempt to determine their internal structure". Nothing
+# obliges a server to preserve ours across versioning or a resource recreated
+# after a purge. Storing the correlation means the derivation is an
+# implementation detail rather than the thing the integration rests on.
+check "The clinician's FHIR identity is recorded, not just derivable" \
+    "[[ \$(bridge_sql \"SELECT count(*) FROM bridge.practitioner_identities
+                        WHERE his_user_id = '33'\") == 1 ]]"
+
+# The direction a hash cannot go. Given a Practitioner seen on a resource, which
+# clinician is it? Before this table that question had no answer.
+check "…and it answers the reverse question, which hashing cannot" \
+    "[[ \$(bridge_sql \"SELECT his_user_id FROM bridge.practitioner_identities
+                        WHERE fhir_practitioner_id = '\${FIRST_REQUESTER#Practitioner/}'\") == 33 ]]"
+
 # ---------------------------------------------------------------------------
 section "6 · The bridge is a service, not a person"
 
