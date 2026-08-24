@@ -157,11 +157,36 @@ public static class FhirEndpoints
                 await store.PutResourceAsync(resource, ct);
                 await store.SetTaskStatusAsync(id, status, ct);
 
+                // The LIS has given its verdict, so the delivery is over. The
+                // Task leaves `requested` at the same moment and the poll would
+                // stop matching it anyway — this keeps the lease table to live
+                // orders rather than every order ever placed.
+                await store.ReleaseDeliveryLeaseAsync(id, ct);
+
+                // The reason is read off the Task when OpenELIS supplies one, and
+                // is otherwise left unstated.
+                //
+                // This used to say "most often no test matches the LOINC code",
+                // which was a guess presented to a clinician as a fact — and the
+                // first clean rebuild of this stack proved it a wrong one. That
+                // rejection came from a Hibernate Search indexing failure inside
+                // OpenELIS (docs/catalogue-discovery-plan.md, defect 0). The
+                // laboratory had not declined anything, and the LOINC was fine.
+                //
+                // A rejection with no reason is worth surfacing AS having no
+                // reason. It sends whoever reads it to the laboratory, which is
+                // where the answer is; the old wording sent them to the catalogue,
+                // which is where it was not.
+                var reason = task.StatusReason?.Text
+                             ?? task.StatusReason?.Coding?.FirstOrDefault()?.Display;
+
                 var (hisStatus, detail) = status switch
                 {
                     "accepted" => ("ACCEPTED_BY_LIS", "OpenELIS accepted the electronic order"),
-                    "rejected" => ("REJECTED_BY_LIS",
-                        "OpenELIS rejected the order — most often no test matches the LOINC code"),
+                    "rejected" => ("REJECTED_BY_LIS", string.IsNullOrWhiteSpace(reason)
+                        ? "OpenELIS rejected the order and gave no reason. Check the order in " +
+                          "OpenELIS and its log before assuming a catalogue mismatch."
+                        : $"OpenELIS rejected the order: {reason}"),
                     "received" => ("SENT_TO_LIS", "OpenELIS received the order"),
                     _ => ("SENT_TO_LIS", $"OpenELIS set task status to {status}")
                 };

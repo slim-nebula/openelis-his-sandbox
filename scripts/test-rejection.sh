@@ -33,10 +33,25 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 section "1 · Set up catalogue drift"
 
+# source = LOCAL, stated here rather than assumed.
+#
+# The column defaults to DISCOVERED, and a DISCOVERED row is one the catalogue
+# sync owns and will deactivate the moment OpenELIS stops offering it — which
+# for a LOINC OpenELIS has never heard of means immediately. This fixture only
+# works because a sync leaves it alone.
+#
+# Migration 005 back-fills DRIFT to LOCAL, and that is why this went unnoticed:
+# on a database with history the row already existed when the migration ran, so
+# it was corrected there. On a fresh one the migration matches nothing, this
+# INSERT takes the default, and the fixture quietly becomes the wrong kind of
+# row. The fixture should declare what it is instead of relying on a one-off
+# UPDATE having run at the right moment in the past.
 his_sql "INSERT INTO his.test_catalogue
-             (test_code, test_name, loinc_code, specimen_type, specimen_snomed, result_unit, is_active)
-         VALUES ('$UNMAPPED_CODE', 'Unmapped Drift Test', '$UNMAPPED_LOINC', 'Serum', '119364003', 'U/L', true)
-         ON CONFLICT (test_code) DO UPDATE SET is_active = true" >/dev/null
+             (test_code, test_name, loinc_code, specimen_type, specimen_snomed, result_unit,
+              is_active, source)
+         VALUES ('$UNMAPPED_CODE', 'Unmapped Drift Test', '$UNMAPPED_LOINC', 'Serum', '119364003', 'U/L',
+                 true, 'LOCAL')
+         ON CONFLICT (test_code) DO UPDATE SET is_active = true, source = 'LOCAL'" >/dev/null
 
 check "HIS catalogue offers $UNMAPPED_CODE" \
     "[[ \$(his_sql \"SELECT count(*) FROM his.test_catalogue WHERE test_code='$UNMAPPED_CODE' AND is_active\") == 1 ]]"
@@ -50,7 +65,7 @@ section "2 · The HIS accepts the order — it cannot know the LIS will refuse"
 
 ORDER_JSON=$(api_curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
     -d "{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"$UNMAPPED_CODE\",
-         \"orderingProvider\":\"Dr. Drift\",\"facilityCode\":\"FAC-001\"}")
+         \"facilityCode\":\"FAC-001\"}")
 ORDER_NUMBER=$(echo "$ORDER_JSON" | json_field "['orderNumber']")
 
 if [[ -n "$ORDER_NUMBER" ]]; then

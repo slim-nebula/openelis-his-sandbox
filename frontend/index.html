@@ -65,7 +65,14 @@
         <label>Test
           <select name="testCode" id="test-select" required></select>
         </label>
-        <label>Ordering provider <input name="orderingProvider" value="Dr. Konate" required /></label>
+        <!-- There is no "ordering provider" box any more, and its absence is
+             the point. The order is attributed to whoever is signed in; the
+             server reads that from the token and ignores anything the page
+             might claim. A prefilled name field meant an order could be
+             attributed to a colleague by nobody doing anything at all. -->
+        <label>Ordering provider
+          <output id="order-provider" class="readonly">not signed in</output>
+        </label>
         <label>Facility code <input name="facilityCode" value="FAC-001" required /></label>
         <label>Priority
           <select name="priority">

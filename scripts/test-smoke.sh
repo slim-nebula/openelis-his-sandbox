@@ -55,6 +55,17 @@ check_contains "HIS API consumer group is registered" \
     "docker exec his-kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server kafka:9092 --list" \
     'his-api'
 
+# Not the same assertion as the one above, and the difference is the whole
+# reason this exists. The first clean run of this stack started the service
+# before the topics had been created; the subscription failed, the error was
+# logged once, and boot carried on. The process stayed up, /health stayed green,
+# Consul kept the instance in rotation — and no laboratory result would ever
+# have been stored again. A consumer that never joined has no lag, so no lag
+# alert would have fired either. This is the series that says so.
+check "The HIS API is actually consuming, not merely alive" \
+    "[[ \$(docker exec his-api curl -s http://127.0.0.1:8080/metrics \
+          | grep '^kafka_consumer_running' | awk '{print \$2}') == 1 ]]"
+
 # The producers already write with acks=all. min.insync.replicas is what gives
 # that any meaning: without it, "all replicas acknowledged" can mean "the one
 # replica that happened to be up". The two settings only work as a pair, and

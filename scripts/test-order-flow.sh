@@ -53,7 +53,7 @@ section "2 · Place a lab order"
 ORDER_JSON=$(api_curl -sf -X POST "${API}/lab-orders" \
     -H 'Content-Type: application/json' \
     -d "{\"patientId\":\"$PATIENT_ID\",\"testCode\":\"$TEST_CODE\",
-         \"orderingProvider\":\"Dr. Konate\",\"facilityCode\":\"FAC-001\",\"priority\":\"routine\"}")
+         \"facilityCode\":\"FAC-001\",\"priority\":\"routine\"}")
 
 ORDER_ID=$(echo "$ORDER_JSON" | json_field "['orderId']")
 ORDER_NUMBER=$(echo "$ORDER_JSON" | json_field "['orderNumber']")

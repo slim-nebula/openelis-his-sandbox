@@ -27,10 +27,27 @@ public static class OrderMapper
     public const string LoincSystem = "http://loinc.org";
     public const string OrderNumberSystem = "http://his-sandbox.local/lab-order";
 
+    /// <summary>Namespace for identifiers that belong to the HIS, not to the laboratory.</summary>
+    public const string HisSystem = "http://his-sandbox.local";
+
     public static MappedOrder Map(HisOrder order, string labOwnerReference)
     {
         var patientId = order.Patient.PatientId.ToString();
-        var practitionerId = DeterministicGuid($"provider|{order.OrderingProvider}").ToString();
+        // Keyed on the clinician's usr_id, NOT on their name.
+        //
+        // This used to hash the display name, which made "Dr. Konate",
+        // "Dr. Konaté" and "dr konate" three different practitioners in the
+        // laboratory's own provider records — permanently, since a laboratory
+        // report prints the requesting clinician. A name is a spelling; an id
+        // is a person.
+        //
+        // Falling back to the name keeps orders placed before the HIS recorded
+        // identity mapping where they always did, rather than silently moving
+        // historical orders to a new practitioner.
+        var practitionerKey = string.IsNullOrWhiteSpace(order.OrderingProviderId)
+            ? $"provider|{order.OrderingProvider}"
+            : $"provider-id|{order.OrderingProviderId}";
+        var practitionerId = DeterministicGuid(practitionerKey).ToString();
 
         // The ServiceRequest id must be the ORDER NUMBER, not the order UUID.
         // OpenELIS's Incoming Orders view reads
@@ -92,7 +109,18 @@ public static class OrderMapper
         {
             Id = practitionerId,
             Active = true,
-            Identifier = [new Identifier($"{OeSystem}/provider", order.OrderingProvider)],
+            // The name identifier stays: it is what OpenELIS has always matched
+            // on and what a laboratory technician recognises. The HIS user id is
+            // published alongside it, under its own system, so the laboratory
+            // can tell two clinicians with the same name apart — and so a name
+            // that changes does not become a different person.
+            Identifier = string.IsNullOrWhiteSpace(order.OrderingProviderId)
+                ? [new Identifier($"{OeSystem}/provider", order.OrderingProvider)]
+                :
+                [
+                    new Identifier($"{OeSystem}/provider", order.OrderingProvider),
+                    new Identifier($"{HisSystem}/user", order.OrderingProviderId)
+                ],
             Name = [new HumanName { Family = family, Given = [given] }]
         };
 

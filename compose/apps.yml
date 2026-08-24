@@ -22,6 +22,13 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      # A healthy broker is not the same as a broker with topics. Auto-creation
+      # is off, so subscribing before this one-shot finishes fails with "This
+      # server does not host this topic-partition" — which is what happened on
+      # the first clean run of this stack, and left the service healthy but
+      # unable to receive a single result.
+      kafka-init:
+        condition: service_completed_successfully
       consul:
         condition: service_healthy
       # Ordering only. Neither service requires Redis to serve: a revocation
@@ -83,12 +90,23 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      # Same reason as his-api: the topics have to exist before anything
+      # subscribes to them.
+      kafka-init:
+        condition: service_completed_successfully
       consul:
         condition: service_healthy
       # Ordering only. Neither service requires Redis to serve: a revocation
       # check that cannot be made is degraded, not fatal.
       redis:
         condition: service_healthy
+      # Writes /certs/openelis-client.crt, the certificate the FHIR port pins.
+      # Waiting for it is what makes `make up` deterministic on a fresh clone:
+      # the bridge comes up already able to complete OpenELIS's handshake rather
+      # than refusing its first polls. The bridge survives its absence — see
+      # MutualTls.cs — but "survives" is not the same as "works".
+      oe-peer-cert:
+        condition: service_completed_successfully
     environment:
       TZ: ${TZ}
       BRIDGE_DB_CONNECTION: "Host=${HIS_DB_HOST};Port=${HIS_DB_PORT};Database=${BRIDGE_DB_NAME};Username=${BRIDGE_DB_USER};Password=${BRIDGE_DB_PASSWORD};Include Error Detail=true"
@@ -107,6 +125,9 @@ services:
       BRIDGE_RETRY_BASE_DELAY_SECONDS: ${BRIDGE_RETRY_BASE_DELAY_SECONDS}
       BRIDGE_RESULT_CORRELATION_RETRY_MINUTES: ${BRIDGE_RESULT_CORRELATION_RETRY_MINUTES}
       BRIDGE_MAX_SEARCH_RESULTS: ${BRIDGE_MAX_SEARCH_RESULTS}
+      # Withholds a Task from the poll while a delivery is in flight, so
+      # OpenELIS cannot import the same order twice at once.
+      BRIDGE_TASK_LEASE_SECONDS: ${BRIDGE_TASK_LEASE_SECONDS}
       # Access. The token guards /ops/* and the catalogue sync; the peer list
       # guards /fhir, which cannot use a token because OpenELIS has no way to
       # send one (see services/Bridge/Access.cs).

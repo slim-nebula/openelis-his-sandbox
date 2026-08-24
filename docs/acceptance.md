@@ -98,11 +98,22 @@ created, so nothing enters the work queue.
 
 One limitation falls out of that: the `electronic_order.reject_reason` column
 is left null on this path, and a FHIR `Task` status of `rejected` carries no
-reason either. So the HIS learns *that* the LIS refused, never *why*. The
-`status_detail` the HIS records is our own heuristic ("most often no test
-matches the LOINC code"), not the laboratory's own words. Closing that would
-mean reading `electronic_order` directly — which the no-cross-database rule
-forbids — or OpenELIS populating `Task.statusReason`, which it does not.
+reason either. So the HIS learns *that* the LIS refused, never *why*. Closing
+that would mean reading `electronic_order` directly — which the no-cross-database
+rule forbids — or OpenELIS populating `Task.statusReason`, which it does not.
+
+**And `rejected` does not reliably mean the laboratory refused anything.** The
+first clean rebuild of this stack produced a `rejected` Task that came from a
+Hibernate Search indexing failure inside OpenELIS, with a perfectly valid LOINC
+and an `electronic_order` row sitting at `Entered` (21), not `NonConforming`
+(24) — a green order in the laboratory and a refused one in the HIS. The full
+sequence is defect 0 in `docs/catalogue-discovery-plan.md`.
+
+The bridge used to fill the gap with a heuristic — `status_detail` read "most
+often no test matches the LOINC code" — and that episode is what retired it. It
+was a guess shown to a clinician in the voice of the laboratory, and when it was
+wrong it sent the reader to the catalogue, which was fine, instead of to the
+laboratory, where the fault was. A rejection with no reason now says so.
 
 ## Known limitations
 

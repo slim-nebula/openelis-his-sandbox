@@ -63,6 +63,11 @@ builder.Services.AddHttpClient("his-api", client =>
 
 var app = builder.Build();
 
+// The TLS listener is configured before logging exists, but nothing in it runs
+// until a connection arrives — by then this is attached, so a refused handshake
+// says why on the console and on the log topic.
+MutualTls.AttachLogger(app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Bridge.MutualTls"));
+
 await WaitForDatabaseAsync(app);
 
 // Records http_requests_total / http_request_duration_seconds against the route

@@ -11,7 +11,7 @@
 #   make auth        authentication test
 #   make progress    laboratory progress inside an order
 #   make token       sign in (stands in for IAM), prints a user token
-#   make certs       issue the certificates for the OpenELIS <-> bridge hop
+#   make certs       reissue the OpenELIS <-> bridge certificates (`up` does it)
 #   make down        stop applications, keep data
 #   make clean       destroy everything including volumes
 # =============================================================================
@@ -49,8 +49,14 @@ help:
 secrets: ## Create .env from .env.example, generating the passwords and tokens
 	@bash scripts/init-secrets.sh
 
-config: ## Render templated configuration from .env
+config: ## Render templated configuration from .env and issue the integration certificates
 	@bash scripts/render-config.sh
+	@# Before anything starts, because two containers read these files as they
+	@# boot: the bridge serves its FHIR port with bridge.crt, and OpenELIS's
+	@# truststore has our CA imported into it. Leaving this as a manual step is
+	@# what made a fresh clone come up with a crashlooping bridge and a
+	@# laboratory that never received an order.
+	@bash scripts/init-mtls.sh
 
 data-up: ## Start the external database servers
 	@echo "==> Starting external database servers"

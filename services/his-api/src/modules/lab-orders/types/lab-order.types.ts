@@ -6,6 +6,8 @@ export interface ILabOrder {
   testName: string;
   orderStatus: string;
   orderingProvider: string;
+  /** usr_id of the authenticated clinician. Null only for pre-identity orders. */
+  orderingProviderId: string | null;
   facilityCode: string;
   priority: string;
   statusDetail: string | null;
@@ -18,12 +20,24 @@ export interface ILabOrder {
   updatedAt: string | null;
 }
 
+/**
+ * What the caller may ask for.
+ *
+ * Note what is absent: the ordering provider. It is not the caller's to state —
+ * it is read from the verified token by the controller, which is the only place
+ * that knows it for certain.
+ */
 export interface ICreateLabOrderInput {
   patientId: string;
   testCode: string;
-  orderingProvider: string;
   facilityCode: string;
   priority?: string | undefined;
+}
+
+/** Who placed the order, established from the token rather than the payload. */
+export interface IOrderingClinician {
+  id: string;
+  name: string;
 }
 
 export interface IResultSummary {
@@ -54,6 +68,12 @@ export interface IBridgeOrderPayload {
   resultUnit: string | null;
   orderStatus: string;
   orderingProvider: string;
+  /**
+   * Sent so the bridge can key the FHIR Practitioner off a stable id instead of
+   * a hash of the display name — which made every spelling of a clinician's
+   * name a different practitioner in the laboratory's records.
+   */
+  orderingProviderId: string | null;
   facilityCode: string;
   priority: string;
   createdAt: string | null;

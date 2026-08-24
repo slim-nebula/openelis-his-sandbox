@@ -374,9 +374,101 @@ sample for as long as it exists.
 
 ## Carried over — unrelated open items
 
-Three genuine defects found while diagnosing this, none blocking:
+Four genuine defects found while diagnosing this. The first is blocking and the
+other three are not.
 
-1. **Requester never populates.** `LabOrderSearchProvider` returns `requester: ""`
+0. **Order import is not idempotent, has no terminal failure state, and
+   duplicates patients.** Found on the first clean rebuild of the whole stack,
+   which is what made it visible — it needs a laboratory with no history of the
+   patient, and every previous run had one.
+
+   The sequence, from `docker logs openelis-webapp`:
+
+   ```
+   22:12:30 WARN  FhirApiWorkFlowServiceImpl.getTaskLoctionFromServer   ← pass 1
+   22:12:32 WARN  FhirApiWorkFlowServiceImpl.getTaskLoctionFromServer   ← pass 2, same Task
+   22:12:35 ERROR HTTP 409 HAPI-0825: client-assigned ID constraint failure
+   22:12:35 ERROR beginTaskImportOrderPath: could not process Task ... /Task/7cd66755
+   ```
+
+   Two passes two seconds apart import the same Task concurrently. Both create
+   FHIR resources with client-assigned ids; the second loses the race and HAPI
+   returns 409, which aborts the whole import.
+
+   Three consequences, in increasing order of seriousness:
+
+   * **The Task is never acknowledged**, so it stays `status=requested` and the
+     next poll finds it again. It was still being re-imported every 30 seconds
+     twenty-six minutes later — roughly fifty attempts, none of which could ever
+     succeed. There is no attempt counter and no failure state.
+   * **A later pass duplicated the patient.** `clinlims.patient` ended with rows
+     3 and 4 holding the same `national_id`, name and date of birth. In a
+     laboratory that is a merge, by hand, with results already attached.
+   * **The second failure mode is different and worse.** Once the duplicate
+     existed, the import failed on
+     `HSEARCH800022: Indexing failure ... [Patient#4]` — a Hibernate Search
+     callback throwing inside `afterTransactionCompletion`. OpenELIS then set
+     `Task.status = rejected`, which over the integration is indistinguishable
+     from a clinical refusal. The HIS told the clinician the laboratory had
+     declined the order. It had not; it had failed to update a Lucene index.
+
+   Nothing about this is the bridge's doing — the Task it publishes is
+   well-formed and unchanged between the attempt that succeeded and the one that
+   did not. But two things follow for anyone integrating:
+
+   * **`Task.status = rejected` from OpenELIS does not mean the laboratory
+     refused the order.** Do not render it to a clinician as though it does.
+   * **The mediator has to own idempotency, because the LIS does not.**
+
+   **What we did about it.** The import cannot be made idempotent from outside
+   OpenELIS — but the collision needs two overlapping deliveries, and who
+   delivers is ours. The bridge now leases a Task on delivery: once handed over
+   it is withheld from the poll for `BRIDGE_TASK_LEASE_SECONDS` (90), so the
+   same order cannot be imported twice at once. The Task is not altered — it
+   stays `requested`, and a read by id is never withheld — and when the lease
+   expires a genuinely failed import is retried, just never concurrently with
+   itself. `bridge.delivery_leases.deliveries` counts hand-overs, which is the
+   attempt counter OpenELIS lacks.
+
+   That contains the 409 and the duplicate patient. It does **not** fix the
+   over-firing poll, the HSEARCH indexing failure, or `rejected` meaning
+   "internal error" — those stay upstream's, and are why this report stands.
+
+   Ruled out while diagnosing: a second webapp replica (there is one container,
+   and one `remote.poll.frequency`). The import lines fall into four series each
+   repeating every 60 seconds — four executions a minute where 30000 ms
+   configures two — so the over-firing is inside a single instance.
+
+1. **Requester never populates.**
+
+   **`provider.external_id` is a dead end in 3.2.1.11 — do not spend time on it.**
+   External research pointed here confidently, citing Bahmni's OpenMRS↔OpenELIS
+   integration guidance (*"this will be used as 'external_id' reference in the
+   OpenELIS provider table... the provider name will be shown in the Requester
+   name dropdown"*). It matches our own earlier note that setting `external_id`
+   made no difference, and the deployed code says why.
+
+   `ProviderService` in the deployed WAR
+   (`WEB-INF/classes/org/openelisglobal/provider/service/ProviderService.class`)
+   exposes exactly these lookups:
+
+   ```
+   getProviderByFhirId(UUID)      insertOrUpdateProviderByFhirUuid
+   getProviderIdByFhirId(UUID)    getProviderByPerson
+   ```
+
+   There is **no** `getProviderByExternalId`. `LabOrderSearchProvider` — the
+   class that builds the `<requester>` element for Incoming Orders — carries a
+   `(Ljava/util/UUID;)…/Provider;` call, so it resolves the requester by
+   `fhir_uuid` and nothing else. The Bahmni guidance describes an older or
+   OpenMRS-driven import path, not this one.
+
+   That matters because we already satisfy the condition it describes: the
+   provider row exists, is `active`, and its `fhir_uuid` matches the
+   Practitioner our ServiceRequest references. So the blank requester is **not**
+   an identifier-mapping problem, and writing to `clinlims.provider` would be
+   both useless and a breach of the no-cross-database rule. Look at how the view
+   resolves `ServiceRequest.requester` into that UUID instead. `LabOrderSearchProvider` returns `requester: ""`
    although `Task.requester` and `ServiceRequest.requester` both point at a
    Practitioner that OpenELIS imported into `clinlims.provider` with a matching
    `fhir_uuid` and `active = true`. Setting `provider.external_id` made no

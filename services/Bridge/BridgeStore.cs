@@ -15,7 +15,8 @@ namespace Bridge;
 /// idempotency and dead-letter bookkeeping. Neither the HIS service nor
 /// OpenELIS has credentials for it.
 /// </summary>
-public sealed class BridgeStore(NpgsqlDataSource dataSource, ILogger<BridgeStore> log)
+public sealed class BridgeStore(
+    NpgsqlDataSource dataSource, BridgeOptions options, ILogger<BridgeStore> log)
 {
     private static readonly FhirJsonSerializer Serializer = new();
     private static readonly FhirJsonParser Parser = new(new ParserSettings
@@ -76,17 +77,108 @@ public sealed class BridgeStore(NpgsqlDataSource dataSource, ILogger<BridgeStore
     public async Task<IReadOnlyList<Resource>> SearchTasksAsync(
         string? status, string? owner, string? id, int limit, CancellationToken ct)
     {
+        // A lookup by id is a read, not a delivery, and must never be withheld:
+        // GET /fhir/Task/{id} and ?_id= have to agree, or debugging this becomes
+        // impossible. Only the poll — which never carries _id — takes a lease.
+        if (id is not null)
+        {
+            await using var direct = await dataSource.OpenConnectionAsync(ct);
+            var one = await direct.QueryAsync<string>(new CommandDefinition("""
+                SELECT content::text FROM bridge.fhir_resources
+                WHERE resource_type = 'Task'
+                  AND (@status IS NULL OR content ->> 'status' = @status)
+                  AND (@owner  IS NULL OR content -> 'owner' ->> 'reference' = @owner)
+                  AND resource_id = @id
+                ORDER BY last_updated
+                LIMIT @limit;
+                """, new { status, owner, id, limit }, cancellationToken: ct));
+            return one.Select(Parser.Parse<Resource>).ToList();
+        }
+
+        return await SearchAndLeaseTasksAsync(status, owner, limit, ct);
+    }
+
+    /// <summary>
+    /// The order poll: returns Tasks and claims them in one statement.
+    ///
+    /// The claim has to be atomic with the read, because the failure it exists
+    /// to prevent IS two polls landing together (db/bridge/005_delivery_lease.sql).
+    /// Two things make it so:
+    ///
+    ///   * the LEFT JOIN drops Tasks under a live lease, which handles the
+    ///     ordinary case and keeps LIMIT counting only claimable rows;
+    ///   * `ON CONFLICT ... DO UPDATE ... WHERE leased_until &lt;= now()` handles
+    ///     the simultaneous case. It takes a row lock, so of two transactions
+    ///     racing for the same Task the second finds the lease already moved
+    ///     into the future, its WHERE fails, and it RETURNSs nothing. Only the
+    ///     winner is handed the Task.
+    ///
+    /// A Task is therefore delivered to exactly one poll at a time, without its
+    /// status being touched.
+    /// </summary>
+    private async Task<IReadOnlyList<Resource>> SearchAndLeaseTasksAsync(
+        string? status, string? owner, int limit, CancellationToken ct)
+    {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
-        var rows = await conn.QueryAsync<string>(new CommandDefinition("""
-            SELECT content::text FROM bridge.fhir_resources
-            WHERE resource_type = 'Task'
-              AND (@status IS NULL OR content ->> 'status' = @status)
-              AND (@owner  IS NULL OR content -> 'owner' ->> 'reference' = @owner)
-              AND (@id     IS NULL OR resource_id = @id)
-            ORDER BY last_updated
-            LIMIT @limit;
-            """, new { status, owner, id, limit }, cancellationToken: ct));
-        return rows.Select(Parser.Parse<Resource>).ToList();
+
+        var rows = await conn.QueryAsync<(string Content, int Deliveries)>(new CommandDefinition("""
+            WITH candidates AS (
+                SELECT r.resource_id
+                  FROM bridge.fhir_resources r
+                  LEFT JOIN bridge.delivery_leases l ON l.resource_id = r.resource_id
+                 WHERE r.resource_type = 'Task'
+                   AND (@status IS NULL OR r.content ->> 'status' = @status)
+                   AND (@owner  IS NULL OR r.content -> 'owner' ->> 'reference' = @owner)
+                   AND (l.leased_until IS NULL OR l.leased_until <= now())
+                 ORDER BY r.last_updated
+                 LIMIT @limit
+            ),
+            claimed AS (
+                INSERT INTO bridge.delivery_leases AS l (resource_id, leased_until)
+                SELECT resource_id, now() + make_interval(secs => @leaseSeconds) FROM candidates
+                ON CONFLICT (resource_id) DO UPDATE
+                   SET leased_until = excluded.leased_until,
+                       deliveries   = l.deliveries + 1,
+                       last_at      = now()
+                 WHERE l.leased_until <= now()
+                RETURNING resource_id, deliveries
+            )
+            SELECT r.content::text AS "Content", c.deliveries AS "Deliveries"
+              FROM bridge.fhir_resources r
+              JOIN claimed c ON c.resource_id = r.resource_id
+             ORDER BY r.last_updated;
+            """, new { status, owner, limit, leaseSeconds = (double)options.TaskLeaseSeconds },
+            cancellationToken: ct));
+
+        var delivered = rows.ToList();
+
+        // Above one means the LIS was given this order and never came back with
+        // a verdict. Nothing else counts that — OpenELIS keeps no attempt
+        // counter for a failing import — so this is the only place a repeatedly
+        // failing order announces itself.
+        foreach (var (content, deliveries) in delivered.Where(r => r.Deliveries > 1))
+        {
+            log.LogWarning(
+                "Task handed to the LIS for the {Ordinal} time — the previous delivery was never " +
+                "acknowledged. Repeated growth here means the LIS cannot import it: {Task}",
+                deliveries, Parser.Parse<Resource>(content).Id);
+        }
+
+        return delivered.Select(r => Parser.Parse<Resource>(r.Content)).ToList();
+    }
+
+    /// <summary>
+    /// Releases the lease once the LIS has given its verdict. Not required for
+    /// correctness — the Task leaves `requested` at the same moment, so the poll
+    /// stops matching it either way — but it keeps the table to live orders and
+    /// keeps `deliveries` meaning what it says.
+    /// </summary>
+    public async Task ReleaseDeliveryLeaseAsync(string resourceId, CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(
+            "DELETE FROM bridge.delivery_leases WHERE resource_id = @resourceId;",
+            new { resourceId }, cancellationToken: ct));
     }
 
     /// <summary>Total matching the same predicate, so a bundle can report a truthful total when it is truncated.</summary>

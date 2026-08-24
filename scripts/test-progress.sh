@@ -21,7 +21,7 @@ ORDER_NUMBER="${1:-}"
 if [[ -z "$ORDER_NUMBER" ]]; then
     ORDER_JSON=$(api_curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
         -d "{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"$(any_active_test_code)\",
-             \"orderingProvider\":\"Dr. Progress\",\"facilityCode\":\"FAC-001\"}")
+             \"facilityCode\":\"FAC-001\"}")
     ORDER_NUMBER=$(echo "$ORDER_JSON" | json_field "['orderNumber']")
 fi
 
@@ -40,6 +40,29 @@ done
 
 if [[ -z "${OUR_SR:-}" ]]; then
     bad "The bridge never published a ServiceRequest for $ORDER_NUMBER"
+    summary; exit 1
+fi
+
+# Wait for the laboratory to actually accept it before testing anything about
+# progress "underneath" that status.
+#
+# The suite used to assume acceptance had happened by the time it got here,
+# which held only because the steps above happened to take longer than one poll
+# interval. It is not a safe assumption: a failed first import now waits out a
+# delivery lease before being retried, so acceptance can take a couple of
+# minutes. Asserting order_status == ACCEPTED_BY_LIS without waiting for it
+# tests the clock, not the code.
+info "waiting for OpenELIS to accept the order…"
+ACCEPTED=false
+for _ in $(seq 1 60); do
+    [[ "$(his_sql "SELECT order_status FROM his.lab_orders WHERE order_number = '$ORDER_NUMBER'")" \
+       == "ACCEPTED_BY_LIS" ]] && { ACCEPTED=true; break; }
+    sleep 3
+done
+
+if [[ "$ACCEPTED" == false ]]; then
+    bad "OpenELIS accepted $ORDER_NUMBER" \
+        "status is '$(his_sql "SELECT order_status FROM his.lab_orders WHERE order_number = '$ORDER_NUMBER'")' after 180s"
     summary; exit 1
 fi
 

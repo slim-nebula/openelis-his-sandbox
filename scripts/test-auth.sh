@@ -276,6 +276,103 @@ check "The trail holds references, never patient data" \
     "[[ \$(his_sql \"SELECT count(*) FROM information_schema.columns WHERE table_schema='his' AND table_name='audit_events' AND column_name IN ('first_name','last_name','date_of_birth','result_value','payload')\") == 0 ]]"
 
 # ---------------------------------------------------------------------------
+section "5b · The order is attributed to the token, not to the payload"
+
+# The ordering provider used to be a free-text box with a prefilled name. That
+# left two different answers to "who ordered this test" in one database — the
+# audit trail's, from the verified token, and the order's, from whatever was
+# typed — with nothing reconciling them.
+#
+# It is the field that matters most clinically: the ordering provider is who
+# receives the result, who is telephoned about a critical value, and who is
+# accountable for acting on it.
+
+ORDERER=$(mint --user 33 --name dr.attribution --full-name "Dr Attribution Test" \
+                --groups "$LAB_ORDER_GROUP")
+
+# Plain curl, not api_curl: that helper adds its own Authorization header, and
+# two of them arrive joined by a comma and parse as neither.
+ATTRIB_JSON=$(curl -s -X POST "${API}/lab-orders" \
+    -H "Authorization: Bearer $ORDERER" -H 'Content-Type: application/json' \
+    -d "{\"patientId\":\"11111111-1111-1111-1111-111111111111\",
+         \"testCode\":\"$(any_active_test_code)\",\"facilityCode\":\"FAC-001\"}")
+ATTRIB_ORDER=$(echo "$ATTRIB_JSON" | json_field "['orderNumber']")
+
+if [[ -n "$ATTRIB_ORDER" ]]; then
+    ok "An order can be placed without naming a provider at all"
+else
+    bad "An order can be placed without naming a provider at all" "$ATTRIB_JSON"
+fi
+
+check "It is attributed to the signed-in user's id" \
+    "[[ \$(his_sql \"SELECT ordering_provider_id FROM his.lab_orders
+                     WHERE order_number='$ATTRIB_ORDER'\") == 33 ]]"
+
+# his_rows, not his_sql: the latter strips whitespace for scalar comparisons,
+# and a clinician's name has spaces in it.
+check_contains "…and carries their name for the laboratory to print" \
+    "his_rows \"SELECT ordering_provider FROM his.lab_orders
+                WHERE order_number='$ATTRIB_ORDER'\"" \
+    "Dr Attribution Test"
+
+# Refused rather than ignored. zod strips unknown keys, so simply dropping the
+# field from the schema would let a caller's value vanish silently and the order
+# name somebody else — a worse failure than an error, because it succeeds.
+check "Supplying orderingProvider is REFUSED, not quietly ignored" \
+    "[[ \$(api_status -X POST ${API}/lab-orders -H 'Content-Type: application/json' \
+        -d '{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"HGB\",
+             \"orderingProvider\":\"Dr. Somebody Else\",\"facilityCode\":\"FAC-001\"}') == 400 ]]"
+
+check "…and the refusal says where identity comes from" \
+    "api_curl -s -X POST ${API}/lab-orders -H 'Content-Type: application/json' \
+       -d '{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"HGB\",
+            \"orderingProvider\":\"Dr. Somebody Else\",\"facilityCode\":\"FAC-001\"}' \
+     | grep -q 'taken from your session'"
+
+# The order and the trail now agree, which is the whole point of the change.
+check "The audit trail and the order name the same person" \
+    "[[ \$(his_sql \"SELECT count(*) FROM his.lab_order_events e JOIN his.lab_orders o USING (order_id)
+          WHERE o.order_number='$ATTRIB_ORDER' AND e.event_type='ORDER_CREATED'
+            AND e.detail LIKE '%usr_id 33%'\") == 1 ]]"
+
+# The payoff, and the reason the id matters rather than just the name. The
+# bridge used to key the FHIR Practitioner on a hash of the display name, so
+# "Dr Attribution Test" and "Dr. Attribution-Test" were two different clinicians
+# in the laboratory's own provider records — permanently, since a laboratory
+# report prints the requesting clinician. Same person, one Practitioner.
+await_requester() {  # await_requester <order-number>
+    for _ in $(seq 1 30); do
+        local r
+        r=$(docker exec bridge curl -s "http://127.0.0.1:8080/fhir/ServiceRequest/$1" \
+            | python3 -c "import sys,json;print(json.load(sys.stdin).get('requester',{}).get('reference',''))" 2>/dev/null)
+        [[ -n "$r" ]] && { echo "$r"; return; }
+        sleep 2
+    done
+}
+
+RESPELLED=$(mint --user 33 --name dr.attribution --full-name "Dr. Attribution-Test" \
+                  --groups "$LAB_ORDER_GROUP")
+RESPELLED_ORDER=$(curl -s -X POST "${API}/lab-orders" \
+    -H "Authorization: Bearer $RESPELLED" -H 'Content-Type: application/json' \
+    -d "{\"patientId\":\"11111111-1111-1111-1111-111111111111\",
+         \"testCode\":\"$(any_active_test_code)\",\"facilityCode\":\"FAC-001\"}" \
+    | json_field "['orderNumber']")
+
+FIRST_REQUESTER=$(await_requester "$ATTRIB_ORDER")
+SECOND_REQUESTER=$(await_requester "$RESPELLED_ORDER")
+
+if [[ -n "$FIRST_REQUESTER" && "$FIRST_REQUESTER" == "$SECOND_REQUESTER" ]]; then
+    ok "The same clinician spelled differently is still ONE practitioner in the lab"
+else
+    bad "The same clinician spelled differently is still ONE practitioner in the lab" \
+        "'$FIRST_REQUESTER' vs '$SECOND_REQUESTER'"
+fi
+
+check_contains "…and the practitioner carries the HIS user id, not only a name" \
+    "docker exec bridge curl -s http://127.0.0.1:8080/fhir/\${FIRST_REQUESTER}" \
+    'his-sandbox.local/user'
+
+# ---------------------------------------------------------------------------
 section "6 · The bridge is a service, not a person"
 
 check "/internal/* refuses a call with no key" \

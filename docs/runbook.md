@@ -25,10 +25,23 @@ make token       # sign in — the clinical API and the frontend need a user tok
 | Step | What it does | How long |
 |---|---|---|
 | `secrets` | First run only: writes `.env` from `.env.example`, generating passwords and tokens | instant |
-| `config` | Renders `openelis/generated/common.properties` from `.env` | instant |
+| `config` | Renders `openelis/generated/common.properties` from `.env`, and issues the CA and the bridge's server certificate | instant |
 | `data-up` | Starts `his-db.external` and `openelis-db.external`, waits for `pg_isready` | 30 s first run, ~4 min for OpenELIS's schema load |
-| `app-up` | Builds the HIS service and the bridge, then starts everything else | 3–6 min first run |
+| `app-up` | Exports OpenELIS's certificate and imports our CA into its truststore, builds the HIS service and the bridge, then starts everything else | 3–6 min first run |
 | OpenELIS boot | Tomcat, Liquibase migrations, FHIR store startup | 3–8 min under emulation |
+
+The certificate work is split across two of those steps deliberately. The CA and
+the bridge's own certificate depend on nothing, so they are made before the
+stack starts — the bridge serves its FHIR port with one, and OpenELIS's
+truststore needs the other imported before Tomcat reads it. OpenELIS's
+certificate cannot be made early, because certgen has not created it yet; the
+`oe-peer-cert` one-shot exports it from the volume the moment certgen exits, and
+the bridge waits for that one-shot before starting.
+
+Get that ordering wrong and a fresh clone comes up with a crashlooping bridge
+and an OpenELIS that trusts nobody — which is to say, orders that never reach
+the laboratory. It is verified by the only test that counts: `make clean`,
+delete `certs/`, `make up`.
 
 The OpenELIS webapp is ready when `docker logs openelis-webapp` shows
 `Server startup in [n] milliseconds`. Until then the UI returns 502.
@@ -206,7 +219,77 @@ docker logs openelis-webapp 2>&1 | grep -iE "task|remote" | tail -40
 - OpenELIS logs `could not process Task import workflow` → look at the
   exception; usually a resource it tried to dereference was missing.
 
+**If OpenELIS logs the same failed import over and over, that is the known
+upstream defect and it will not stop on its own.** A Task whose import throws is
+never acknowledged, so it stays `status=requested` and the next poll picks it up
+again — one clean rebuild left a single order being re-imported every 30 seconds
+for twenty-six minutes, and one of those passes created a **duplicate patient
+record**. Full evidence: defect 0 in `docs/catalogue-discovery-plan.md`.
+
+```bash
+# Is this happening? A count that keeps climbing for one Task is the signature.
+docker logs openelis-webapp --since 10m 2>&1 | grep -c "could not process Task"
+# Which orders is the bridge still offering?
+docker exec bridge curl -s "http://127.0.0.1:8080/fhir/Task?status=requested&owner=$OE_REMOTE_SOURCE_IDENTIFIER"
+```
+
+To stop the loop, take the order out of the poll's result set — the Task is the
+bridge's own resource, so this changes nothing inside OpenELIS:
+
+```sql
+-- make psql-his, on the bridge database
+UPDATE bridge.order_tracking SET task_status = 'failed', last_error = 'import loop, see runbook'
+ WHERE order_number = 'LAB-...';
+```
+
+Then check `clinlims.patient` for duplicates created by the retries, and tell
+the laboratory: merging patient records is theirs to do, not ours.
+
+**What the bridge now does about it.** A Task handed to the laboratory is
+withheld from the next polls for `BRIDGE_TASK_LEASE_SECONDS` (90 by default), so
+OpenELIS cannot be given the same order twice at once. That removes the
+collision — the 409 and the duplicate patient both need two overlapping imports
+— without touching the Task, which stays `requested` and stays readable by id.
+
+`deliveries` is the attempt counter OpenELIS does not keep. It is the fastest
+way to tell a slow laboratory from a failing import:
+
+```sql
+-- make psql-his, on the bridge database
+SELECT l.resource_id, l.deliveries, l.first_at, l.last_at, t.order_number
+  FROM bridge.delivery_leases l
+  LEFT JOIN bridge.order_tracking t ON t.fhir_task_id = l.resource_id
+ WHERE l.deliveries > 1 ORDER BY l.deliveries DESC;
+```
+
+One delivery is normal. A number climbing steadily means the laboratory takes
+the order and never returns a verdict — look at `openelis-webapp`'s log for the
+import exception. The bridge also logs a warning on every re-delivery.
+
+> **Still an open decision.** The lease stops orders colliding; it does not stop
+> them being retried for ever. A mediator arguably also owes the HIS a delivery
+> timeout — after N attempts, give up, publish `lab.order.failed`, stop offering
+> the Task. That is deliberately **not** built: abandoning a clinician's order
+> automatically is a clinical safety decision, not one to make on the sandbox's
+> own authority. `deliveries` gives you the number to set the threshold from
+> when you decide. Raise it before building it.
+
 ### An order was rejected
+
+**First: `rejected` does not reliably mean the laboratory refused it.** Check
+whether OpenELIS actually recorded a refusal before treating it as one — a
+rejection caused by an internal OpenELIS failure leaves the order at `Entered`,
+not `NonConforming`:
+
+```sql
+-- make psql-oe :  21 = Entered (accepted), 24 = NonConforming (genuinely refused)
+SELECT external_id, status_id FROM clinlims.electronic_order
+ WHERE external_id = 'LAB-...';
+```
+
+`21` means the laboratory has the order and something else set the Task to
+rejected — look at `docker logs openelis-webapp` for an exception at that
+timestamp, not at the catalogue. `24` is a real refusal; continue below.
 
 Almost always test identity. Confirm the LOINC exists on an OpenELIS test:
 
@@ -318,8 +401,9 @@ docker logs bridge --since 10m | grep -i "fhir\|handshake"
 
 The three things that break it, in order of likelihood:
 
-1. **The CA is not in OpenELIS's truststore.** After `make clean`, or after
-   regenerating certificates. `make trust-bridge` re-imports and restarts.
+1. **The CA is not in OpenELIS's truststore.** `make up` imports it, so this
+   means the import failed rather than that it was never attempted — check
+   `make logs S=oe-trust-bridge`. `make trust-bridge` re-imports and restarts.
    ```bash
    docker exec openelis-webapp keytool -list \
      -keystore /etc/openelis-global/truststore -storepass "$SSL_TRUSTSTORE_PASSWORD" \
@@ -330,8 +414,12 @@ The three things that break it, in order of likelihood:
    `BRIDGE_FHIR_BASE` must use `bridge.openelis.org` — a SAN on the bridge's
    certificate, and an alias that exists only on the `integration` network.
 3. **OpenELIS's certificate changed.** certgen regenerates the keystore on a
-   fresh volume, and the bridge pins the old one. Re-export it:
-   `make certs FORCE=true && make trust-bridge`, then restart the bridge.
+   fresh volume, and the bridge pins the old one. `make up` re-exports it every
+   time and the bridge re-reads the file on the next handshake, so this normally
+   corrects itself; to force it on a running stack, `make certs FORCE=true`. No
+   bridge restart is needed — the log says `Pinned the FHIR peer to …` when it
+   picks the new one up, and `Refused a client certificate` with the thumbprint
+   while it has not.
 
 To bisect, turn it off: `BRIDGE_MTLS_ENABLED=false` and
 `BRIDGE_FHIR_BASE=http://bridge:8080/fhir`, then `make config` and restart both.
@@ -370,6 +458,28 @@ Nothing to do beyond bringing Kafka back.
 -- make psql-his : how far behind is the outbox?
 SELECT count(*) FROM his.outbox WHERE published_at IS NULL;
 ```
+
+**Confirm the consumer came back with it.** This is the one part that does not
+verify itself, because the symptom is silence:
+
+```bash
+docker exec his-api curl -s http://127.0.0.1:8080/metrics | grep kafka_consumer_running
+```
+
+`1` means subscribed and receiving. `0` means results and status updates are not
+reaching the HIS, whatever `/health` says — the service reports healthy because
+its HTTP API genuinely is, and Consul keeps it in rotation for exactly that
+reason. It retries every 30 seconds and logs `Kafka consumer recovered` when it
+succeeds; if it stays at 0, the log line says why.
+
+This series exists because the first clean run of this stack hit the failure it
+detects. `his-api` started before the topics had been created, the subscription
+failed, the error was logged once, and boot carried on. Nothing else moved — not
+health, not an error rate, and not consumer lag, since a consumer that never
+joined its group has no lag to report. Both halves are fixed (the service now
+waits for `kafka-init` and retries for ever), but the check is worth keeping:
+**alive and consuming are different questions**, and only one of them is on the
+health endpoint.
 
 ### The catalogue sync was refused
 

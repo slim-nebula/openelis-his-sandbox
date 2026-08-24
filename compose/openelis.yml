@@ -27,6 +27,58 @@ services:
       - oe-certs:/etc/ssl/certs/
     networks: [openelis]
 
+  # --- Export OpenELIS's certificate so the bridge can recognise it ----------
+  # The bridge pins ONE certificate on its FHIR port, and that certificate is
+  # OpenELIS's — so it has to be OpenELIS's real one, not something issued here.
+  # It is read out of the store certgen wrote, which is why this cannot happen
+  # before the stack starts and cannot be committed to the repository.
+  #
+  # It runs against the VOLUME rather than the running webapp, so it does not
+  # wait for Tomcat: the store is complete the moment certgen exits. That is
+  # what lets the bridge depend on this and start already able to complete a
+  # handshake, instead of refusing OpenELIS's first few polls.
+  #
+  # Only the public certificate leaves the store. The bridge can recognise
+  # OpenELIS; it holds nothing that would let it be OpenELIS.
+  oe-peer-cert:
+    image: itechuw/openelis-global-2:develop
+    platform: linux/amd64
+    container_name: openelis-peer-cert
+    restart: "no"
+    depends_on:
+      oe-certs:
+        condition: service_completed_successfully
+    volumes:
+      - oe-key-trust-store:/etc/openelis-global:ro
+      # Writable, unlike everywhere else this directory is mounted: this is the
+      # one place the exported certificate comes from.
+      - ../certs:/certs
+    environment:
+      TRUSTSTORE_PW: ${SSL_TRUSTSTORE_PASSWORD}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        # Via a temporary file. Writing straight to the destination would mean a
+        # failed export replaces a good certificate with an empty one, and the
+        # bridge would then refuse every handshake OpenELIS made.
+        keytool -exportcert -rfc -alias oecert \
+          -keystore /etc/openelis-global/truststore \
+          -storepass "$$TRUSTSTORE_PW" -storetype PKCS12 > /tmp/oe.crt
+        if [ ! -s /tmp/oe.crt ]; then
+          echo "!! Exported nothing for alias oecert. Leaving /certs alone." >&2
+          exit 1
+        fi
+        if cmp -s /tmp/oe.crt /certs/openelis-client.crt 2>/dev/null; then
+          echo "OpenELIS's certificate is unchanged."
+        else
+          cp /tmp/oe.crt /certs/openelis-client.crt
+          chmod 644 /certs/openelis-client.crt
+          echo "Exported OpenELIS's certificate for the bridge to pin:"
+          keytool -printcert -file /certs/openelis-client.crt | grep -E 'Owner|SHA1|SHA-1'
+        fi
+    networks: [openelis]
+
   # --- Teach OpenELIS to trust the bridge ------------------------------------
   # One keytool import, additive: our CA is added beside certgen's own entry,
   # which stays untouched. Runs on every `make up` because certgen may recreate

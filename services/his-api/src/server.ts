@@ -32,11 +32,10 @@ const start = async (): Promise<void> => {
 
   outboxRelay.start();
 
-  try {
-    await bridgeEventConsumer.start();
-  } catch (error) {
-    logger.error(`Kafka consumer failed to start: ${(error as Error).message}`);
-  }
+  // Does not throw, and does not give up. A first attempt that fails — a broker
+  // still starting, topics not yet created — hands over to a background retry
+  // rather than logging once and leaving the service permanently deaf.
+  await bridgeEventConsumer.start();
 
   await consul.register();
 

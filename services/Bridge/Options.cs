@@ -33,6 +33,20 @@ public sealed class BridgeOptions
     /// </summary>
     public int MaxSearchResults { get; init; } = 200;
 
+    /// <summary>
+    /// How long a Task is withheld from the order poll after being handed over.
+    ///
+    /// It has to comfortably exceed one import, or the lease expires mid-import
+    /// and re-offers the Task to the very next poll — reintroducing the
+    /// collision it exists to prevent. A measured import took about five
+    /// seconds; ninety gives three poll intervals of headroom.
+    ///
+    /// Too long is the safer error but not a free one: a genuinely failed
+    /// import waits this long before being retried, so the ceiling on how
+    /// stale an order can get is one lease.
+    /// </summary>
+    public int TaskLeaseSeconds { get; init; } = 90;
+
     // --- Access -------------------------------------------------------------
     /// <summary>
     /// Shared token for the endpoints that change something or expose
@@ -124,6 +138,7 @@ public sealed class BridgeOptions
         RetryBaseDelaySeconds = int.Parse(Env("BRIDGE_RETRY_BASE_DELAY_SECONDS", "2")),
         CorrelationRetryMinutes = int.Parse(Env("BRIDGE_RESULT_CORRELATION_RETRY_MINUTES", "15")),
         MaxSearchResults = int.Parse(Env("BRIDGE_MAX_SEARCH_RESULTS", "200")),
+        TaskLeaseSeconds = int.Parse(Env("BRIDGE_TASK_LEASE_SECONDS", "90")),
         AdminToken = Env("BRIDGE_ADMIN_TOKEN", ""),
         FhirAllowedPeers = SplitPeers(Env("BRIDGE_FHIR_ALLOWED_PEERS", "")),
         RetentionReceivedDays = int.Parse(Env("RETENTION_RECEIVED_DAYS", "30")),
@@ -195,6 +210,11 @@ public sealed record HisOrder(
     string? ResultUnit,
     string OrderStatus,
     string OrderingProvider,
+    /// <summary>
+    /// The clinician's usr_id, from the token the order was placed with. Null
+    /// only for orders placed before the HIS recorded identity.
+    /// </summary>
+    string? OrderingProviderId,
     string FacilityCode,
     string Priority,
     DateTimeOffset CreatedAt,

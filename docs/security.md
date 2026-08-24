@@ -126,9 +126,21 @@ its identity. Those are different layers.
 
 **What changed, in full:**
 
-1. `make certs` creates a small CA, issues the bridge a server certificate for
-   `bridge.openelis.org`, and **exports** OpenELIS's certificate from OpenELIS's
-   own truststore.
+1. A small CA is created, the bridge is issued a server certificate for
+   `bridge.openelis.org`, and OpenELIS's certificate is **exported** from
+   OpenELIS's own truststore.
+
+   All three happen inside `make up`, and the split matters. The first two need
+   nothing running, so `make config` does them before the stack starts. The
+   third cannot — OpenELIS's certificate does not exist until certgen has made
+   it — so a one-shot container (`oe-peer-cert`) reads it out of the volume once
+   certgen exits, and the bridge waits for that one-shot before it starts.
+
+   Getting this wrong is what a first attempt did: both loads happened while the
+   bridge's host was being built, and a missing file threw. On a fresh clone
+   there is no `certs/` directory, so the bridge crashlooped and no order ever
+   reached the laboratory. The certificates are now read **per handshake**
+   instead — which also means replacing one takes effect without a restart.
 2. One `keytool -importcert` adds our CA beside certgen's entry, which is left
    untouched. This is the only change to anything OpenELIS reads, and it is the
    step its own installation guide describes: *"build a truststore containing
@@ -502,11 +514,43 @@ identity to record is already on `req.user`, and the transport to a repository
 is the same shipping path the log topic already uses. It is a schema and a
 destination, not new plumbing.
 
-**`orderingProvider` is still free text.** The clinical API now knows which
-clinician is calling — `req.user` carries IAM's claims — but the order record
-takes the ordering provider from the request body, so the name on the order and
-the name on the token can differ. Audit that can be typed is not audit. Filling
-it from the token is a small change and a real one.
+**~~`orderingProvider` is still free text.~~ Fixed.** The order is now attributed
+to the verified token: `ordering_provider_id` holds the caller's `usr_id` and
+`ordering_provider` their `usr_full_name`. Supplying the field in the request
+body is **refused with a 400**, not ignored — zod strips unknown keys, so
+dropping it from the schema silently would have let a caller's value vanish
+while the request succeeded and the order named somebody else. That is a worse
+failure than an error, because nothing announces it.
+
+Three things this settled that were not obvious at the outset:
+
+* **The database held two answers to one question.** `his.audit_events` named
+  the actor from the token; `his.lab_orders.ordering_provider` named whoever was
+  typed. Nothing reconciled them, so every audit row was only as good as a text
+  box.
+* **It travelled.** The bridge derived the FHIR Practitioner identity from a
+  hash of the display name, which made every spelling of a clinician's name a
+  different practitioner in the laboratory's own provider records —
+  permanently, since a laboratory report prints the requesting clinician. It is
+  now keyed on `usr_id`, and the Practitioner carries that id under
+  `http://his-sandbox.local/user` alongside the name OpenELIS matches on.
+* **The form was the real risk.** The field was prefilled. An order could be
+  attributed to a colleague by nobody doing anything at all — which is the
+  clinician who then receives the result, is telephoned about a critical value,
+  and is accountable for acting on it. The frontend now displays who is signed
+  in and offers nothing to edit.
+
+**Ordering on behalf of another clinician is not supported, and must not be.**
+This is a rule of the HIS, not a limitation of the sandbox: the doctor logs in,
+conducts the visit, and places the order themselves. Nobody orders for anybody
+else.
+
+That makes the token the *whole* answer rather than most of it. There is no
+second field to add, no "on behalf of" to reconcile, and no case in which the
+signed-in user is not the ordering clinician — so any future code that lets the
+two differ is a defect, not a feature. Recording the ordering provider from
+anywhere except the verified session would be reintroducing the problem this
+section describes.
 
 **Authorisation is one group name per surface.** `LAB_ORDER_GROUP` and
 `BRIDGE_OPS_GROUP` are membership checks, not permissions. The estate does real

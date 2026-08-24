@@ -8,12 +8,13 @@ import { toIso } from '@shared/utils/serialization.utils.js';
 import type {
   ICreateLabOrderInput,
   ILabOrder,
+  IOrderingClinician,
   IReleasedResultMessage,
   IResultSummary,
 } from '../types/lab-order.types.js';
 
 const ORDER_COLUMNS = `order_id, order_number, patient_id, test_code, test_name, order_status,
-                       ordering_provider, facility_code, priority, status_detail,
+                       ordering_provider, ordering_provider_id, facility_code, priority, status_detail,
                        lab_progress, lab_progress_at, lab_accession,
                        created_at, updated_at`;
 
@@ -29,6 +30,8 @@ const toOrder = (row: Row): ILabOrder => ({
   testName: String(row.test_name),
   orderStatus: String(row.order_status),
   orderingProvider: String(row.ordering_provider),
+  orderingProviderId: row.ordering_provider_id === null || row.ordering_provider_id === undefined
+    ? null : String(row.ordering_provider_id),
   facilityCode: String(row.facility_code),
   priority: String(row.priority),
   statusDetail: row.status_detail === null ? null : String(row.status_detail),
@@ -83,7 +86,11 @@ export class LabOrderModel {
    * outage — or a crash in the gap — leaving an order that the laboratory never
    * hears about, with nothing logged as failed anywhere.
    */
-  async create(input: ICreateLabOrderInput, correlationId: string): Promise<ILabOrder> {
+  async create(
+    input: ICreateLabOrderInput,
+    clinician: IOrderingClinician,
+    correlationId: string,
+  ): Promise<ILabOrder> {
     return transaction(async (client) => {
       const test = await client.query(
         `SELECT test_code, test_name, loinc_code FROM his.test_catalogue
@@ -111,8 +118,8 @@ export class LabOrderModel {
       const inserted = await client.query(
         `INSERT INTO his.lab_orders
              (order_id, order_number, patient_id, test_code, test_name, order_status,
-              ordering_provider, facility_code, priority, correlation_id)
-         VALUES ($1, $2, $3, $4, $5, 'CREATED', $6, $7, $8, $9)
+              ordering_provider, ordering_provider_id, facility_code, priority, correlation_id)
+         VALUES ($1, $2, $3, $4, $5, 'CREATED', $6, $7, $8, $9, $10)
          RETURNING ${ORDER_COLUMNS}`,
         [
           orderId,
@@ -120,18 +127,22 @@ export class LabOrderModel {
           input.patientId,
           String(testRow.test_code),
           String(testRow.test_name),
-          input.orderingProvider,
+          clinician.name,
+          clinician.id,
           input.facilityCode,
           input.priority ?? 'routine',
           correlationId,
         ],
       );
 
+      // The clinician is named on the audit row as well as the order. The order
+      // holds the current answer; the trail holds what was true at the time,
+      // which is the one an investigation needs.
       await appendEvent(
         client,
         orderId,
         'ORDER_CREATED',
-        `Order created for test ${String(testRow.test_code)}`,
+        `Order created for test ${String(testRow.test_code)} by ${clinician.name} (usr_id ${clinician.id})`,
         correlationId,
         null,
       );
@@ -182,7 +193,8 @@ export class LabOrderModel {
     return queryOne<Row>(
       `SELECT o.order_id, o.order_number, o.test_code, o.test_name,
               c.loinc_code, c.specimen_type, c.specimen_snomed, c.result_unit,
-              o.order_status, o.ordering_provider, o.facility_code, o.priority,
+              o.order_status, o.ordering_provider, o.ordering_provider_id,
+              o.facility_code, o.priority,
               o.created_at, o.patient_id
          FROM his.lab_orders o
          JOIN his.test_catalogue c ON c.test_code = o.test_code

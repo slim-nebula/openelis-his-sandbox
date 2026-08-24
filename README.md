@@ -39,9 +39,7 @@ Apple Silicon).
 
 ```bash
 make secrets     # generate .env from .env.example        ← first run only
-make up          # render config, start databases, build and start everything
-make certs       # issue the OpenELIS <-> bridge certificates ← first run only
-make trust-bridge  # teach OpenELIS to trust them, and restart it
+make up          # certificates, config, databases, then build and start everything
 make sync-catalogue  # read the orderable test menu from OpenELIS  ← required
 make migrate     # apply any new schema migrations to a running database
 make token       # sign in — the clinical API needs a user token
@@ -65,6 +63,12 @@ the catalogue with — because those belong to OpenELIS, not to this repository.
 It refuses to overwrite an existing `.env`: regenerating passwords against
 databases initialised with the old ones does not rotate anything, it locks you
 out.
+
+`make up` also issues the certificates for the OpenELIS ↔ bridge hop, imports
+the CA into OpenELIS's truststore, and exports OpenELIS's own certificate for
+the bridge to pin — so a fresh clone comes up mutually authenticated with no
+extra step. `make certs` and `make trust-bridge` exist for redoing that by hand;
+see [docs/security.md](docs/security.md).
 
 | Entry point | URL |
 |---|---|

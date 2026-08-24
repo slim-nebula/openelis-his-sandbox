@@ -25,12 +25,12 @@ section "Invalid references are rejected at the edge"
 check "Unknown patient id is rejected with 400" \
     "[[ \$(status_of -X POST ${API}/lab-orders -H 'Content-Type: application/json' \
         -d '{\"patientId\":\"00000000-0000-0000-0000-000000000000\",\"testCode\":\"HGB\",
-             \"orderingProvider\":\"Dr. Test\",\"facilityCode\":\"FAC-001\"}') == 400 ]]"
+             \"facilityCode\":\"FAC-001\"}') == 400 ]]"
 
 check "Unknown test code is rejected with 400" \
     "[[ \$(status_of -X POST ${API}/lab-orders -H 'Content-Type: application/json' \
         -d \"{\\\"patientId\\\":\\\"11111111-1111-1111-1111-111111111111\\\",\\\"testCode\\\":\\\"NOPE\\\",
-             \\\"orderingProvider\\\":\\\"Dr. Test\\\",\\\"facilityCode\\\":\\\"FAC-001\\\"}\") == 400 ]]"
+             \\\"facilityCode\\\":\\\"FAC-001\\\"}\") == 400 ]]"
 
 check "Neither rejection left an order behind" \
     "[[ \$(his_sql \"SELECT count(*) FROM his.lab_orders WHERE test_code = 'NOPE'\") == 0 ]]"
@@ -43,7 +43,7 @@ section "Duplicate event delivery is absorbed"
 
 ORDER_JSON=$(api_curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
     -d "{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"$(any_active_test_code)\",
-         \"orderingProvider\":\"Dr. Duplicate\",\"facilityCode\":\"FAC-001\"}")
+         \"facilityCode\":\"FAC-001\"}")
 DUP_ORDER_ID=$(echo "$ORDER_JSON" | json_field "['orderId']")
 DUP_ORDER_NUMBER=$(echo "$ORDER_JSON" | json_field "['orderNumber']")
 info "seeded order $DUP_ORDER_NUMBER"
@@ -76,6 +76,100 @@ fi
 
 check "Only one tracking row exists for the order" \
     "[[ \$(bridge_sql \"SELECT count(*) FROM bridge.order_tracking WHERE order_number = '$DUP_ORDER_NUMBER'\") == 1 ]]"
+
+# ---------------------------------------------------------------------------
+section "One order is never handed to the laboratory twice at once"
+
+# The failure this prevents is OpenELIS's, not ours. It was seen importing the
+# same Task twice within two seconds, which 409s on a client-assigned FHIR id,
+# aborts the import, leaves the Task unacknowledged so it is re-polled for ever
+# — and on one pass produced a DUPLICATE PATIENT RECORD. Defect 0 in
+# docs/catalogue-discovery-plan.md.
+#
+# We cannot make their import idempotent. We can decline to hand them the same
+# order twice at the same moment, which is what removes the collision.
+
+LEASE_TASK=$(bridge_sql "SELECT fhir_task_id FROM bridge.order_tracking
+                          WHERE order_number = '$DUP_ORDER_NUMBER'")
+POLL="http://127.0.0.1:8080/fhir/Task?status=requested&owner=${OE_REMOTE_SOURCE_IDENTIFIER}"
+
+poll_has_task() {  # 1 if the poll offered our Task, 0 if it withheld it
+    docker exec bridge curl -s "$POLL" \
+      | python3 -c "import sys,json;print(sum(1 for e in json.load(sys.stdin).get('entry',[]) \
+                    if e['resource']['id']=='$LEASE_TASK'))"
+}
+
+# Wait for the Task to be LEASED — by whoever leases it first — rather than
+# waiting to win the poll ourselves.
+#
+# The first version of this called poll_has_task() in a loop until it saw the
+# Task, which was wrong in a way worth recording: that helper issues the real
+# delivery poll, so it competes with OpenELIS for the lease. When OpenELIS got
+# there first it held the Task for the full lease and the loop timed out, and
+# the test reported a broken lease when the lease had worked perfectly.
+#
+# The property under test is not "we can see it" — it is "once delivered, it is
+# withheld". Those come apart the moment anything else polls, which is always.
+LEASED=false
+for _ in $(seq 1 60); do
+    [[ -n "$(bridge_sql "SELECT 1 FROM bridge.delivery_leases
+                          WHERE resource_id = '$LEASE_TASK' AND leased_until > now()")" ]] \
+        && { LEASED=true; break; }
+    # Nudge it ourselves if OpenELIS has not polled yet. Harmless: whoever wins,
+    # the Task ends up leased, which is the precondition being established.
+    poll_has_task >/dev/null
+    sleep 2
+done
+
+if [[ "$LEASED" == true ]]; then
+    ok "Handing an order to the laboratory takes a delivery lease on it"
+else
+    bad "Handing an order to the laboratory takes a delivery lease on it" \
+        "no live lease for $LEASE_TASK after 120s"
+fi
+
+task_status_now() {
+    docker exec bridge curl -s "http://127.0.0.1:8080/fhir/Task/$LEASE_TASK" \
+      | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))" 2>/dev/null
+}
+
+# Captured while the lease is live, because OpenELIS is a live participant here:
+# the moment it imports the order it writes a verdict back, which changes the
+# Task's status AND releases the lease. Asserting later against a literal
+# 'requested', or against a lease row that has since been deleted, tests whether
+# we outran the laboratory — which is not the property and is not stable.
+DELIVERIES=$(bridge_sql "SELECT deliveries FROM bridge.delivery_leases
+                          WHERE resource_id = '$LEASE_TASK'")
+STATUS_BEFORE=$(task_status_now)
+
+check "…and a leased order is withheld from the polls that follow" \
+    "[[ \$(poll_has_task) == 0 && \$(poll_has_task) == 0 && \$(poll_has_task) == 0 ]]"
+info "the second concurrent import is what 409s and duplicates the patient"
+
+# The distinction the whole design turns on. Withholding is a property of the
+# SEARCH, not of the resource: the Task is not cancelled, reserved or altered by
+# being handed over. A lease that mutated the Task would be lying to the
+# laboratory about the order's state.
+STATUS_AFTER=$(task_status_now)
+if [[ -n "$STATUS_BEFORE" && "$STATUS_BEFORE" == "$STATUS_AFTER" ]]; then
+    ok "Delivering the order did not change the Task (still '$STATUS_AFTER')"
+else
+    bad "Delivering the order did not change the Task" \
+        "'$STATUS_BEFORE' became '$STATUS_AFTER'"
+fi
+
+check "…and a direct read is never withheld" \
+    "[[ \$(docker exec bridge curl -s -o /dev/null -w '%{http_code}' \
+          http://127.0.0.1:8080/fhir/Task/$LEASE_TASK) == 200 ]]"
+
+check "…nor is a search by _id, which is a read and not a delivery" \
+    "[[ \$(docker exec bridge curl -s 'http://127.0.0.1:8080/fhir/Task?_id=$LEASE_TASK' \
+          | python3 -c \"import sys,json;print(len(json.load(sys.stdin).get('entry',[])))\") == 1 ]]"
+
+# The attempt counter OpenELIS does not keep. Above one means the laboratory was
+# given the order and never came back with a verdict.
+check "The delivery was counted, so a failing import can be seen" \
+    "[[ \${DELIVERIES:-0} -ge 1 ]]"
 
 # ---------------------------------------------------------------------------
 section "Replayed result message does not duplicate the projection"
@@ -154,7 +248,7 @@ docker stop openelis-webapp >/dev/null 2>&1
 
 OFFLINE_JSON=$(api_curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
     -d "{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"$(any_active_test_code)\",
-         \"orderingProvider\":\"Dr. Offline\",\"facilityCode\":\"FAC-001\"}")
+         \"facilityCode\":\"FAC-001\"}")
 OFFLINE_NUMBER=$(echo "$OFFLINE_JSON" | json_field "['orderNumber']")
 
 if [[ -n "$OFFLINE_NUMBER" ]]; then
@@ -204,7 +298,7 @@ sleep 3
 # the broker returns. Ordering must not depend on Kafka being up.
 KAFKA_DOWN_JSON=$(api_curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
     -d "{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"$(any_active_test_code)\",
-         \"orderingProvider\":\"Dr. NoKafka\",\"facilityCode\":\"FAC-001\"}")
+         \"facilityCode\":\"FAC-001\"}")
 NOKAFKA_ORDER=$(echo "$KAFKA_DOWN_JSON" | json_field "['orderNumber']")
 
 if [[ -n "$NOKAFKA_ORDER" ]]; then
@@ -252,7 +346,7 @@ check "And the order reached the bridge without manual intervention" "
 check "Sandbox recovers: a new order flows again" "
     resp=\$(api_curl -sf -X POST ${API}/lab-orders -H 'Content-Type: application/json' \
         -d '{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"$(any_active_test_code)\",
-             \"orderingProvider\":\"Dr. Recovered\",\"facilityCode\":\"FAC-001\"}')
+             \"facilityCode\":\"FAC-001\"}')
     number=\$(echo \"\$resp\" | python3 -c \"import json,sys; print(json.load(sys.stdin)['orderNumber'])\")
     for _ in \$(seq 1 20); do
         [[ -n \$(bridge_sql \"SELECT fhir_task_id FROM bridge.order_tracking WHERE order_number = '\$number'\") ]] && exit 0
@@ -319,8 +413,26 @@ docker start his-api >/dev/null 2>&1
 bash "$(dirname "${BASH_SOURCE[0]}")/wait-for.sh" "his-api" \
     "curl -sf -o /dev/null ${API}/health" 180 || true
 
-check "And it returns to rotation without anyone touching Kong" \
-    "[[ \$(status_of ${API}/health) == 200 ]]"
+# Retried rather than asserted once. The claim being tested is "it comes back
+# WITHOUT anyone touching Kong", which is a claim about eventual recovery, not
+# about latency — and recovery here legitimately takes longer than a restart,
+# because Kong caches the upstream address for its DNS TTL and a restarted
+# container can come back on a different one. `make up` restarts Kong for this
+# exact reason. A single check the instant wait-for.sh gives up measures the
+# TTL, not the behaviour.
+BACK_CODE=""
+for _ in $(seq 1 40); do
+    BACK_CODE=$(status_of "${API}/health")
+    [[ "$BACK_CODE" == 200 ]] && break
+    sleep 3
+done
+
+if [[ "$BACK_CODE" == 200 ]]; then
+    ok "And it returns to rotation without anyone touching Kong"
+else
+    bad "And it returns to rotation without anyone touching Kong" \
+        "still http $BACK_CODE after 120s — Kong is not picking the instance back up"
+fi
 
 # ---------------------------------------------------------------------------
 section "Callers without the right to act are refused"

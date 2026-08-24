@@ -34,6 +34,16 @@ function renderSession() {
   const button = document.getElementById('signin-btn');
   const claims = token() ? claimsOf(token()) : null;
 
+  // Shown, not editable, and shown from the same claims the server will verify.
+  // The order is attributed to the signed-in user whatever this page displays —
+  // this is a mirror of the decision, not the input to it.
+  const provider = document.getElementById('order-provider');
+  if (provider) {
+    provider.textContent = claims
+      ? `${claims.usr_full_name || claims.usr_name} (usr_id ${claims.usr_id})`
+      : 'not signed in';
+  }
+
   if (!claims) {
     who.textContent = 'not signed in';
     who.className = 'signed-out';

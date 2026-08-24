@@ -145,6 +145,22 @@ tbody tr:last-child td { border-bottom: 0; }
 
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 
+/* Deliberately not styled as an input. The ordering clinician comes from the
+   session and cannot be typed, so it must not look like something you can
+   change — a disabled-looking text box invites someone to try. */
+.readonly {
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: #eef1f5;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  min-height: 37px;
+  display: flex;
+  align-items: center;
+}
+
 .toast {
   position: fixed;
   right: 20px;

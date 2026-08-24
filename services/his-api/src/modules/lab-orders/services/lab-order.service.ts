@@ -6,6 +6,7 @@ import type {
   IBridgeOrderPayload,
   ICreateLabOrderInput,
   ILabOrder,
+  IOrderingClinician,
   IReleasedResultMessage,
   IResultSummary,
 } from '../types/lab-order.types.js';
@@ -13,8 +14,12 @@ import type {
 export class LabOrderService {
   constructor(private readonly orders: LabOrderModel) {}
 
-  create(input: ICreateLabOrderInput, correlationId: string): Promise<ILabOrder> {
-    return this.orders.create(input, correlationId);
+  create(
+    input: ICreateLabOrderInput,
+    clinician: IOrderingClinician,
+    correlationId: string,
+  ): Promise<ILabOrder> {
+    return this.orders.create(input, clinician, correlationId);
   }
 
   async getWithResults(orderId: string): Promise<{ order: ILabOrder; results: IResultSummary[] }> {
@@ -59,10 +64,13 @@ export class LabOrderService {
       resultUnit: row.result_unit === null ? null : String(row.result_unit),
       orderStatus: String(row.order_status),
       orderingProvider: String(row.ordering_provider),
+      orderingProviderId: row.ordering_provider_id === null || row.ordering_provider_id === undefined
+        ? null : String(row.ordering_provider_id),
       facilityCode: String(row.facility_code),
       priority: String(row.priority),
       createdAt: toIso(row.created_at),
       patient,
+
     };
   }
 

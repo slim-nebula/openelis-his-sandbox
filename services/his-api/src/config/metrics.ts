@@ -49,6 +49,26 @@ export const authChecks = new Counter({
   labelNames: ['result'],
 });
 
+/**
+ * Whether this instance is actually consuming from the broker.
+ *
+ * The series exists because of a failure that had no other symptom. On the
+ * first clean run of this stack the consumer subscribed before the topics had
+ * been created, failed, and was never retried — the process stayed up, /health
+ * stayed green, Consul kept the instance in rotation, and nothing at all
+ * indicated that no laboratory result would ever be stored again.
+ *
+ * 0 means results and status updates are not being received. It belongs on the
+ * same alert as a rising consumer lag, and catches the case lag cannot: a
+ * consumer that never joined has no lag to report.
+ */
+export const kafkaConsumerRunning = new Gauge({
+  name: 'kafka_consumer_running',
+  help: '1 when the bridge-event consumer is subscribed and running, 0 otherwise',
+});
+kafkaConsumerRunning.set(0);
+
+register.registerMetric(kafkaConsumerRunning);
 register.registerMetric(authChecks);
 register.registerMetric(httpRequestCount);
 register.registerMetric(httpRequestDuration);

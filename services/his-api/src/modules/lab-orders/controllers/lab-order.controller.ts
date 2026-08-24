@@ -7,11 +7,25 @@ export class LabOrderController {
   constructor(private readonly orders: LabOrderService) {}
 
   create = async (req: Request, res: Response): Promise<void> => {
+    // The ordering clinician is read here and nowhere else. This is the only
+    // point in the request that knows who is calling for certain — the token
+    // has been verified and its session checked — so it is the only honest
+    // place to establish it. Everything downstream takes it as given.
+    //
+    // usr_full_name is what a laboratory report prints; usr_id is what
+    // identifies the person. The name can be spelled three ways, the id cannot.
+    const clinician = {
+      id: req.user!.usr_id,
+      name: req.user!.usr_full_name || req.user!.usr_name,
+    };
+
     // Nothing here talks to the broker. The order row, its audit row and the
     // lab.order.created event commit together; the relay puts the event on
     // Kafka. A broker outage therefore cannot fail an order or leave one
     // undispatched.
-    const order = await this.orders.create(parseCreateLabOrder(req.body), req.correlationId);
+    const order = await this.orders.create(
+      parseCreateLabOrder(req.body), clinician, req.correlationId,
+    );
     res.status(201).location(`/lab-orders/${order.orderId}`).json(order);
   };
 
