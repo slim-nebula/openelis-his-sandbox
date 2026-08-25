@@ -145,6 +145,15 @@ tbody tr:last-child td { border-bottom: 0; }
 
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 
+/* Reference ranges read as reference material, not as the result. Tabular
+   figures keep the numbers aligned down the column so an eye scanning for the
+   outlier is comparing digits in the same position. */
+.range {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* Deliberately not styled as an input. The ordering clinician comes from the
    session and cannot be typed, so it must not look like something you can
    change — a disabled-looking text box invites someone to try. */

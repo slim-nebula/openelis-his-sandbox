@@ -270,14 +270,22 @@ async function refreshPatientData() {
                 ? '<span class="withdrawn">withdrawn by the laboratory</span>'
                 : `<strong>${r.resultValue ?? '—'}</strong> ${r.resultUnit ?? ''}`
             }</td>
+            <td class="range">${
+              // A value without its range is not interpretable: 5.4 is a normal
+              // potassium in one laboratory and a reportable one in another.
+              // Suppressed on a retraction for the same reason the value is —
+              // there is nothing left to interpret.
+              isRetracted(r) ? '—' : (r.referenceRange ?? '—')
+            }</td>
             <td>${r.interpretation ?? '—'}</td>
             <td>${resultStatusBadge(r.resultStatus)}</td>
             <td>${fmtDate(r.releasedAt)}</td>
+            <td class="mono">${r.orderNumber ?? '—'}</td>
             <td class="mono">${r.openelisResultRef}</td>
           </tr>`
         )
         .join('')
-    : '<tr><td colspan="6" class="empty">Nothing released yet. Validate and release the order in OpenELIS.</td></tr>';
+    : '<tr><td colspan="8" class="empty">Nothing released yet. Validate and release the order in OpenELIS.</td></tr>';
 }
 
 // Orders move through the LIS asynchronously, so the view refreshes itself
