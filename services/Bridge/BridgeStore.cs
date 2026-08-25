@@ -429,6 +429,7 @@ public sealed class BridgeStore(
                    name             AS Name,
                    specimen_name    AS SpecimenName,
                    specimen_id      AS SpecimenId,
+                   specimen_abbrev  AS SpecimenAbbreviation,
                    result_unit      AS ResultUnit
             FROM bridge.test_catalogue
             ORDER BY name;
@@ -459,8 +460,10 @@ public sealed class BridgeStore(
 
         await conn.ExecuteAsync(new CommandDefinition("""
             INSERT INTO bridge.test_catalogue
-                (loinc, openelis_test_id, name, specimen_name, specimen_id, result_unit, synced_at)
-            VALUES (@Loinc, @OpenElisTestId, @Name, @SpecimenName, @SpecimenId, @ResultUnit, now());
+                (loinc, openelis_test_id, name, specimen_name, specimen_id,
+                 specimen_abbrev, result_unit, synced_at)
+            VALUES (@Loinc, @OpenElisTestId, @Name, @SpecimenName, @SpecimenId,
+                    @SpecimenAbbreviation, @ResultUnit, now());
             """, entries, transaction: tx, cancellationToken: ct));
 
         await tx.CommitAsync(ct);

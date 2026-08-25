@@ -1,53 +1,82 @@
-# Requester renders empty on Incoming Orders for imported electronic orders
+# Requester renders empty on Incoming Orders: `Task.owner` shadows `ServiceRequest.requester`
 
-**Version:** 3.2.1.11 (`itechuw/openelis-global-2:develop`)
+**Version:** 3.2.2.0 (tag `3.2.2.0`, commit `aa00894`)
 **Area:** `org.openelisglobal.common.provider.query.LabOrderSearchProvider`
 
 ## Summary
 
 For orders imported from a remote FHIR source, the Incoming Orders view renders
-an empty `<requester>` element. The ordering clinician's name never appears, so
-a technician accessioning the order cannot see who requested the test.
+`<requester>` with no name. The ordering clinician published in
+`ServiceRequest.requester` is never displayed, because the same field OpenELIS
+uses to *route* the order — `Task.owner` — is also the first field the requester
+lookup reads, and it always wins.
 
-## Reproduction
+## Root cause
 
-1. Configure a remote FHIR source (`org.openelisglobal.remote.*`).
-2. Publish `Task` + `ServiceRequest` + `Patient` + `Practitioner`, where
-   `ServiceRequest.requester` references the ordering clinician's Practitioner
-   and `Task.owner` references the receiving laboratory's Practitioner.
-3. Let OpenELIS import the order, then open Order → Incoming Orders.
+Two blocks are involved, and the interaction between them is the defect.
 
-**Expected:** the requester's name is shown.
-**Actual:** `<requester>` is emitted with all fields blank.
+**1. `Task.owner` is read first, and the fallback is guarded on it being null**
+(`LabOrderSearchProvider.java:234-263`):
 
-## What has been ruled out, with evidence
+```java
+if (!GenericValidator.isBlankOrNull(task.getOwner().getReferenceElement().getIdPart())
+        && task.getOwner().getReference().contains(ResourceType.Practitioner.toString())) {
+    requesterPerson = localFhirClient.read()
+            .resource(Practitioner.class)
+            .withId(task.getOwner().getReferenceElement().getIdPart())
+            .execute();
+}
 
-This is the useful part of the report: the three obvious explanations are all
-false in our deployment, so please do not start with them.
-
-**1. It is not `provider.external_id`.** Integration guidance in the wider
-ecosystem (Bahmni's OpenMRS↔OpenELIS notes) says to populate
-`clinlims.provider.external_id` so the requester name appears. That does not
-apply to this version, and setting it changed nothing. `ProviderService` in the
-deployed WAR exposes only:
-
-```
-getProviderByFhirId(UUID)      insertOrUpdateProviderByFhirUuid
-getProviderIdByFhirId(UUID)    getProviderByPerson
+if (requesterPerson == null) {                    // <- only reached if owner missed
+    ... serviceRequest.getRequester() ...
+}
 ```
 
-There is no lookup by `external_id` at all.
+The difficulty is that `Task.owner` is not a free field for an integrator to
+leave blank. It is the **routing address** OpenELIS itself filters remote Tasks
+on (`Task.OWNER.hasAnyOfIds(remoteStoreIdentifier)`). An order that omits it is
+never imported at all. So for every order that *does* arrive, `Task.owner` is
+populated and resolvable — meaning `requesterPerson` is always the **receiving
+laboratory's** Practitioner, and the `ServiceRequest.requester` branch is
+effectively dead code.
 
-**2. It is not a missing or inactive provider row.** `clinlims.provider` holds a
-row for the clinician, `active = 't'`, whose `fhir_uuid` exactly matches the
-Practitioner id that `ServiceRequest.requester` references.
+**2. The else branch never sets a name** (`LabOrderSearchProvider.java:388-418`):
 
-**3. It is not a reassigned id in the local FHIR store.** `LabOrderSearchProvider`
-resolves the requester by reading a Practitioner out of OpenELIS's own FHIR
-store — `task.getOwner()` first, falling back to
-`serviceRequest.getRequester()` — so the natural explanation is that import
-reassigns ids and those reads miss. It does not. Both Practitioners are present
-under exactly the ids we publish, neither deleted:
+```java
+if (requesterPerson != null) {
+    ...
+    requesterValuesMap.put(PROVIDER_LAST_NAME,  requesterPerson.getNameFirstRep().getFamily());
+    requesterValuesMap.put(PROVIDER_FIRST_NAME, requesterPerson.getNameFirstRep().getGivenAsSingleString());
+} else {
+    Provider provider = providerService
+            .getProviderByFhirId(UUID.fromString(task.getOwner().getReferenceElement().getIdPart()));
+    if (provider != null) {
+        requesterValuesMap.put(PROVIDER_ID, provider.getId());
+        requesterValuesMap.put(PROVIDER_PERSON_ID, provider.getPerson().getId());
+    }
+    // no PROVIDER_FIRST_NAME, no PROVIDER_LAST_NAME
+}
+```
+
+So there are two ways to end up with a nameless requester: the else branch never
+populates the name keys at all, and the if branch populates them from whichever
+Practitioner `Task.owner` pointed at — which is the laboratory, not the clinician.
+
+## What this is *not*
+
+Three plausible explanations are all false; please don't start with them.
+
+**Not `provider.external_id`.** Ecosystem guidance (Bahmni's OpenMRS↔OpenELIS
+notes) suggests populating `clinlims.provider.external_id` so the requester name
+appears. `ProviderService` has no lookup by `external_id` — resolution is by
+`fhir_uuid` only (`getProviderByFhirId`). Setting it changes nothing.
+
+**Not a missing or inactive provider row.** `clinlims.provider` holds a row for
+the clinician, `active = 't'`, whose `fhir_uuid` matches the Practitioner that
+`ServiceRequest.requester` references.
+
+**Not reassigned ids in the local FHIR store.** Both Practitioners are present
+under exactly the ids published, neither deleted:
 
 ```sql
 SELECT fhir_id, res_type, res_deleted_at IS NOT NULL AS deleted
@@ -57,27 +86,24 @@ SELECT fhir_id, res_type, res_deleted_at IS NOT NULL AS deleted
  3537c59e-aaf8-51b4-92f0-3d5c15b137e9 | Practitioner | f   <- ServiceRequest.requester
 ```
 
-`Task.owner` — which the code reads *first* — resolves to a Practitioner that is
-present and undeleted. So whatever empties `<requester>` happens **after a read
-that should succeed**.
-
-## Not the cause
-
-- `PractitionerRole` is not consulted anywhere in this path.
-- `sample_requester` is populated at accession and is not read by
-  `LabOrderSearchProvider`, so this is not "blank until accessioned".
-- The multiple fallback reads in `processRequest()` show the intent is to
-  display the requester on this view, not to withhold it.
+`Task.owner` resolves to a present, undeleted Practitioner — which is precisely
+why the clinician is never reached.
 
 ## Impact
 
 The laboratory cannot see who ordered a test from the screen where it accessions
-it. For an integrating system, it also means the ordering clinician's identity
-is transmitted correctly and then lost at the point of use.
+that test. For an integrating system, the ordering clinician's identity is
+transmitted correctly and then discarded at the point of use, with no diagnostic.
+
+## Suggested direction
+
+Prefer `ServiceRequest.requester` over `Task.owner` when resolving the requester,
+or read them into separate fields — `Task.owner` answers "which lab is this for",
+which is a different question from "who ordered it". Whichever is chosen, the
+else branch should populate the name keys too.
 
 ## Environment
 
-- OpenELIS Global 2 v3.2.1.11, `itechuw/openelis-global-2:develop`
+- OpenELIS Global 2 v3.2.2.0, official image `itechuw/openelis-global-2:3.2.2.0`
 - HAPI FHIR JPA store co-resident, sharing the OpenELIS database
-- Practitioner resources carry both a display-name identifier and an external
-  system's user id under its own identifier system
+- Line numbers are from tag `3.2.2.0` (`aa00894`)

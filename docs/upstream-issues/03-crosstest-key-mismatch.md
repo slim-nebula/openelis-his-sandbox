@@ -1,61 +1,92 @@
-# Ambiguous-test chooser never renders: `crosstest` / `crosstests` key mismatch (and the unit test encodes the bug)
+# Ambiguous test/panel choosers never render: singular/plural key mismatch (and the unit test encodes the bug)
 
-**Version:** 3.2.1.11 (`itechuw/openelis-global-2:develop`)
+**Version:** 3.2.2.0 (tag `3.2.2.0`, commit `aa00894`)
 **Area:** `frontend/src/components/addOrder/Index.jsx`,
 `org.openelisglobal.common.provider.query.LabOrderSearchProvider`
 
 ## Summary
 
-When an imported order's test is ambiguous, the accessioner is supposed to be
-offered a chooser. It never appears, because the line that populates it reads a
-key the backend does not emit. The same file reads the same payload correctly a
-few lines earlier.
+When an imported electronic order contains an ambiguous test or panel, the
+accessioner is supposed to be offered a chooser to resolve it. Neither chooser
+ever appears, because the two lines that populate them read keys the backend does
+not emit.
 
 ## The mismatch
 
-The backend emits a plural wrapper around singular children, matching its own
-`<crosspanels>`/`<crosspanel>`:
+`LabOrderSearchProvider` emits a plural wrapper around singular children, for
+both tests and panels:
 
 ```java
-// LabOrderSearchProvider.addCrosstests
-xml.append("<crosstests>");
-for (String testName : testNameTestSampleTypeMap.keySet()) { ... }
-xml.append("</crosstests>");
+// LabOrderSearchProvider.java:761-767
+private void addCrosstests(StringBuilder xml) {
+    xml.append("<crosstests>");
+    for (String testName : testNameTestSampleTypeMap.keySet()) {
+        addCrosstestForTestName(xml, testName, testNameTestSampleTypeMap.get(testName));
+    }
+    xml.append("</crosstests>");
+}
+// addCrosstestForTestName then appends <crosstest> … </crosstest>  (:769-777)
 ```
 
-The frontend reads it two different ways:
+`addCrosspanels` follows the same shape — `<crosspanels>` (`:730`) wrapping
+`<crosspanel>` (`:739`).
+
+The frontend reads a **singular key at the top level of `order`**, for both:
 
 ```jsx
-// the notification builder — correct, matches the payload
-toArray(order.crosstests?.crosstest)
-
-// the line that actually drives the chooser — reads a top-level singular key
+// Index.jsx:221-222
 setCrossTests(order.crosstest ? parseCrossList(order.crosstest) : []);
+setCrossPanels(order.crosspanel ? parseCrossList(order.crosspanel) : []);
 ```
 
-`order.crosstest` is never present at the top level, so the condition is always
-falsy, `setCrossTests` receives `[]`, and the chooser's `crossTests.length > 0`
-guard never opens.
+Neither `order.crosstest` nor `order.crosspanel` is ever present — the payload
+nests them one level down, as `order.crosstests.crosstest` and
+`order.crosspanels.crosspanel`. Both conditions are therefore always falsy, both
+setters receive `[]`, and the render guard at `Index.jsx:823`
+
+```jsx
+{(crossTests.length > 0 || crossPanels.length > 0) && (
+```
+
+never opens.
 
 ## Why this has survived
 
-`IndexCrossTests.test.jsx` mocks a payload containing a top-level `crosstest`
-key — the shape the server does not send. The test therefore passes against the
-broken reader, giving the defective path green coverage. Fixing the component
-without also correcting the fixture will turn the test red.
+`frontend/src/components/addOrder/IndexCrossTests.test.jsx` constructs its
+fixture in the shape the **reader** expects rather than the shape the server
+sends — `crosstest` sits directly on `order`:
+
+```jsx
+order: {
+  patient: { guid: "guid-1145" },
+  sampleTypes: "",
+  crosstest: {                       // <- server emits crosstests > crosstest
+    name: "COVID-19 PCR",
+    crosssampletypes: { crosssampletype: [ … ] },
+  },
+},
+```
+
+The test consequently passes against the broken reader, giving the defective path
+green coverage. **Fixing `Index.jsx` alone will turn this test red** — the fixture
+has to move to the real payload shape in the same change, or the fix looks like a
+regression.
 
 ## Impact
 
-An ambiguous order gives the accessioner no prompt at all. Downstream, an
-integrating system has no way to route around it except by refusing to offer
-ambiguous tests in the first place.
+An ambiguous order gives the accessioner no prompt at all, and no error either —
+the chooser is simply absent. An integrating system has no way to route around
+this except by never offering an ambiguous orderable in the first place, which
+requires it to model OpenELIS's test↔sample-type table on its own side.
 
 ## Suggested direction
 
-Read `order.crosstests?.crosstest` at the chooser line, matching the notification
-builder and the actual payload — and update the test fixture to the shape
-`LabOrderSearchProvider` emits, so the coverage means something.
+Read `order.crosstests?.crosstest` and `order.crosspanels?.crosspanel` at
+`Index.jsx:221-222`, and update the `IndexCrossTests` fixture to the shape
+`LabOrderSearchProvider` actually emits so the coverage means something.
 
 ## Environment
 
-- OpenELIS Global 2 v3.2.1.11, `itechuw/openelis-global-2:develop`
+- OpenELIS Global 2 v3.2.2.0, official image `itechuw/openelis-global-2:3.2.2.0`
+- Verified by reading the source at tag `3.2.2.0` (`aa00894`); line numbers above
+  are from that tag.

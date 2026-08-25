@@ -27,8 +27,20 @@ public static class OrderMapper
     public const string LoincSystem = "http://loinc.org";
     public const string OrderNumberSystem = "http://his-sandbox.local/lab-order";
 
-    public static MappedOrder Map(HisOrder order, string labOwnerReference)
+    /// <param name="specimenAbbreviation">
+    /// The sample type's local abbreviation in OpenELIS, resolved from the
+    /// catalogue, or null when the bridge has never discovered this test.
+    ///
+    /// Null is NOT the same as wrong. The caller refuses outright when the test
+    /// IS on the menu but the abbreviation is missing, because that would bind
+    /// the wrong test silently. An undiscovered test reaches here with null and
+    /// is sent without the coding, so the LABORATORY decides whether it accepts
+    /// it — which is the drift signal the integration is built around, and not
+    /// the bridge's call to make.
+    /// </param>
+    public static MappedOrder Map(HisOrder order, string labOwnerReference, string? specimenAbbreviation)
     {
+
         var patientId = order.Patient.PatientId.ToString();
 
         // The ServiceRequest id must be the ORDER NUMBER, not the order UUID.
@@ -111,11 +123,24 @@ public static class OrderMapper
             Subject = new ResourceReference($"Patient/{patientId}"),
             // FhirDateTime-backed: the POCO property is a string, not a DateTime.
             ReceivedTime = order.CreatedAt.ToString("o"),
+            // THE CODING OPENELIS ACTUALLY READS comes first.
+            //
+            // LabOrderSearchProvider walks Specimen.type.coding looking for one
+            // whose system is exactly "<oeFhirSystem>/sampleType", takes its
+            // CODE, and resolves it with getTypeOfSampleIdForLocalAbbreviation -
+            // an exact match on type_of_sample.local_abbrev. Nothing else in the
+            // resource is consulted: not Text, not the SNOMED coding, not the id.
+            //
+            // Miss it and OpenELIS logs a warning, then binds alltests.get(0) -
+            // the first active test for the LOINC. For a multi-specimen code that
+            // is the wrong bench, with no error surfaced to either system.
+            //
+            // SNOMED stays for everyone else. It is the interoperable statement
+            // of what the specimen is; the abbreviation is a local key that means
+            // nothing outside this installation, which is why it cannot replace it.
             Type = new CodeableConcept
             {
-                Coding = string.IsNullOrWhiteSpace(order.SpecimenSnomed)
-                    ? []
-                    : [new Coding("http://snomed.info/sct", order.SpecimenSnomed, order.SpecimenType)],
+                Coding = BuildSpecimenCodings(order, specimenAbbreviation),
                 Text = order.SpecimenType
             }
         };
@@ -155,6 +180,37 @@ public static class OrderMapper
         };
 
         return new MappedOrder(task, serviceRequest, patient, specimen, labPractitioner);
+    }
+
+    /// <summary>
+    /// Specimen.type.coding, most specific first.
+    ///
+    /// The OpenELIS coding carries the sample type's LOCAL ABBREVIATION and is
+    /// the only one OpenELIS reads (LabOrderSearchProvider walks the codings for
+    /// system "<OeSystem>/sampleType" and resolves its code against
+    /// type_of_sample.local_abbrev). SNOMED is for every other reader; it is
+    /// interoperable where the abbreviation is meaningless outside this
+    /// installation, so neither substitutes for the other.
+    ///
+    /// With no abbreviation we emit no OpenELIS coding at all rather than guess.
+    /// A wrong code binds the wrong test confidently; an absent one leaves the
+    /// decision with the laboratory.
+    /// </summary>
+    private static List<Coding> BuildSpecimenCodings(HisOrder order, string? specimenAbbreviation)
+    {
+        var codings = new List<Coding>();
+
+        if (!string.IsNullOrWhiteSpace(specimenAbbreviation))
+        {
+            codings.Add(new Coding($"{OeSystem}/sampleType", specimenAbbreviation, order.SpecimenType));
+        }
+
+        if (!string.IsNullOrWhiteSpace(order.SpecimenSnomed))
+        {
+            codings.Add(new Coding("http://snomed.info/sct", order.SpecimenSnomed, order.SpecimenType));
+        }
+
+        return codings;
     }
 
     private static RequestPriority MapPriority(string priority) => priority?.ToLowerInvariant() switch

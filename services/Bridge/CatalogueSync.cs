@@ -111,9 +111,14 @@ public sealed class CatalogueSync(
         // specimen change reads as a removal plus an addition — which is what it
         // clinically is, not one test edited but one withdrawn and another
         // offered.
+        // The abbreviation is in this comparison because a laboratory renaming a
+        // sample type's local abbreviation would otherwise change how every order
+        // on that specimen binds, invisibly. It is the one field where drifting
+        // out of step with OpenELIS is silent rather than loud.
         var changed = after
             .Where(e => oldByKey.TryGetValue(Key(e), out var old) &&
-                        (old.Name != e.Name || old.OpenElisTestId != e.OpenElisTestId))
+                        (old.Name != e.Name || old.OpenElisTestId != e.OpenElisTestId
+                         || old.SpecimenAbbreviation != e.SpecimenAbbreviation))
             .Select(e => $"{Describe(e)} (was {Describe(oldByKey[Key(e)])})")
             .ToList();
 

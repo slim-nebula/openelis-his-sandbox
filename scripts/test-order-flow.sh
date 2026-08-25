@@ -139,6 +139,74 @@ else
         "id is '$SR_ID' but external_id will be '$ORDER_NUMBER'"
 fi
 
+# --- The specimen coding that decides WHICH test gets ordered ---------------
+#
+# OpenELIS binds the test in LabOrderSearchProvider.addToTestOrPanel. It walks
+# Specimen.type.coding for a system of exactly "<oeFhirSystem>/sampleType",
+# takes that coding's CODE, and resolves it with
+# getTypeOfSampleIdForLocalAbbreviation — an exact match on local_abbrev.
+#
+# Nothing else in the Specimen is consulted: not text, not the SNOMED coding.
+# Get this wrong and OpenELIS does not fail — it falls through to
+# alltests.get(0), the first active test for the LOINC, and a plasma order goes
+# to the serum bench. That is why this is asserted on the wire rather than
+# inferred from the order being accepted.
+SPECIMEN_FHIR_ID=$(bridge_sql "SELECT fhir_specimen_id FROM bridge.order_tracking WHERE order_number = '$ORDER_NUMBER'")
+
+# bridge_rows, not bridge_sql: abbreviations contain spaces ("Whole Bld"), and
+# bridge_sql strips them, producing a value that matches nothing in OpenELIS.
+SENT_ABBREV=$(bridge_rows "
+    SELECT coalesce((SELECT c ->> 'code'
+                       FROM bridge.fhir_resources r,
+                            jsonb_array_elements(r.content -> 'type' -> 'coding') AS c
+                      WHERE r.resource_type = 'Specimen'
+                        AND r.resource_id = '$SPECIMEN_FHIR_ID'
+                        AND c ->> 'system' = 'http://openelis-global.org/sampleType'
+                      LIMIT 1), '')")
+
+if [[ -n "$SENT_ABBREV" ]]; then
+    ok "Specimen carries the sampleType coding OpenELIS binds by (code '$SENT_ABBREV')"
+else
+    bad "Specimen carries the sampleType coding OpenELIS binds by" \
+        "no coding with system http://openelis-global.org/sampleType — OpenELIS would bind the first test on the LOINC"
+fi
+
+# And that code has to name the sample type the doctor actually chose. A present
+# but wrong abbreviation is worse than an absent one: it binds confidently.
+#
+# Read the pair from the catalogue rather than splitting the test code on "|".
+# A test discovered before the menu went per-specimen keeps its original bare
+# test_code ("736-9", not "736-9|Whole Blood") so existing orders keep resolving,
+# and parsing would hand back the LOINC as the specimen name for exactly those.
+ORDER_LOINC=$(his_sql  "SELECT loinc_code    FROM his.test_catalogue WHERE test_code = '$TEST_CODE'")
+ORDER_SPECIMEN=$(his_rows "SELECT specimen_type FROM his.test_catalogue WHERE test_code = '$TEST_CODE'")
+
+if [[ -n "$SENT_ABBREV" ]]; then
+    BOUND_TEST=$(oe_rows "
+        SELECT coalesce(string_agg(t.description, ', '), '')
+        FROM clinlims.type_of_sample tos
+        JOIN clinlims.sampletype_test st ON st.sample_type_id = tos.id AND st.is_panel = false
+        JOIN clinlims.test t ON t.id = st.test_id AND t.is_active = 'Y'
+       WHERE tos.local_abbrev = '$SENT_ABBREV' AND t.loinc = '$ORDER_LOINC'")
+
+    EXPECTED_TEST=$(oe_rows "
+        SELECT coalesce(string_agg(t.description, ', '), '')
+        FROM clinlims.type_of_sample tos
+        JOIN clinlims.sampletype_test st ON st.sample_type_id = tos.id AND st.is_panel = false
+        JOIN clinlims.test t ON t.id = st.test_id AND t.is_active = 'Y'
+       WHERE tos.description = '$ORDER_SPECIMEN' AND t.loinc = '$ORDER_LOINC'")
+
+    if [[ -n "$BOUND_TEST" && "$BOUND_TEST" == "$EXPECTED_TEST" ]]; then
+        ok "The coding binds the test the doctor ordered: $ORDER_SPECIMEN -> $BOUND_TEST"
+    elif [[ -z "$BOUND_TEST" ]]; then
+        bad "The coding binds the test the doctor ordered" \
+            "abbreviation '$SENT_ABBREV' matches no active test on LOINC $ORDER_LOINC"
+    else
+        bad "The coding binds the test the doctor ordered" \
+            "ordered $ORDER_SPECIMEN (expected '$EXPECTED_TEST') but the coding binds '$BOUND_TEST'"
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 section "5 · OpenELIS polls the bridge and imports the order"
 

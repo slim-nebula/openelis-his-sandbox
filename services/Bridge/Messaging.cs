@@ -195,7 +195,59 @@ public sealed class OrderConsumer(
             return;
         }
 
-        var mapped = OrderMapper.Map(order, options.LabOwnerReference);
+        // Resolve the specimen the way OpenELIS will, before sending anything.
+        //
+        // Two different situations, and collapsing them is a mistake worth
+        // spelling out, because the first version of this did:
+        //
+        //   on the menu, no abbreviation  -> REFUSE. We would send a specimen
+        //       OpenELIS cannot resolve, and it does not error: it binds the
+        //       first test matching the LOINC. A plasma order goes to the serum
+        //       bench with nothing logged on either side. This is a stale
+        //       catalogue and the fix is a re-sync, so say so.
+        //
+        //   not on the menu at all        -> SEND IT. The bridge never
+        //       discovered this test, so it has no opinion about it, and the
+        //       laboratory is the authority on what it accepts. OpenELIS will
+        //       reject a LOINC it does not carry, and that rejection travelling
+        //       back is the drift signal the integration is built on. Refusing
+        //       here would substitute our judgement for the lab's and silently
+        //       delete the whole rejection path.
+        var catalogue = await store.GetCatalogueAsync(ct);
+        var offering = catalogue.FirstOrDefault(
+            e => e.Loinc == order.LoincCode
+                 && string.Equals(e.SpecimenName, order.SpecimenType, StringComparison.Ordinal));
+
+        if (offering is not null && string.IsNullOrWhiteSpace(offering.SpecimenAbbreviation))
+        {
+            var reason = $"Catalogue offers LOINC {order.LoincCode} on specimen "
+                       + $"'{order.SpecimenType}' but holds no sample-type abbreviation for it. "
+                       + "OpenELIS would bind the first test matching the code rather than the "
+                       + "one ordered. Re-run the catalogue sync.";
+            await store.DeadLetterAsync(options.TopicOrderCreated, reason,
+                JsonSerializer.Serialize(evt), correlationId, ct);
+            await publisher.PublishAsync(options.TopicOrderFailed, order.OrderNumber, new
+            {
+                eventId = Guid.NewGuid().ToString(),
+                correlationId,
+                orderId = order.OrderId,
+                orderNumber = order.OrderNumber,
+                status = "FAILED",
+                detail = reason
+            }, correlationId, ct);
+            return;
+        }
+
+        if (offering is null)
+        {
+            log.LogWarning(
+                "Order {OrderNumber} is for LOINC {Loinc} on '{Specimen}', which is not in the "
+                + "discovered catalogue. Sending without a sample-type coding and letting the "
+                + "laboratory decide.",
+                order.OrderNumber, order.LoincCode, order.SpecimenType);
+        }
+
+        var mapped = OrderMapper.Map(order, options.LabOwnerReference, offering?.SpecimenAbbreviation);
 
         await store.SaveOrderAsync(new TrackedOrder(
             order.OrderId, order.OrderNumber, order.Patient.PatientId, order.TestCode, order.LoincCode,

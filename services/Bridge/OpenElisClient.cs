@@ -99,6 +99,22 @@ public sealed class OpenElisClient(BridgeOptions options, ILogger<OpenElisClient
         var listed = await GetJsonAsync("rest/test-catalog/tests?page=1&pageSize=1000", ct);
         var rows = listed.RootElement.GetProperty("rows");
 
+        // The sample type's LOCAL ABBREVIATION, which is the only key OpenELIS
+        // will resolve a specimen by, and is not the name.
+        //
+        // LabOrderSearchProvider reads the sample type off the order's Specimen
+        // and looks it up with getTypeOfSampleIdForLocalAbbreviation - an exact
+        // HashMap hit on type_of_sample.local_abbrev. That column is NOT the
+        // display name: "Whole Blood" is stored as "Whole Bld", "Respiratory
+        // Swab" as "Resp Swab". Send the name and the lookup misses, and the
+        // miss is SILENT - OpenELIS falls through to the first test matching the
+        // LOINC, which for a multi-specimen code is very likely the wrong one.
+        //
+        // rest/test-catalog/.../terminology only gives us id and name, so the
+        // abbreviation comes from this second endpoint. Same ADMIN role, so it
+        // costs one extra call per sync and no new permission.
+        var abbreviations = await GetSampleTypeAbbreviationsAsync(ct);
+
         var entries = new List<CatalogueEntry>();
         var skipped = new Dictionary<string, int>();
         void Skip(string reason) => skipped[reason] = skipped.GetValueOrDefault(reason) + 1;
@@ -170,14 +186,36 @@ public sealed class OpenElisClient(BridgeOptions options, ILogger<OpenElisClient
             // which is the only point in the workflow where the answer is known
             // for certain — they know what will be drawn.
             //
-            // OpenELIS 3.2.2.0 resolves the pair (OGC-1145): it narrows candidate
-            // tests by the sample type on the order. Verified on the running
-            // instance — an order for the three-way-ambiguous 10351-5 carrying a
-            // plasma Specimen imported as `Entered`, not `AwaitingSpecimen`.
+            // OpenELIS 3.2.2.0 resolves the pair (OGC-1145) in TWO places, and
+            // they are not the same check:
+            //
+            //   import     TaskInterpreterImpl.createTestFromFHIR - only decides
+            //              whether to HOLD the order AwaitingSpecimen. A carried
+            //              Specimen skips the hold, then binds tests.get(0)
+            //              regardless. Import never picks by specimen.
+            //   accession  LabOrderSearchProvider.addToTestOrPanel - the one that
+            //              actually binds, via getActiveTestByLoincCodeAndSampleType.
+            //
+            // So "the order imported as Entered rather than AwaitingSpecimen"
+            // proves only that the hold was skipped. Binding the RIGHT test needs
+            // the sample-type coding below to resolve, and a miss is silent.
             var testName = basic.RootElement.GetPropertyOrNull("name")?.GetString() ?? name;
 
             foreach (var specimen in specimens)
             {
+                // No abbreviation means no order we place for this specimen could
+                // bind deterministically, so it does not belong on the menu.
+                if (!abbreviations.TryGetValue(specimen.Id!, out var abbreviation)
+                    || string.IsNullOrWhiteSpace(abbreviation))
+                {
+                    Skip("specimen has no local abbreviation to resolve by");
+                    log.LogWarning(
+                        "Sample type {SpecimenId} ({Specimen}) has no local abbreviation; tests on it "
+                        + "cannot be bound deterministically and are withheld from the menu",
+                        specimen.Id, specimen.Name);
+                    continue;
+                }
+
                 entries.Add(new CatalogueEntry(
                     Loinc: loincCodes[0]!,
                     OpenElisTestId: testId,
@@ -188,6 +226,7 @@ public sealed class OpenElisClient(BridgeOptions options, ILogger<OpenElisClient
                     Name: specimens.Count == 1 ? testName : $"{testName} ({specimen.Name})",
                     SpecimenName: specimen.Name!,
                     SpecimenId: specimen.Id!,
+                    SpecimenAbbreviation: abbreviation,
                     ResultUnit: null));
             }
         }
@@ -233,6 +272,41 @@ public sealed class OpenElisClient(BridgeOptions options, ILogger<OpenElisClient
             string.Join(", ", skipped.Select(kv => $"{kv.Value} {kv.Key}")));
 
         return unique;
+    }
+
+    /// <summary>
+    /// Sample type id -> local abbreviation, the key OpenELIS binds specimens by.
+    ///
+    /// rest/sample-types is the only endpoint that exposes local_abbrev; the
+    /// test-catalog terminology endpoint returns id, name and domain only. Both
+    /// sit behind hasRole('ADMIN'), which the sync already holds.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, string>> GetSampleTypeAbbreviationsAsync(CancellationToken ct)
+    {
+        var response = await GetJsonAsync("rest/sample-types", ct);
+
+        // { success, message, data: [ { id, name, abbreviation, ... } ] }
+        if (!response.RootElement.TryGetProperty("data", out var data)
+            || data.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException(
+                "rest/sample-types returned no data array; cannot resolve specimen abbreviations. "
+                + "Refusing to sync a catalogue whose orders would bind the wrong test.");
+        }
+
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var row in data.EnumerateArray())
+        {
+            var id = row.GetPropertyOrNull("id")?.GetString();
+            var abbreviation = row.GetPropertyOrNull("abbreviation")?.GetString();
+            if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(abbreviation))
+            {
+                map[id] = abbreviation;
+            }
+        }
+
+        log.LogInformation("Resolved {Count} sample type abbreviations from OpenELIS", map.Count);
+        return map;
     }
 
     /// <summary>
@@ -312,6 +386,10 @@ public sealed record CatalogueEntry(
     string Name,
     string SpecimenName,
     string SpecimenId,
+    // type_of_sample.local_abbrev. NOT the name, and often different from it -
+    // "Whole Blood" is "Whole Bld". This is the value OpenELIS resolves an
+    // incoming order's specimen by, so it is what the order must carry.
+    string SpecimenAbbreviation,
     string? ResultUnit);
 
 internal static class JsonExtensions

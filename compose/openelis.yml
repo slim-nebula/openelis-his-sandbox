@@ -174,7 +174,10 @@ services:
 
   # --- Co-resident HAPI FHIR store (OpenELIS's own working store) ------------
   fhir.openelis.org:
-    image: ${OE_IMAGE_REPO}/openelis-global-2-fhir:${OE_VERSION}
+    # Always stock. No patch touches the FHIR store, and build-openelis.sh only
+    # builds the webapp — pointing this at OE_IMAGE_REPO would send it looking
+    # for an image nobody produces the moment the patched build is selected.
+    image: itechuw/openelis-global-2-fhir:${OE_VERSION}
     platform: linux/amd64
     container_name: openelis-fhir
     restart: unless-stopped
@@ -207,7 +210,7 @@ services:
 
   # --- OpenELIS lab-user UI --------------------------------------------------
   frontend.openelis.org:
-    image: ${OE_IMAGE_REPO}/openelis-global-2-frontend:${OE_VERSION}
+    image: itechuw/openelis-global-2-frontend:${OE_VERSION}   # always stock
     platform: linux/amd64
     container_name: openelis-frontend
     restart: unless-stopped
@@ -218,7 +221,7 @@ services:
 
   # --- OpenELIS's own edge proxy (separate from the HIS sandbox edge) --------
   oe-proxy:
-    image: ${OE_IMAGE_REPO}/openelis-global-2-proxy:${OE_VERSION}
+    image: itechuw/openelis-global-2-proxy:${OE_VERSION}      # always stock
     platform: linux/amd64
     container_name: openelis-proxy
     restart: unless-stopped

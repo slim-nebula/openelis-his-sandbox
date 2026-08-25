@@ -82,6 +82,14 @@ oe_sql() {
         psql -tAX -U "$OE_DB_USER" -d "$OE_DB_NAME" -c "$1" 2>/dev/null | tr -d '[:space:]'
 }
 
+# Same, but preserves whitespace. Sample-type names and their local abbreviations
+# both contain spaces ("Whole Blood" / "Whole Bld"), and oe_sql would return
+# "WholeBld", which matches no row in type_of_sample.
+oe_rows() {
+    docker exec -e PGPASSWORD="$OE_DB_PASSWORD" openelis-db-external \
+        psql -tAX -U "$OE_DB_USER" -d "$OE_DB_NAME" -c "$1" 2>/dev/null
+}
+
 bridge_sql() {
     docker exec -e PGPASSWORD="$BRIDGE_DB_PASSWORD" his-db-external \
         psql -tAX -U "$BRIDGE_DB_USER" -d "$BRIDGE_DB_NAME" -c "$1" 2>/dev/null | tr -d '[:space:]'

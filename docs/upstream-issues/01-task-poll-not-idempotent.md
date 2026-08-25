@@ -1,7 +1,10 @@
 # Remote Task poll runs concurrently with itself: duplicate patients, unbounded re-import, and storage failures reported as clinical rejection
 
-**Version:** 3.2.1.11 (`itechuw/openelis-global-2:develop`)
+**Version:** 3.2.2.0 (tag `3.2.2.0`, commit `aa00894`)
 **Area:** FHIR remote order import (`org.openelisglobal.dataexchange.fhir.service.FhirApiWorkFlowServiceImpl`)
+
+First observed on 3.2.1.11; the code below is quoted from the 3.2.2.0 release
+tag, where it is unchanged.
 
 ## Summary
 
@@ -54,12 +57,19 @@ Three consequences, in increasing severity:
 ## Cause
 
 ```java
+// FhirApiWorkFlowServiceImpl.java:89-96
 @Scheduled(initialDelay = 10 * 1000,
            fixedRateString = "${org.openelisglobal.remote.poll.frequency:120000}")
 public void pollForRemoteTasks() { processWorkflow(ResourceType.Task); }
 
 @Async
 public void processWorkflow(ResourceType resourceType) { ... }
+```
+
+```java
+// AsyncConfig.java:15-16 — what @Async dispatches to
+public Executor getAsyncExecutor() {
+    SimpleAsyncTaskExecutor executor = new SimpleAsyncTaskExecutor();
 ```
 
 - `fixedRate` schedules the next invocation from the **start** of the previous
@@ -84,9 +94,9 @@ overlap but cannot remove it: the trigger is "an execution outran the interval",
 which a longer interval makes rarer, never impossible. There is no property that
 serialises the job, caps retry attempts, or marks a Task terminally failed.
 
-Note also that this is **not** a Quartz job — `SchedulerConfig` registers only
-`sendSiteIndicators` and `sendMalariaSurviellanceReport` — so `quartz.properties`
-and `misfireThreshold` have no effect on it.
+Note also that this is **not** a Quartz job — `SchedulerConfig.java:51-52`
+registers only `sendSiteIndicators` and `sendMalariaSurviellanceReport` — so
+`quartz.properties` and `misfireThreshold` have no effect on it.
 
 ## Ruled out
 
@@ -97,8 +107,16 @@ and `misfireThreshold` have no effect on it.
 
 ## Suggested direction
 
-1. Prevent concurrent execution of the poll — `fixedDelay` instead of
-   `fixedRate`, a bounded executor, or an explicit guard.
+1. Prevent concurrent execution of the poll. The smallest sufficient change is
+   to **drop `@Async` from `processWorkflow`**, which restores the guarantee
+   `scheduleAtFixedRate` already gives (a scheduled task never overlaps itself —
+   `@Async` is what defeats it), plus `fixedDelayString` so a slow poll is
+   followed by a normal interval rather than a burst of catch-up firings. The
+   scheduler pool is `Executors.newScheduledThreadPool(10)`
+   (`SchedulerConfig.java:80`) against ~12 `@Scheduled` methods, so this occupies
+   one of ten threads instead of spawning an unbounded thread per firing —
+   the safer direction under load. `processWorkflow` has one caller, and no
+   other class consumes `FhirApiWorkflowService`.
 2. Give a failed import a terminal state and an attempt counter, so a Task that
    cannot be imported stops being retried for ever.
 3. Distinguish an internal storage/indexing failure from a clinical rejection.
@@ -107,6 +125,7 @@ and `misfireThreshold` have no effect on it.
 
 ## Environment
 
-- OpenELIS Global 2 v3.2.1.11, `itechuw/openelis-global-2:develop`
+- OpenELIS Global 2 v3.2.2.0, official image `itechuw/openelis-global-2:3.2.2.0`
 - HAPI FHIR JPA store co-resident, sharing the OpenELIS database
 - External FHIR R4 server as the remote order source
+- Line numbers are from tag `3.2.2.0` (`aa00894`)

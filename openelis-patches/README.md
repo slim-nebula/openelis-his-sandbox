@@ -80,12 +80,26 @@ make openelis-patched          # checkout the tag, apply, build, tag locally
 then set `OE_IMAGE_REPO=his-sandbox` in `.env` and `make up`.
 
 The build produces `his-sandbox/openelis-global-2:<version>` from
-`scripts/build-openelis.sh`, which is a thin wrapper over upstream's own
-`build.sh` — the patched image is built the way upstream builds theirs.
+`scripts/build-openelis.sh`, which runs `docker build` against **upstream's own
+`Dockerfile`, unmodified** — the patched image is built the way upstream builds
+theirs. (Upstream's `build.sh` is not involved: it packages a standalone
+installer from a git *branch*, which is not what we want. The Docker image has
+always come from the Dockerfile.)
+
+**Only the webapp image is patched.** `openelis-global-2-fhir`, `-frontend`,
+`-proxy` and the database image are pinned to `itechuw` in
+`compose/openelis.yml` regardless of `OE_IMAGE_REPO`, because no patch touches
+them and this script does not build them. Three services do take the patched
+image — `oe-peer-cert`, `oe-trust-bridge` and the webapp — because the first two
+use it purely as a `keytool` toolbox.
 
 ## Re-applying after an upgrade
 
-1. `git clone --branch <new-tag>` a fresh checkout.
+1. `git clone --branch <new-tag>` a fresh checkout, **and initialise the
+   `dataexport` submodule**. It is a submodule, and the Dockerfile builds it
+   before anything else; a plain clone leaves the directory empty and the build
+   dies with `no POM in /build/dataexport/dataexport-core`.
+   `scripts/build-openelis.sh` does this and checks the result.
 2. `git apply` each patch in numeric order.
 3. **A conflict is the point of this process.** It means upstream changed the
    code the patch depends on. Read their change. The patch may be unnecessary
@@ -104,7 +118,19 @@ The build produces `his-sandbox/openelis-global-2:<version>` from
 **Touches:** `dataexchange/fhir/service/FhirApiWorkFlowServiceImpl.java` — 1 file,
 1 insertion, 3 deletions.
 **Surface:** FHIR remote order import. Touches no laboratory core.
-**Verified against:** 3.2.2.0 (`aa00894`).
+
+**Verification status** — stated separately, because "applies" and "validated"
+are different claims and only the first is currently true:
+
+| Step | Status |
+|---|---|
+| Applies cleanly to tag `3.2.2.0` (`aa00894`) | **verified** — `git apply --check` against a fresh clone |
+| Code it modifies is present and unchanged at that tag | **verified** — `FhirApiWorkFlowServiceImpl.java:89-96` |
+| Patched image builds | see below |
+| Full suite re-run against the patched image | **not yet done** |
+
+Until the last row is filled in, the patched build is not validated for use
+under ISO 15189 clause 7.6.3(a). The stack therefore stays on `OE_IMAGE_REPO=itechuw`.
 
 **The defect.** `pollForRemoteTasks()` can run concurrently with itself. Two
 executions import the same Task, race on patient de-duplication, and produce a

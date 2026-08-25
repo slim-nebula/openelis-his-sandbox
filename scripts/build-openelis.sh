@@ -45,6 +45,25 @@ echo "==> Cloning upstream at $VERSION"
 git clone --depth 1 --single-branch --branch "$VERSION" \
     https://github.com/I-TECH-UW/OpenELIS-Global-2.git "$WORK" --quiet
 
+# dataexport is a SUBMODULE, and the Dockerfile builds it before anything else:
+#     COPY ./dataexport /build/dataexport
+#     WORKDIR /build/dataexport/dataexport-core && mvn dependency:go-offline
+# A plain clone leaves the directory empty and that step dies with
+# "no POM in /build/dataexport/dataexport-core".
+#
+# Only this one is initialised, deliberately. The repo declares eleven
+# submodules; Consolidated-Server is declared over SSH (git@github.com:), which
+# fails without keys, and --recurse-submodules would drag in all of them for no
+# benefit. The Dockerfile copies ./dataexport, ./install, ./pom.xml, ./src and
+# ./tomcat — dataexport is the only submodule among them.
+echo "==> Fetching the dataexport submodule"
+git -C "$WORK" submodule update --init --depth 1 dataexport --quiet
+
+if [[ ! -f "$WORK/dataexport/dataexport-core/pom.xml" ]]; then
+    echo "dataexport did not check out — the build would fail at the first Maven step." >&2
+    exit 1
+fi
+
 echo "==> Applying patches"
 shopt -s nullglob
 patches=("$PATCH_DIR"/*.patch)
@@ -70,7 +89,10 @@ for patch in "${patches[@]}"; do
     fi
 done
 
-echo "==> Building (this is a full Maven + React build; expect it to be slow)"
+# The webapp image is a Maven build into Tomcat — no React. The React UI is a
+# separate upstream image we never patch. Still slow here: the stack pins
+# linux/amd64, so on an arm64 host every javac runs under emulation.
+echo "==> Building (Maven under linux/amd64 emulation; expect it to be slow)"
 docker build --platform linux/amd64 \
     -t "his-sandbox/openelis-global-2:$VERSION" \
     -f "$WORK/Dockerfile" "$WORK"

@@ -195,7 +195,12 @@ check "The bridge's /ops also degrades rather than refusing" \
 
 docker start his-redis >/dev/null
 info "started Redis"
-bash "$ROOT/scripts/wait-for.sh" "docker exec his-redis redis-cli ping" 60 >/dev/null 2>&1
+# wait-for.sh takes <label> <command> [timeout]. This used to pass the command as
+# the label and "60" as the command, so it evaluated `60`, failed every time, and
+# sat in its retry loop for the DEFAULT 120s before giving up — silently, because
+# the exit status is discarded. Two minutes of dead air per run, and no readiness
+# guarantee at all: the suite carried on whether or not Redis had come back.
+bash "$ROOT/scripts/wait-for.sh" "Redis" "docker exec his-redis redis-cli ping" 60 >/dev/null 2>&1
 
 # Redis holds sessions in memory with no persistence, so a restart is a
 # hospital-wide logout. Everything minted above is gone, including this suite's

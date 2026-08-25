@@ -191,6 +191,9 @@ trust-bridge: ## Import our CA into OpenELIS's truststore, then restart it
 	@echo "==> Restarting OpenELIS: the truststore is read once, at startup"
 	@docker restart openelis-webapp >/dev/null
 
+openelis-patched: ## Build OpenELIS from the upstream tag with our patches applied (VERSION=)
+	@bash scripts/build-openelis.sh $(VERSION)
+
 token: ## Sign in as a sandbox user and print a token (USER=, NAME=, GROUPS=, TTL=)
 	@bash scripts/mint-token.sh \
 	  $(if $(USER),--user $(USER),) $(if $(NAME),--name $(NAME),) \

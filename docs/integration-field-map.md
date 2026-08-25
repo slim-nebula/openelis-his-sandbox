@@ -148,21 +148,54 @@ A LOINC code says WHAT is measured, not what it is measured IN. OpenELIS's
 catalogue has `10351-5` on three tests (HIV viral load on DBS, plasma, serum) and
 `94547-7` on four.
 
-OpenELIS 3.2.2.0 resolves this (`OGC-1145`). `LabOrderSearchProvider.createMapsForTests`
-narrows the candidate (test, sample type) pairs by the sample type on the order,
-and when exactly one survives it resolves cleanly. Confirmed on the running
-instance: an order for the three-way-ambiguous `10351-5` carrying a plasma
-Specimen imported as status 21 `Entered`, not status 29 `AwaitingSpecimen`.
+OpenELIS 3.2.2.0 resolves this (`OGC-1145`), but in **two separate places**, and
+conflating them hid a real defect in this integration for some time.
+
+| where | method | what it decides |
+|---|---|---|
+| import | `TaskInterpreterImpl.createTestFromFHIR` | only whether to **hold** the order `AwaitingSpecimen`. A carried `Specimen` skips the hold — then it binds `tests.get(0)` regardless. |
+| accession | `LabOrderSearchProvider.addToTestOrPanel` | which test is **actually bound**. |
+
+An order importing as status 21 `Entered` rather than 29 `AwaitingSpecimen`
+therefore proves only that the hold was skipped. It says nothing about whether
+the right test was chosen. That observation was previously written up here as
+proof of correct resolution; it was not.
+
+**What actually binds the test:**
+
+```java
+// LabOrderSearchProvider.addToTestOrPanel
+String id = typeOfSampleService.getTypeOfSampleIdForLocalAbbreviation(code);  // exact
+test = testService.getActiveTestByLoincCodeAndSampleType(loinc, id).orElse(null);
+if (test == null) test = alltests.get(0);      // <- silent first-match fallback
+```
+
+`code` comes from the one `Specimen.type.coding` whose system is exactly
+`<oeFhirSystem>/sampleType`. Nothing else is consulted — not `text`, not a SNOMED
+coding. And the key is `type_of_sample.local_abbrev`, **not** the display name:
+
+| description | local_abbrev |
+|---|---|
+| Serum, Plasma, DBS, Sputum, Fluid | identical |
+| Whole Blood | `Whole Bld` |
+| Respiratory Swab | `Resp Swab` |
+
+So the bridge sends **both** codings: `<oeFhirSystem>/sampleType` carrying the
+abbreviation (what OpenELIS binds by) and SNOMED (what everyone else reads).
+`bridge.test_catalogue.specimen_abbrev` caches the abbreviation, fetched from
+`GET /rest/sample-types` — the only endpoint that exposes it.
 
 So the catalogue offers **one row per (test, specimen)** and the doctor picks the
 variant — the only point in the workflow where the answer is known for certain.
 That took the menu from 4 tests to 17.
 
-**The match is string equality on the sample-type description**, and a mismatch
-does not error: `if (!matchingPairs.isEmpty()) candidatePairs = matchingPairs;`
-falls back to treating the order as ambiguous. A renamed sample type in OpenELIS
-therefore degrades silently into the defect in §4. That makes the specimen string
-an integration contract worth asserting, not trusting.
+**Failure here is silent, which is why it is asserted rather than trusted.** A
+missing or stale abbreviation does not error: OpenELIS logs a warning and binds
+the first active test on the LOINC. For the 13 offered tests whose LOINC has more
+than one candidate, that is very often the wrong bench — a plasma HIV viral load
+would bind the serum test. The catalogue sync now refuses to offer a specimen
+with no abbreviation, the bridge refuses to map an order without one, and
+`make catalogue-test` asserts every cached abbreviation still matches OpenELIS.
 
 Still refused: two tests sharing a LOINC **and** a specimen. `94547-7` is mapped
 to both COVID IgG and IgM on the same specimens, so nothing in an order could

@@ -96,12 +96,6 @@ else
 fi
 
 # The specimen we send has to be one OpenELIS recognises, BY NAME.
-#
-# createMapsForTests narrows candidates with String.equals on the sample type
-# description, and on no match it falls back to treating the order as ambiguous
-# — silently. A renamed sample type in OpenELIS would therefore take these tests
-# out of service with no error anywhere, which is exactly the kind of failure
-# that has to be asserted rather than noticed.
 UNKNOWN_SPECIMEN=$(oe_sql "
     SELECT coalesce(string_agg(p.loinc || ' / ' || p.specimen, ', '), '')
     FROM (VALUES $PAIRS) AS p(loinc, specimen)
@@ -112,7 +106,58 @@ if [[ -z "$UNKNOWN_SPECIMEN" ]]; then
     ok "Every offered specimen name matches an OpenELIS sample type exactly"
 else
     bad "Every offered specimen name matches an OpenELIS sample type exactly" \
-        "unmatched: $UNKNOWN_SPECIMEN — these would silently fall back to ambiguous"
+        "unmatched: $UNKNOWN_SPECIMEN"
+fi
+
+# THE ABBREVIATION IS WHAT ACTUALLY BINDS, and it is not the name.
+#
+# The assertion above is necessary but nowhere near sufficient, and believing
+# otherwise is what hid this for so long. OpenELIS resolves an order's specimen
+# in LabOrderSearchProvider.addToTestOrPanel:
+#
+#   getTypeOfSampleIdForLocalAbbreviation(code)   <- exact hit on local_abbrev
+#   getActiveTestByLoincCodeAndSampleType(loinc, sampleTypeId)
+#
+# local_abbrev is NOT description: "Whole Blood" is stored as "Whole Bld",
+# "Respiratory Swab" as "Resp Swab". A miss returns null and OpenELIS falls
+# through to alltests.get(0) — the first active test for the LOINC — logging a
+# warning and binding a test nobody ordered. Silent, and wrong in exactly the
+# multi-specimen case the per-specimen menu exists to serve.
+MISSING_ABBREV=$(bridge_rows "
+    SELECT coalesce(string_agg(loinc || ' / ' || specimen_name, ', '), '')
+    FROM bridge.test_catalogue
+    WHERE specimen_abbrev IS NULL OR specimen_abbrev = ''")
+
+if [[ -z "$MISSING_ABBREV" ]]; then
+    ok "Every offered test carries the sample-type abbreviation OpenELIS binds by"
+else
+    bad "Every offered test carries the sample-type abbreviation OpenELIS binds by" \
+        "no abbreviation: $MISSING_ABBREV — orders for these would bind the first test on the LOINC"
+fi
+
+# And the abbreviation we cached has to still be the one OpenELIS holds. This is
+# the drift that has no other alarm: renaming a sample type's abbreviation in the
+# laboratory changes how every order on that specimen binds, with nothing failing.
+ABBREV_PAIRS=$(bridge_rows "
+    SELECT coalesce(string_agg('(' || quote_literal(specimen_id) || ',' ||
+                               quote_literal(specimen_abbrev) || ')', ','), '')
+    FROM bridge.test_catalogue WHERE specimen_abbrev IS NOT NULL")
+
+if [[ -n "$ABBREV_PAIRS" ]]; then
+    STALE_ABBREV=$(oe_sql "
+        SELECT coalesce(string_agg(p.sid || ': ours=' || p.abbrev ||
+                                   ' theirs=' || coalesce(tos.local_abbrev,'<gone>'), ', '), '')
+        FROM (VALUES $ABBREV_PAIRS) AS p(sid, abbrev)
+        LEFT JOIN clinlims.type_of_sample tos ON tos.id::text = p.sid
+        WHERE tos.local_abbrev IS DISTINCT FROM p.abbrev")
+
+    if [[ -z "$STALE_ABBREV" ]]; then
+        ok "Every cached abbreviation still matches OpenELIS"
+    else
+        bad "Every cached abbreviation still matches OpenELIS" "drifted: $STALE_ABBREV"
+    fi
+else
+    bad "Every cached abbreviation still matches OpenELIS" "the catalogue cached no abbreviations at all"
 fi
 
 # A single OpenELIS TEST must still map to exactly one sample type, even though
