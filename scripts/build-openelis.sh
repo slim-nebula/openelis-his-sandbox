@@ -95,9 +95,47 @@ done
 # separate upstream image we never patch. Still slow here: the stack pins
 # linux/amd64, so on an arm64 host every javac runs under emulation.
 echo "==> Building (Maven under linux/amd64 emulation; expect it to be slow)"
-docker build --platform linux/amd64 \
-    -t "his-sandbox/openelis-global-2:$VERSION" \
-    -f "$WORK/Dockerfile" "$WORK"
+
+# Retried, because Maven Central transfers get truncated on a slow link.
+#
+#   Could not transfer artifact org.springframework:spring-beans:jar:6.1.15
+#   Premature end of Content-Length delimited message body
+#     (expected: 862,674; received: 630,784)
+#
+# Observed three times on three different artifacts. The Dockerfile is
+# upstream's and we do not edit it, so we cannot pass Maven's wagon retry
+# flags — but we do not need to. Every RUN that resolves dependencies mounts
+# --mount=type=cache,target=/root/.m2, and a BuildKit cache mount is a volume,
+# not a layer: it persists even when the step FAILS. So each attempt banks the
+# artifacts it did fetch and the next one resumes from there. Attempts converge
+# rather than repeat.
+#
+# This retries a TRANSFER, not a defect. A patch that does not apply has already
+# stopped the script above, and a genuine compile error fails identically every
+# time and exhausts the attempts with the same message — which is the signal.
+ATTEMPTS="${BUILD_ATTEMPTS:-5}"
+for attempt in $(seq 1 "$ATTEMPTS"); do
+    if docker build --platform linux/amd64 \
+        -t "his-sandbox/openelis-global-2:$VERSION" \
+        -f "$WORK/Dockerfile" "$WORK"; then
+        break
+    fi
+
+    if [[ "$attempt" -eq "$ATTEMPTS" ]]; then
+        echo "" >&2
+        echo "Build failed $ATTEMPTS times." >&2
+        echo "" >&2
+        echo "If the last error was a truncated transfer, the link is the problem and" >&2
+        echo "another run will get further — the Maven cache keeps what it fetched." >&2
+        echo "If it was the same compile error each time, that is a real failure." >&2
+        exit 1
+    fi
+
+    echo ""
+    echo "==> Attempt $attempt failed. Retrying ($((attempt + 1))/$ATTEMPTS) — the Maven"
+    echo "    cache keeps what was already fetched, so this resumes rather than restarts."
+    echo ""
+done
 
 echo ""
 echo "==> Built his-sandbox/openelis-global-2:$VERSION"

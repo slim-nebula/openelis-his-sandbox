@@ -105,8 +105,31 @@ use it purely as a `keytool` toolbox.
    code the patch depends on. Read their change. The patch may be unnecessary
    (fixed upstream — delete it and say so here), or may need rewriting against
    the new shape. Never force it.
-4. Re-run the full suite against the patched build.
-5. Update the *Verified against* line of the patch entry below.
+4. **Prove the change reached the compiled artefact**, rather than trusting that
+   `git apply` reported success. A patch can apply to a file that is no longer
+   compiled into the WAR, or to a class upstream has since moved — and both
+   failures are silent. Read the constant pool of the class you patched:
+
+   ```sh
+   CID=$(docker create --platform linux/amd64 his-sandbox/openelis-global-2:<version>)
+   docker cp "$CID:/usr/local/tomcat/webapps/OpenELIS-Global.war" ./oe.war
+   docker rm -f "$CID"
+   unzip -o -q oe.war "WEB-INF/classes/.../FhirApiWorkFlowServiceImpl.class" -d warx
+   python3 -c "
+   b=open('warx/WEB-INF/classes/.../FhirApiWorkFlowServiceImpl.class','rb').read()
+   for n in [b'scheduling/annotation/Async', b'fixedDelayString', b'fixedRateString']:
+       print(n.decode(), b.count(n))"
+   ```
+
+   For patch 0001 the expected result is `Async 0`, `fixedDelayString 1`,
+   `fixedRateString 0`. A non-zero `Async` count means the annotation is still
+   interned — the patch did not take, whatever `git apply` said.
+
+   (Use `python3` on the host: macOS `strings` misreads a `.class` file as a
+   Mach-O binary and reports nothing.)
+5. Re-run the full suite against the patched build.
+6. Update the verification table of the patch entry below — every row, not just
+   the last one.
 
 ---
 
@@ -119,18 +142,36 @@ use it purely as a `keytool` toolbox.
 1 insertion, 3 deletions.
 **Surface:** FHIR remote order import. Touches no laboratory core.
 
-**Verification status** — stated separately, because "applies" and "validated"
-are different claims and only the first is currently true:
+**Verification status** — stated step by step, because "applies", "is in the
+image" and "validated" are three different claims:
 
 | Step | Status |
 |---|---|
 | Applies cleanly to tag `3.2.2.0` (`aa00894`) | **verified** — `git apply --check` against a fresh clone |
 | Code it modifies is present and unchanged at that tag | **verified** — `FhirApiWorkFlowServiceImpl.java:89-96` |
-| Patched image builds | see below |
-| Full suite re-run against the patched image | **not yet done** |
+| Patched image builds | **verified** — `his-sandbox/openelis-global-2:3.2.2.0`, 567 MB |
+| The change is in the compiled artefact | **verified** — see the constant-pool check below |
+| Patched build boots and serves | **verified** — Tomcat startup 205 s, `LoginPage` HTTP 200 |
+| Offers the same test menu as stock | **verified** — sync reported `17 -> 17`, nothing withdrawn |
+| Full suite against the patched image | **verified** — 195 passed, 0 failed |
 
-Until the last row is filled in, the patched build is not validated for use
-under ISO 15189 clause 7.6.3(a). The stack therefore stays on `OE_IMAGE_REPO=itechuw`.
+Suite-for-suite against stock: smoke 53/0, auth 52/0, catalogue-test 22/0,
+negative 50/0, rejection 18/0. The negative suite restarts the webapp mid-run,
+so the patched image is also known to survive a restart and resume importing.
+
+**What this does and does not prove.** It establishes that the patched build is
+behaviourally identical to stock — that the patch broke nothing — which is the
+ISO 15189 clause 7.6.3(a) requirement for a change to be validated before use.
+
+It does **not** prove the race is closed, because the suite never provokes two
+overlapping poll executions, and provoking one reliably would mean deliberately
+slowing an import past the poll interval. The evidence for the fix itself remains
+the code analysis: with `@Async` gone, `scheduleAtFixedRate`'s own guarantee that
+a task never overlaps itself applies again.
+
+Despite all of the above the stack still ships on `OE_IMAGE_REPO=itechuw`. The
+integration must stay demonstrable against unmodified upstream, because that is
+the first thing an implementer needs to know (rule 3).
 
 **The defect.** `pollForRemoteTasks()` can run concurrently with itself. Two
 executions import the same Task, race on patient de-duplication, and produce a
