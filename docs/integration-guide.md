@@ -131,15 +131,26 @@ Each result carries `orderNumber` and `visitNumber`, so you can file it against
 **the right visit and the right order** — including when one visit has several
 orders, which is the normal case.
 
+`specimenType` is not decoration: two orders for the same LOINC on different
+specimens share a `testName` — "HIV VIRAL LOAD" for both plasma and dried blood
+spot — and are different examinations with different methods and reference
+ranges. Show it, or your clinicians cannot tell the two apart.
+
 ```json
 {
-  "orderNumber":       "LAB-20260825-59088EB0",
-  "visitNumber":       "V-2026-0042",
-  "testName":          "HIV VIRAL LOAD (Plasma)",
-  "resultValue":       "42",
-  "resultUnit":        "copies/mL",
-  "resultStatus":      "FINAL",
-  "openelisResultRef": "…"
+  "orderNumber":         "LAB-20260825-59088EB0",
+  "visitNumber":         "V-2026-0042",
+  "testName":            "HIV VIRAL LOAD",
+  "specimenType":        "Plasma",
+  "resultValue":         "42",
+  "resultUnit":          "copies/mL",
+  "referenceRange":      "3.9-5.8",
+  "interpretation":      "High",
+  "interpretationCode":  "H",
+  "resultStatus":        "corrected",
+  "previousValue":       "13.8",
+  "previousReleasedAt":  "2026-08-14T09:15:00Z",
+  "openelisResultRef":   "…"
 }
 ```
 
@@ -154,6 +165,80 @@ correction lands weeks after the encounter closed —
 
 Results can be **corrected after release**. Treat `resultStatus` as a state, keep
 the history, and never overwrite a previous value in place.
+
+### Step 6b — Corrections need an alert, not a badge
+
+**This is the one place where doing what the sandbox does is not enough.**
+
+A laboratory does not only publish results — it corrects and withdraws them, and
+the evidence on what happens next is unusually clear:
+
+- a chart review of 480 corrected microbiology reports found **6.7% caused
+  measurable adverse clinical impact** — delayed therapy, unnecessary therapy,
+  inappropriate therapy, or an increased level of care
+- an AHRQ patient-safety review puts roughly **30% of amended values as changing
+  patient care**, and names the mechanism directly: *"clinicians are not
+  anticipating a change in information"*
+- a study of amended surgical pathology reports found the same failure again,
+  and located it precisely: the correction existed in the LIS and **did not
+  reach the treating clinician**
+
+Note where that failure sits. Not in the laboratory, which did its job. Not in
+the interface, which delivered the message. In the **last hop** — getting a
+doctor who has already moved on to look again.
+
+#### What the integration guarantees you
+
+The bridge publishes every correction as its own `lab.result.released` event with
+`resultStatus` set to `corrected` or `amended`, keyed by `meta.versionId` so a
+genuine new version is never suppressed as a duplicate. Corrections arrive as
+distinct, ordered, at-least-once events. **You will be told.**
+
+The sandbox frontend then shows the new value, a `corrected` badge, and the
+superseded value beneath it (`previousValue`). That satisfies ISO 15189 7.4.1.8
+— a revised report must reference what it revised — and it is where a
+demonstration stops.
+
+#### What your HIS must add
+
+A badge only works on a clinician who happens to be looking at the screen. The
+studies above describe clinicians who are not. So the correction has to **go
+find them**:
+
+1. **Raise a task, notification or inbox item** addressed to the ordering
+   clinician — `lab_orders.ordering_provider_id`, recorded from the verified
+   token, is exactly who to route it to.
+2. **Require acknowledgement.** A notification that can be scrolled past is a
+   badge with extra steps. The clinician should have to dismiss it.
+3. **Escalate if it is not acknowledged.** The doctor may be off shift. Route to
+   the covering clinician or the ward, the same way a critical value is escalated
+   when the responsible person cannot be reached (ISO 15189 7.4.1.3(c)).
+4. **Treat a retraction (`entered-in-error`) at least as seriously as a
+   correction.** A withdrawn result is one the clinician may have acted on and
+   which no longer exists. It is not a quieter event than a correction; if
+   anything it is louder.
+5. **Alert on the critical tier separately.** `interpretationCode` carries the
+   HL7 code, where `AA` / `HH` / `LL` mean *critically* abnormal rather than
+   merely abnormal. Never key this off the display wording — `interpretation`
+   holds the laboratory's own text and it is free to change; a severity rule
+   that matches on the word "critical" fails silently the day it becomes
+   "panic". CLIA 42 CFR 493.1109(f) and ISO 15189 7.4.1.3 both oblige the
+   laboratory to telephone a critical value; a HIS that renders it with the
+   same visual weight as a routine result defeats a notification the laboratory
+   is legally obliged to make.
+
+#### What not to do
+
+**Do not suppress the old value.** A clinician who acted on 13.8 needs to see
+13.8 to judge whether that decision still stands. ISO 15189 7.4.1.8 requires the
+revised report to identify the original; the operational guidance is explicit
+that previous results and interpretations are replicated *precisely because
+decisions may have been based on them*. Showing only the corrected number is the
+pattern the literature associates with missed-correction harm.
+
+**Do not treat a new resource id as the signal.** FHIR corrections update the
+*same* Observation with a new `status` and an incremented `meta.versionId`. A
+HIS watching for new ids will not see corrections at all.
 
 ## Step 7 — Handle the unhappy paths
 

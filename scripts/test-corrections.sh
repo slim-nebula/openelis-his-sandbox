@@ -118,6 +118,18 @@ check "status is corrected" "[[ \$(his_sql \"$STATUS_SQL\") == corrected ]]"
 check "the HIS still holds exactly one row for this result" \
     "[[ \$(his_sql \"SELECT count(*) FROM his.lab_results_summary WHERE openelis_result_ref = '$REF'\") == 1 ]]"
 
+# The value the clinician may already have acted on. lab_results_summary upserts
+# in place, so 13.8 is gone from the projection — but every message ever received
+# survives whole in lab_order_events, and the API recovers the superseded value
+# from there. ISO 15189 7.4.1.8 requires a revised report to reference what it
+# revised, and the patient-safety literature puts ~30% of corrections as changing
+# care: a clinician cannot judge whether a decision made on 13.8 still holds
+# without being shown 13.8.
+PATIENT_UUID=$(his_sql "SELECT patient_id FROM his.lab_orders WHERE order_number='$ORDER_NUMBER'")
+
+check_contains "The corrected result still shows the value it replaced" \
+    "api_curl -sf ${API}/patients/$PATIENT_UUID/results" '"previousValue":"13.8"'
+
 # --- 3. redelivery ----------------------------------------------------------
 # Kafka and the rest-hook are both at-least-once, so the same version arriving
 # twice must still be suppressed. Fixing corrections must not cost idempotency.

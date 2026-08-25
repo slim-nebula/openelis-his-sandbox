@@ -193,8 +193,16 @@ Not sending the clinician retired an upstream defect outright — see §4.
 | `patientId` | the local order row, never the LIS message |
 | `visitNumber` | joined from `lab_orders` |
 | `orderNumber` | joined from `lab_orders` — the precise key, since one visit holds many orders |
+| `specimenType` | joined from `test_catalogue` — never split out of `test_code`, since single-specimen tests keep a bare code |
 | `resultValue`, `resultUnit`, `referenceRange`, `interpretation`, `resultStatus` | the LIS |
+| `interpretationCode` | the LIS — the HL7 code (`AA`/`HH`/`LL` = critical) behind the label, so severity never depends on the laboratory's wording |
+| `previousValue`, `previousReleasedAt` | recovered from the `lab_order_events` audit trail on a correction; ISO 15189 7.4.1.8 |
 | `openelisResultRef` | mandatory back-reference to the record OpenELIS owns |
+
+A corrected result reaching the HIS is not the end of the obligation — the
+patient-safety evidence puts the failure at the last hop, getting a clinician who
+has moved on to look again. See
+[integration-guide.md § Step 6b](integration-guide.md#step-6b--corrections-need-an-alert-not-a-badge).
 
 `GET /visits/{visitNumber}/results` answers the question a clinician opening an
 encounter actually asks.

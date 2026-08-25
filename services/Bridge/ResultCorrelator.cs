@@ -220,10 +220,10 @@ public sealed class ResultCorrelator(
 
         var retracted = status == RetractedStatus;
         var observation = await FirstObservationAsync(store, report, ct);
-        var (value, unit, range, interpretation) = retracted
+        var (value, unit, range, interpretation, interpretationCode) = retracted
             // Forwarding the old number alongside a retracted status invites a
             // reader to keep using it. The retraction is the whole message.
-            ? ((string?)null, (string?)null, (string?)null, (string?)null)
+            ? ((string?)null, (string?)null, (string?)null, (string?)null, (string?)null)
             : Flatten(observation, report);
 
         var correlationId = tracked.CorrelationId ?? Guid.NewGuid().ToString();
@@ -243,6 +243,10 @@ public sealed class ResultCorrelator(
             resultUnit = unit,
             referenceRange = range,
             interpretation,
+            // The code travels beside the label so the receiving system can
+            // distinguish critically abnormal (AA/HH/LL) from merely abnormal
+            // (A/H/L) without pattern-matching on the laboratory's wording.
+            interpretationCode,
             resultStatus = status,
             releasedAt = ReleasedAt(report)
         };
@@ -266,11 +270,11 @@ public sealed class ResultCorrelator(
     }
 
     /// <summary>Collapses the FHIR result into the flat fields the HIS stores.</summary>
-    private static (string? Value, string? Unit, string? Range, string? Interpretation) Flatten(
+    private static (string? Value, string? Unit, string? Range, string? Interpretation, string? InterpretationCode) Flatten(
         Observation? observation, DiagnosticReport report)
     {
         if (observation is null)
-            return (report.Conclusion, null, null, null);
+            return (report.Conclusion, null, null, null, null);
 
         string? value;
         string? unit = null;
@@ -308,11 +312,27 @@ public sealed class ResultCorrelator(
             .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))
             ?? observation.Interpretation.Select(i => i.Text).FirstOrDefault();
 
+        // Prefer a coding from the HL7 interpretation system, because that is
+        // the vocabulary whose AA/HH/LL members mean "critical" rather than
+        // merely "abnormal". A laboratory may attach codings from several
+        // systems; taking the first one regardless would let a local code
+        // masquerade as an HL7 severity.
+        var interpretationCode = observation.Interpretation
+            .SelectMany(i => i.Coding)
+            .Where(c => c.System is not null && c.System.Contains("ObservationInterpretation",
+                                                                 StringComparison.OrdinalIgnoreCase))
+            .Select(c => c.Code)
+            .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))
+            ?? observation.Interpretation
+                .SelectMany(i => i.Coding)
+                .Select(c => c.Code)
+                .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
+
         var referenceRange = observation.ReferenceRange
             .Select(r => r.Text ?? FormatRange(r))
             .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
 
-        return (value, unit, referenceRange, interpretation);
+        return (value, unit, referenceRange, interpretation, interpretationCode);
     }
 
     private static string? FormatRange(Observation.ReferenceRangeComponent r) =>

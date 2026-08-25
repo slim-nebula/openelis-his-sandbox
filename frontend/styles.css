@@ -154,6 +154,32 @@ tbody tr:last-child td { border-bottom: 0; }
   white-space: nowrap;
 }
 
+/* The specimen is part of the test's identity here, not a footnote: plasma and
+   dried blood spot are different examinations reported under one name. */
+.specimen { color: var(--muted); white-space: nowrap; }
+
+/* Severity, not status. The critical tier gets the strongest treatment on the
+   page because it is the one a clinician must not scroll past - and it is
+   deliberately louder than the status badge beside it, which carries far less
+   clinical urgency. */
+.interp { display: inline-block; padding: 1px 6px; border-radius: 4px; }
+.interp.abnormal { background: #fff4e5; color: #8a4b00; font-weight: 600; }
+.interp.critical {
+  background: var(--bad);
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
+/* Deliberately attached under the value it replaced, not in its own column:
+   the correction is only meaningful next to the number it changes. */
+.superseded {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #8a4b00;
+}
+.superseded strong { text-decoration: line-through; font-weight: 600; }
+
 /* Deliberately not styled as an input. The ordering clinician comes from the
    session and cannot be typed, so it must not look like something you can
    change — a disabled-looking text box invites someone to try. */

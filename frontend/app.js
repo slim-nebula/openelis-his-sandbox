@@ -152,6 +152,43 @@ function resultStatusBadge(status) {
 
 const isRetracted = (r) => r.resultStatus === 'entered-in-error';
 
+// HL7 v3 ObservationInterpretation. The critical tier is a different class of
+// event from the merely abnormal one - CLIA 42 CFR 493.1109(f) and ISO 15189
+// 7.4.1.3 both oblige the laboratory to telephone it - so it must not look like
+// an ordinary high.
+//
+// Keyed on the CODE, never on the label: "Critical high" is wording a laboratory
+// may change, and a severity treatment that matches on words loses the red
+// silently the day it does.
+const CRITICAL = ['AA', 'HH', 'LL'];
+const ABNORMAL = ['A', 'H', 'L', 'HU', 'LU'];
+
+function interpretationCell(r) {
+  const label = r.interpretation ?? '—';
+  const code = (r.interpretationCode ?? '').toUpperCase();
+
+  if (CRITICAL.includes(code)) {
+    return `<span class="interp critical">⚠ CRITICAL — ${label}</span>`;
+  }
+  if (ABNORMAL.includes(code)) return `<span class="interp abnormal">${label}</span>`;
+
+  // No code, or a code we do not recognise. Show the laboratory's own wording
+  // plainly rather than inventing a severity we were not told - a made-up red is
+  // as harmful as a missing one.
+  return label;
+}
+
+// A clinician may have acted on the value this one replaced, and needs to know
+// what it said to judge whether that decision still stands (ISO 15189 7.4.1.8).
+// Shown only for a correction: on a retraction the value is withdrawn outright,
+// and reprinting the old number there would invite someone to keep using it.
+function supersededNote(r) {
+  const corrected = r.resultStatus === 'corrected' || r.resultStatus === 'amended';
+  if (!corrected || !r.previousValue) return '';
+  const when = r.previousReleasedAt ? ` on ${fmtDate(r.previousReleasedAt)}` : '';
+  return `<div class="superseded">corrected from <strong>${r.previousValue}</strong>${when}</div>`;
+}
+
 const fmtDate = (v) => (v ? new Date(v).toLocaleString() : '—');
 
 // --- health ----------------------------------------------------------------
@@ -265,11 +302,18 @@ async function refreshPatientData() {
         .map(
           (r) => `<tr class="${isRetracted(r) ? 'retracted' : ''}">
             <td>${r.testName}</td>
+            <td class="specimen">${
+              // Two orders for the same LOINC on different specimens share a
+              // test name — "HIV VIRAL LOAD" for both plasma and dried blood
+              // spot — and are different examinations. Without this column a
+              // clinician cannot tell which one they are reading.
+              r.specimenType ?? '—'
+            }</td>
             <td>${
               isRetracted(r)
                 ? '<span class="withdrawn">withdrawn by the laboratory</span>'
                 : `<strong>${r.resultValue ?? '—'}</strong> ${r.resultUnit ?? ''}`
-            }</td>
+            }${supersededNote(r)}</td>
             <td class="range">${
               // A value without its range is not interpretable: 5.4 is a normal
               // potassium in one laboratory and a reportable one in another.
@@ -277,7 +321,7 @@ async function refreshPatientData() {
               // there is nothing left to interpret.
               isRetracted(r) ? '—' : (r.referenceRange ?? '—')
             }</td>
-            <td>${r.interpretation ?? '—'}</td>
+            <td>${isRetracted(r) ? '—' : interpretationCell(r)}</td>
             <td>${resultStatusBadge(r.resultStatus)}</td>
             <td>${fmtDate(r.releasedAt)}</td>
             <td class="mono">${r.orderNumber ?? '—'}</td>
@@ -285,7 +329,7 @@ async function refreshPatientData() {
           </tr>`
         )
         .join('')
-    : '<tr><td colspan="8" class="empty">Nothing released yet. Validate and release the order in OpenELIS.</td></tr>';
+    : '<tr><td colspan="9" class="empty">Nothing released yet. Validate and release the order in OpenELIS.</td></tr>';
 }
 
 // Orders move through the LIS asynchronously, so the view refreshes itself

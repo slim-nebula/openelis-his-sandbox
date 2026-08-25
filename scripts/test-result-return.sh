@@ -117,6 +117,31 @@ read -r VALUE UNIT INTERP RANGE STATUS <<< "$(his_rows "
 [[ "$RANGE"  == "3.9-5.8" ]] && ok "reference range formatted: $RANGE"         || bad "reference range" "got '$RANGE'"
 [[ "$STATUS" == "final"  ]] && ok "status is final"                            || bad "status is final" "got '$STATUS'"
 
+# The CODE, not just the label. A severity treatment that matches on the words
+# "Critical high" loses its red the day a laboratory rewords its display text,
+# and loses it silently — the value still shows, and looks ordinary. Keying on
+# the HL7 code (N / H / L for abnormal, AA / HH / LL for critical) is what makes
+# that impossible.
+check "Interpretation CODE carried beside the label, not just the wording" \
+    "[[ \$(his_sql \"SELECT interpretation_code FROM his.lab_results_summary \
+          WHERE openelis_result_ref = 'DiagnosticReport/$DR_ID'\") == N ]]"
+
+# Two orders for the same LOINC on different specimens carry the same test_name
+# — "HIV VIRAL LOAD" for both plasma and dried blood spot — and are different
+# examinations with different methods and reference ranges. The specimen is
+# joined from the catalogue, never split out of test_code: single-specimen tests
+# keep a bare code (GLUC) and a split would yield the test, not the specimen.
+#
+# Asserted against the catalogue rather than a literal, because this script
+# takes whichever order is waiting and so does not know the test in advance.
+PATIENT_UUID=$(his_sql "SELECT patient_id FROM his.lab_orders WHERE order_number='$ORDER_NUMBER'")
+EXPECTED_SPECIMEN=$(his_rows "SELECT c.specimen_type FROM his.lab_orders o
+                                JOIN his.test_catalogue c ON c.test_code = o.test_code
+                               WHERE o.order_number = '$ORDER_NUMBER'")
+
+check_contains "Result says which specimen it was run on ($EXPECTED_SPECIMEN)" \
+    "api_curl -sf ${API}/patients/$PATIENT_UUID/results" "\"specimenType\":\"$EXPECTED_SPECIMEN\""
+
 check "Order advanced to RESULT_AVAILABLE" \
     "[[ \$(his_sql \"SELECT order_status FROM his.lab_orders WHERE order_number = '$ORDER_NUMBER'\") == RESULT_AVAILABLE ]]"
 

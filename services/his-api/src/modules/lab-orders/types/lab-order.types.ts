@@ -66,10 +66,41 @@ export interface IResultSummary {
   visitNumber: string | null;
   testCode: string;
   testName: string;
+  /**
+   * Which specimen this test was run on, joined from the catalogue.
+   *
+   * Not decoration. Two orders for the same LOINC on different specimens share
+   * a test_name — "HIV VIRAL LOAD" for both plasma and dried blood spot — and
+   * are different examinations with different methods and different reference
+   * ranges. Without this a clinician cannot tell them apart on screen.
+   *
+   * Null only if the catalogue entry has since been withdrawn.
+   */
+  specimenType: string | null;
   resultValue: string | null;
   resultUnit: string | null;
   referenceRange: string | null;
   interpretation: string | null;
+  /**
+   * The HL7 v3 ObservationInterpretation code behind `interpretation`:
+   * N, A, H, L for the ordinary cases and AA, HH, LL for the critical ones.
+   *
+   * Carried separately because `interpretation` is a display string the
+   * laboratory is free to reword, and a severity treatment that pattern-matches
+   * on words fails silently the day the wording changes — losing the red on a
+   * critical result, which is the one failure mode that must not be quiet.
+   */
+  interpretationCode: string | null;
+  /**
+   * The value this result replaced, when it is a correction or an amendment.
+   *
+   * A clinician may have already acted on the superseded value, and needs it to
+   * judge whether that decision still holds — the requirement in ISO 15189
+   * 7.4.1.8 that a revised report reference what it revises. Recovered from the
+   * lab_order_events audit trail rather than a second stored copy.
+   */
+  previousValue: string | null;
+  previousReleasedAt: string | null;
   resultStatus: string;
   releasedAt: string | null;
   openelisResultRef: string;
@@ -111,6 +142,8 @@ export interface IReleasedResultMessage {
   resultUnit?: string | null;
   referenceRange?: string | null;
   interpretation?: string | null;
+  /** HL7 v3 ObservationInterpretation code; see IResultSummary. */
+  interpretationCode?: string | null;
   resultStatus: string;
   releasedAt: string;
 }

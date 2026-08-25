@@ -36,10 +36,36 @@ const ORDER_COLUMNS = `order_id, order_number, patient_id, test_code, test_name,
  */
 const RESULT_SELECT = `SELECT r.result_id, r.order_id, r.patient_id, r.test_code, r.test_name,
                               r.result_value, r.result_unit, r.reference_range, r.interpretation,
+                              r.interpretation_code,
                               r.result_status, r.released_at, r.openelis_result_ref, r.received_at,
-                              o.visit_number, o.order_number
+                              o.visit_number, o.order_number,
+                              c.specimen_type,
+                              prev.prev_value, prev.prev_released_at
                          FROM his.lab_results_summary r
-                         JOIN his.lab_orders o ON o.order_id = r.order_id`;
+                         JOIN his.lab_orders o ON o.order_id = r.order_id
+                         -- The specimen is a property of the CATALOGUE ENTRY, not of the
+                         -- result. Two orders for the same LOINC on different specimens
+                         -- carry the same test_name ("HIV VIRAL LOAD") and differ only in
+                         -- test_code ("10351-5|Plasma" vs "10351-5|DBS"), so without this
+                         -- join they are indistinguishable to a clinician. Never derive it
+                         -- by splitting test_code on "|" — single-specimen tests keep a
+                         -- bare code (GLUC) and the split yields the test, not the specimen.
+                         LEFT JOIN his.test_catalogue c ON c.test_code = r.test_code
+                         -- The value this one replaced, for a corrected or amended result.
+                         -- lab_results_summary upserts in place, but every message ever
+                         -- received survives whole in lab_order_events, so the superseded
+                         -- value is recoverable without a second projection to keep in sync.
+                         LEFT JOIN LATERAL (
+                             SELECT e.payload->>'resultValue' AS prev_value,
+                                    e.payload->>'releasedAt'  AS prev_released_at
+                               FROM his.lab_order_events e
+                              WHERE e.order_id = r.order_id
+                                AND e.event_type = 'RESULT_RECEIVED'
+                                AND e.payload->>'openelisResultRef' = r.openelis_result_ref
+                                AND e.payload->>'resultValue' IS DISTINCT FROM r.result_value
+                              ORDER BY e.created_at DESC
+                              LIMIT 1
+                         ) prev ON true`;
 
 const toOrder = (row: Row): ILabOrder => ({
   orderId: String(row.order_id),
@@ -77,10 +103,22 @@ const toResult = (row: Row): IResultSummary => ({
     ? null : String(row.visit_number),
   testCode: String(row.test_code),
   testName: String(row.test_name),
+  // Joined from the catalogue. Null when the test has since been withdrawn from
+  // the menu — the result stays readable, it just cannot say which specimen.
+  specimenType: row.specimen_type === null || row.specimen_type === undefined
+    ? null : String(row.specimen_type),
   resultValue: row.result_value === null ? null : String(row.result_value),
   resultUnit: row.result_unit === null ? null : String(row.result_unit),
   referenceRange: row.reference_range === null ? null : String(row.reference_range),
   interpretation: row.interpretation === null ? null : String(row.interpretation),
+  // The HL7 code behind the label. "Critical high" is a display string that a
+  // laboratory may reword; HH is not. Severity styling keys off this.
+  interpretationCode: row.interpretation_code === null || row.interpretation_code === undefined
+    ? null : String(row.interpretation_code),
+  previousValue: row.prev_value === null || row.prev_value === undefined
+    ? null : String(row.prev_value),
+  previousReleasedAt: row.prev_released_at === null || row.prev_released_at === undefined
+    ? null : String(row.prev_released_at),
   resultStatus: String(row.result_status),
   releasedAt: toIso(row.released_at),
   openelisResultRef: String(row.openelis_result_ref),
@@ -350,17 +388,18 @@ export class LabOrderModel {
       await client.query(
         `INSERT INTO his.lab_results_summary
              (result_id, order_id, patient_id, test_code, test_name, result_value,
-              result_unit, reference_range, interpretation, result_status,
-              released_at, openelis_result_ref)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+              result_unit, reference_range, interpretation, interpretation_code,
+              result_status, released_at, openelis_result_ref)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          ON CONFLICT (openelis_result_ref) DO UPDATE SET
-             result_value    = excluded.result_value,
-             result_unit     = excluded.result_unit,
-             reference_range = excluded.reference_range,
-             interpretation  = excluded.interpretation,
-             result_status   = excluded.result_status,
-             released_at     = excluded.released_at,
-             received_at     = now()`,
+             result_value        = excluded.result_value,
+             result_unit         = excluded.result_unit,
+             reference_range     = excluded.reference_range,
+             interpretation      = excluded.interpretation,
+             interpretation_code = excluded.interpretation_code,
+             result_status       = excluded.result_status,
+             released_at         = excluded.released_at,
+             received_at         = now()`,
         [
           randomUUID(),
           order.order_id,
@@ -371,6 +410,7 @@ export class LabOrderModel {
           message.resultUnit ?? null,
           message.referenceRange ?? null,
           message.interpretation ?? null,
+          message.interpretationCode ?? null,
           message.resultStatus,
           message.releasedAt,
           message.openelisResultRef,
