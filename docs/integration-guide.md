@@ -83,8 +83,14 @@ POST /lab-orders
 }
 ```
 
-Returns `orderId` and `orderNumber`. **Store the order number.** It is the key
-results come back on.
+Returns `orderId` and `orderNumber`. **Store the order number, and never change
+it.** It is the only identifier that survives the round trip — the patient, the
+visit and the test are all re-derived from the order row when the result comes
+back, by joining on it. Regenerate or reuse it and the result returns
+uncorrelatable: dead-lettered, published as `lab.result.failed` /
+`UNCORRELATED`, and sitting in a queue instead of in front of a doctor. The
+full contract is in
+[integration-field-map.md §1b](integration-field-map.md#1b-the-identity-contract).
 
 **The ordering doctor is taken from the verified token, never from the body.**
 Ordering on behalf of another clinician is not supported, deliberately.
@@ -139,6 +145,12 @@ orders, which is the normal case.
 
 The MRN is not in there and does not need to be — resolve it from `patientId`,
 which you own.
+
+Neither the patient id nor the visit is read back from what the laboratory
+returns; both are joined from the order row that `orderNumber` identifies. That
+is what makes filing correct even when results arrive out of order, or when a
+correction lands weeks after the encounter closed —
+[§1b](integration-field-map.md#1b-the-identity-contract).
 
 Results can be **corrected after release**. Treat `resultStatus` as a state, keep
 the history, and never overwrite a previous value in place.

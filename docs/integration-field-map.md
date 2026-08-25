@@ -81,6 +81,74 @@ process decision, not an integration one.
 
 ---
 
+## 1b. The identity contract
+
+Everything in §2 follows from one rule, so it is worth stating on its own:
+
+> **Exactly one identifier has to survive the round trip: the order number.
+> Everything else is re-derived from the local order row.**
+
+The patient id, the visit, the test code and the test name are all *sent* to the
+laboratory — the lab needs demographics to work — but none of them are read back
+from what the laboratory returns. A released result is matched to its order
+first, and the order remembers the rest:
+
+```
+DiagnosticReport → basedOn → ServiceRequest → order number
+                 → his.lab_orders → patient_id, visit_number, test_code
+```
+
+`upsertResult()` selects those columns by `order_number` and inserts the values
+it read, not the values in the message. Even `testCode` and `testName` fall back
+to the order's own (`message.testCode ?? order.test_code`). The order row is the
+authority; the message is a convenience.
+
+### Why it is built this way
+
+Two identifiers were already proven not to survive: the encounter is **dropped
+on import**, and the requester is transmitted correctly and then **lost at the
+point of use** (§4). Both failures are silent.
+
+The consequence is worth being concrete about, because the failure it prevents
+does not look like a failure. One patient, one day, two visits — an emergency
+attendance at 09:15 and a ward admission at 15:40 — each with a potassium. Lab
+turnaround is not ordering order, so the sample ordered *second* can return
+*first*. Any rule that files a result by patient and recency will eventually put
+the ward's 5.9 on the emergency page and the emergency's 4.1 on the ward page.
+Nothing throws. Both values are real, both are that patient's, and both look
+entirely plausible where they land.
+
+Corrections make it structural rather than unlucky. A result corrected three
+weeks later must land exactly where the original did, and by then any recency
+heuristic has long stopped meaning anything. Matching on the order number is
+correct regardless of arrival order, elapsed time, or what the laboratory kept.
+
+The payoff: OpenELIS can lose the patient GUID, merge two patient records, or
+garble the demographics entirely, and every result still files against the right
+patient and the right encounter. The blast radius stays inside the laboratory's
+own view of history.
+
+### The obligation that comes with it
+
+**`lab_orders.order_number` is immutable from the moment it is minted.** Never
+regenerate it, never reuse it, never edit it after the order has been sent. It
+is minted by the HIS ([`lab-order.model.ts`](../services/his-api/src/modules/lab-orders/models/lab-order.model.ts) —
+`LAB-{stamp}-{8 hex}`); OpenELIS stores it as `electronic_order.external_id` and
+echoes it back on the ServiceRequest chain, but never generates or alters it.
+
+If it changes, the returning result cannot be correlated. The bridge retries for
+`CorrelationRetryMinutes`, then dead-letters the report and publishes
+`lab.result.failed` with `status = UNCORRELATED`. That path is deliberate and
+visible rather than silent — but it still means a result sitting in a queue
+instead of in front of a doctor. Alert on that topic.
+
+The same obligation applies to `patients.patient_id`: stable and permanent for
+the life of the patient. OpenELIS matches on the GUID we send, not the national
+id, so a regenerated patient id grows a duplicate patient record in the
+laboratory with the history split across both.
+
+---
+
 ## 2. The field map
 
 **This was rewritten on 2026-08-24 after a deliberate simplification.** Three
