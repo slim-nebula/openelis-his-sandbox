@@ -238,12 +238,47 @@ public sealed class OrderConsumer(
             return;
         }
 
+        // An unknown test splits again, and the two halves are not equally safe.
+        //
+        // The catalogue is derived from what OpenELIS offers, so if the LOINC is
+        // absent from it ENTIRELY, OpenELIS almost certainly does not carry the
+        // code either: it cannot first-match what it does not have, and it will
+        // reject the order. That is the drift path and it must stay open.
+        //
+        // But if the LOINC is present under a DIFFERENT specimen, we know for a
+        // fact OpenELIS carries this code — possibly on several tests. Sending
+        // it with no sample-type coding is then precisely the input that makes
+        // addToTestOrPanel bind alltests.get(0). Refuse: we would be handing the
+        // laboratory a confident answer to a question we could not answer.
         if (offering is null)
         {
+            var loincIsKnown = catalogue.Any(e => e.Loinc == order.LoincCode);
+
+            if (loincIsKnown)
+            {
+                var reason = $"LOINC {order.LoincCode} is offered by the laboratory, but not on "
+                           + $"specimen '{order.SpecimenType}'. Sending it without a resolvable "
+                           + "sample type would let OpenELIS bind the first test carrying the "
+                           + "code. Re-run the catalogue sync, or order a specimen the laboratory "
+                           + "accepts for this test.";
+                await store.DeadLetterAsync(options.TopicOrderCreated, reason,
+                    JsonSerializer.Serialize(evt), correlationId, ct);
+                await publisher.PublishAsync(options.TopicOrderFailed, order.OrderNumber, new
+                {
+                    eventId = Guid.NewGuid().ToString(),
+                    correlationId,
+                    orderId = order.OrderId,
+                    orderNumber = order.OrderNumber,
+                    status = "FAILED",
+                    detail = reason
+                }, correlationId, ct);
+                return;
+            }
+
             log.LogWarning(
-                "Order {OrderNumber} is for LOINC {Loinc} on '{Specimen}', which is not in the "
-                + "discovered catalogue. Sending without a sample-type coding and letting the "
-                + "laboratory decide.",
+                "Order {OrderNumber} is for LOINC {Loinc} on '{Specimen}', a code the laboratory "
+                + "does not offer at all. Sending without a sample-type coding so the laboratory "
+                + "can reject it, which is the drift signal.",
                 order.OrderNumber, order.LoincCode, order.SpecimenType);
         }
 

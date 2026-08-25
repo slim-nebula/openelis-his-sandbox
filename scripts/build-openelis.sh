@@ -57,7 +57,9 @@ git clone --depth 1 --single-branch --branch "$VERSION" \
 # benefit. The Dockerfile copies ./dataexport, ./install, ./pom.xml, ./src and
 # ./tomcat — dataexport is the only submodule among them.
 echo "==> Fetching the dataexport submodule"
-git -C "$WORK" submodule update --init --depth 1 dataexport --quiet
+# --quiet before the path: after it, git reads it as a second pathspec and fails
+# with "pathspec '--quiet' did not match any file(s) known to git".
+git -C "$WORK" submodule update --init --depth 1 --quiet dataexport
 
 if [[ ! -f "$WORK/dataexport/dataexport-core/pom.xml" ]]; then
     echo "dataexport did not check out — the build would fail at the first Maven step." >&2

@@ -227,6 +227,23 @@ reads the requester from that same field FIRST, so the fallback to
 The same field cannot be both the address and the sender. **Unchanged in 3.2.2.0,
 and no longer applies to us:** we do not send an ordering clinician at all.
 
+**Defect 4 — an unresolvable sample type binds the wrong test, silently.**
+`addToTestOrPanel` ends `if (test == null) test = alltests.get(0);`. A specimen
+OpenELIS cannot resolve does not stall the order or raise an error — it binds the
+first active test on the LOINC and reports success. On a stock catalogue an
+unresolved plasma order for `10351-5` becomes `HIVVIRALLOAD(Serum)`.
+
+It is easy to hit for two reasons, and neither is visible from the catalogue API:
+the coding system must be exactly `<oeFhirSystem>/sampleType` (SNOMED and
+`type.text` are ignored), and the code must be `type_of_sample.local_abbrev`,
+which is **not** the name the catalogue returns — "Whole Blood" is stored as
+"Whole Bld". `local_abbrev` is exposed only by the administrative
+`GET /rest/sample-types`, never by the test-catalogue endpoints an integrator
+would use. **Unchanged in 3.2.2.0. We hit this**, and §3 is the fix.
+
+This is the most serious of the four: the other three fail visibly, this one
+produces a plausible order on the wrong bench.
+
 **Not filed:** `?ID=` lost by the Enter Order button. One unreproduced occurrence
 against code with no async gap; filing it invites a "cannot reproduce" close that
 makes the other three easier to dismiss.
