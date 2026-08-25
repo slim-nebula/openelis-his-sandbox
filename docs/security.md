@@ -495,6 +495,40 @@ broker failure loses orders. Nothing in the code has to change for it.
 
 Ordered by how much it would matter in a hospital.
 
+**A refusal cannot be distinguished from a failure — and this one can reach a
+clinician.** OpenELIS sets `Task.status = rejected` both when the laboratory
+genuinely declines an order **and** when it hits an internal storage or indexing
+error. The two are identical on the wire. Nothing in this repository can separate
+them, because no second field carries the reason.
+
+The consequence is not operational, it is clinical: the HIS can tell a doctor
+*"the laboratory refused this test"* when the laboratory in fact accepted it and
+is working on it. A doctor who believes a test was refused may re-order it, or
+worse, proceed without it.
+
+Until upstream separates the two — filed as
+[defect 01](upstream-issues/01-task-poll-not-idempotent.md) — a HIS built on this
+should present a rejection as *"this order did not complete and needs review"*
+rather than as a definite refusal. That wording costs nothing and is true in both
+cases.
+
+**Nothing watches, and nothing wakes anyone.** `/metrics` is exposed in
+Prometheus format and the audit tables are populated, but no collector scrapes
+them and no alert fires. Several of the failure modes in this document are
+**quiet by design** — an order sitting undelivered, OpenELIS stopping its poll, a
+catalogue sync failing and leaving yesterday's menu in place. Each looks exactly
+like a healthy idle system. Alerting is what converts them from silent to
+visible, and it does not exist yet.
+
+At minimum, alert on: orders undelivered past a threshold, `dead_letters`
+growing, the last successful catalogue sync ageing, and OpenELIS not having
+polled recently.
+
+The remaining production gaps — high availability, real secrets, backups with a
+rehearsed restore, certificates from your own PKI — are collected in
+[integration-guide.md](integration-guide.md#from-integration-to-production) rather
+than duplicated here, so there is one list to keep current.
+
 **No audit trail in the form an assessor expects.** This is the gap most likely
 to be missed, because the system does not feel like it is missing anything: the
 HIS writes an audit row for every order transition (`his.lab_order_events`), the

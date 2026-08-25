@@ -1,8 +1,8 @@
 # Data flow — full round trip
 
-Every hop below was observed in a live run against OpenELIS Global 2 on the
-upstream `develop` images. Endpoint paths, topic names, table names and status
-values are the real ones, not illustrative.
+Every hop below was observed in a live run against **OpenELIS Global 2 3.2.2.0**
+(tag `aa00894`). Endpoint paths, topic names, table names and status values are
+the real ones, not illustrative.
 
 ---
 
@@ -53,7 +53,7 @@ sequenceDiagram
     Note over BR, API: Direct on the sandbox network.<br/>Kong does not route /internal/*
     API->>HDB: SELECT order + catalogue + patient
     API-->>BR: order payload incl. LOINC + specimen type
-    BR->>BR: Map to Patient, Practitioner ×2,<br/>Specimen, ServiceRequest, Task
+    BR->>BR: Map to Patient, Practitioner (lab only),<br/>Specimen, ServiceRequest, Task
     Note right of BR: Resource ids are UUIDv5 of the order id,<br/>so a replay updates instead of duplicating
     BR->>BDB: upsert fhir_resources<br/>+ order_tracking task_status=requested
     BR->>K: publish lab.order.sent SENT_TO_LIS
@@ -69,7 +69,7 @@ sequenceDiagram
     BR-->>OE: searchset Bundle, 1 match
     OE->>BR: GET /fhir/ServiceRequest/{id} — from Task.basedOn
     OE->>BR: GET /fhir/Patient/{id} — from Task.for
-    OE->>BR: GET /fhir/Practitioner/{id} — from ServiceRequest.requester
+    OE->>BR: GET /fhir/Practitioner/{id} — from Task.owner (the laboratory)
     OE->>BR: GET /fhir/Specimen/{id} — from ServiceRequest.specimen
     OE->>OE: TaskInterpreter matches<br/>ServiceRequest.code LOINC coding
     OE->>ODB: SELECT test WHERE loinc = code
@@ -395,16 +395,37 @@ flowchart TB
     class SKIP,KEEP drop;
 ```
 
-A test is offered only if OpenELIS reports it **active**, **orderable**, holding
-**exactly one LOINC**, and bound to **exactly one specimen** — and only if no
-other test claims that same LOINC. Of 210 tests, 25 qualify: 141 have no LOINC,
-22 share one, 9 are inactive, 6 accept several specimens, 3 are not orderable.
+A test is offered if OpenELIS reports it **active**, **orderable**, holding
+**exactly one LOINC**, and carrying a sample type with a **local abbreviation**.
+The menu currently holds **17 rows**.
 
-Those last two filters are not fussiness. OpenELIS matches an incoming order on
-the LOINC code alone, and will not use the `Specimen` we send to narrow a
-multi-specimen test — verified directly. An order for an ambiguous test is
-accepted into the queue and then stalls at the accessioning screen, waiting for
-a human to pick the test. Not offering it is the honest outcome.
+**One row per (test, specimen), not per test.** A LOINC says what is measured,
+not what it is measured in, so `10351-5` names three orderable things — HIV
+viral load on serum, on plasma, on DBS. Offering them as one row forced somebody
+to guess the specimen later. Offering them as three lets the **doctor** choose,
+at the only point in the workflow where the answer is certain: they know what
+will be drawn.
+
+> **This section previously said the opposite** — that OpenELIS matches on the
+> LOINC alone and ignores the `Specimen`. That was true of the version it was
+> written against. **3.2.2.0 does resolve by specimen** (`OGC-1145`), which is
+> what took the menu from 4 tests to 17.
+
+What is still refused is a LOINC **and** specimen claimed by two active tests:
+`94547-7` is mapped to both COVID IgG and IgM on the same specimens, so nothing
+in an order could separate them. All four are dropped and the sync log names
+them. That is a mapping error in the laboratory's catalogue, and the sync
+surfacing it is the loop working — fix the mapping and they appear on the next
+sync, with no code change.
+
+**How the specimen actually travels** matters, because getting it wrong fails
+*silently*. OpenELIS reads one `Specimen.type.coding` entry whose system is
+exactly `<oeFhirSystem>/sampleType` and matches its code against
+`type_of_sample.local_abbrev` — which is **not** the display name
+(`Whole Blood` is stored as `Whole Bld`). Miss it and OpenELIS binds the first
+active test on the LOINC and reports success. The catalogue therefore syncs both
+forms, and the order carries the abbreviation alongside SNOMED. Full detail in
+[integration-field-map.md](integration-field-map.md#3-why-the-specimen-is-load-bearing).
 
 **Sync is manual.** A clinic changes its menu when it commissions an analyser, a
 few times a year, so a timer would run thousands of times to catch that and

@@ -3,15 +3,22 @@
 Every criterion in the brief, mapped to the automated check that proves it.
 
 ```bash
-make smoke      # 37 checks
-make e2e        # order flow into OpenELIS (pauses for the manual lab step)
-make results    # 14 checks
-make rejection  # 14 checks
-make negative   # 19 checks
+make smoke       platform and wiring
+make auth        tokens, revocation, degraded mode, the audit trail
+make catalogue-test  the test menu, and the specimen abbreviations
+make negative    outages: broker, Redis, API, OpenELIS
+make rejection   refusal, drift, and a withdrawn specimen
+make e2e         order flow into OpenELIS  (pauses for the manual lab step)
+make results     the return path
 ```
 
-All four suites were run against the real stack: OpenELIS Global 2 on the
-upstream `develop` images, against its own external database.
+Check counts are deliberately **not** listed here. They change every time a test
+is added, and a number in a document that nobody updates is worse than no number
+— run the suite and read the total it prints.
+
+Run against the real stack: **OpenELIS Global 2 3.2.2.0**, against its own
+external database. Most recent full run: **195 passed, 0 failed** — and the same
+195 against the patched build, suite for suite.
 
 | # | Criterion | Verified by | Check |
 |---|---|---|---|
@@ -107,7 +114,7 @@ first clean rebuild of this stack produced a `rejected` Task that came from a
 Hibernate Search indexing failure inside OpenELIS, with a perfectly valid LOINC
 and an `electronic_order` row sitting at `Entered` (21), not `NonConforming`
 (24) — a green order in the laboratory and a refused one in the HIS. The full
-sequence is defect 0 in `docs/catalogue-discovery-plan.md`.
+sequence is documented in [data-flow.md §6](data-flow.md#6-where-the-test-menu-comes-from).
 
 The bridge used to fill the gap with a heuristic — `status_detail` read "most
 often no test matches the LOINC code" — and that episode is what retired it. It

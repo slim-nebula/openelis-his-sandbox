@@ -52,11 +52,17 @@ The upstream OpenELIS images are large and `linux/amd64` only. On Apple
 Silicon they are pulled and emulated:
 
 ```bash
-docker pull --platform linux/amd64 itechuw/openelis-global-2:develop
+docker pull --platform linux/amd64 itechuw/openelis-global-2:3.2.2.0
 ```
 
+Pinned to a **named release**, never `:develop` — see
+[openelis-patches/README.md](../openelis-patches/README.md). `OE_VERSION` in
+`.env` is the single place it is set.
+
 Allocate **at least 8 GB** to Docker Desktop. With less, the OpenELIS webapp
-and its HAPI FHIR server compete for heap and the poll loop stalls.
+and its HAPI FHIR server compete for heap and the poll loop stalls. On an 8 GB
+host, expect to stop the stack before building anything large — `make
+openelis-patched` in particular.
 
 ---
 
@@ -189,8 +195,9 @@ one OpenELIS's truststore does not contain, so it converts a handshake problem
 into a definitely-broken link. `make certs` deliberately keeps what exists; if
 you do regenerate with `FORCE=true`, `make trust-bridge` must follow.
 
-**Do not put a token on `/fhir`.** OpenELIS 3.2.1.11 cannot send one — the
-integration would stop, silently. `docs/security.md` §3 has the evidence.
+**Do not put a token on `/fhir`.** OpenELIS cannot send one — the integration
+would stop, silently. Confirmed on 3.2.1.11 and unchanged in 3.2.2.0.
+`docs/security.md` §3 has the evidence.
 
 **Do not reset consumer offsets to unstick a consumer.** That either replays
 orders or skips them, depending on the reset policy.
@@ -224,7 +231,7 @@ upstream defect and it will not stop on its own.** A Task whose import throws is
 never acknowledged, so it stays `status=requested` and the next poll picks it up
 again — one clean rebuild left a single order being re-imported every 30 seconds
 for twenty-six minutes, and one of those passes created a **duplicate patient
-record**. Full evidence: defect 0 in `docs/catalogue-discovery-plan.md`.
+record**. Full evidence: [data-flow.md §6](data-flow.md#6-where-the-test-menu-comes-from).
 
 ```bash
 # Is this happening? A count that keeps climbing for one Task is the signature.
@@ -552,6 +559,37 @@ docker compose -p his-lab-data --env-file .env -f compose/data.yml restart his-d
 
 After editing `.env`, always `make config` before restarting OpenELIS —
 `common.properties` is a rendered file, not a live environment read.
+
+### Running the patched OpenELIS build
+
+The stack ships **stock** (`OE_IMAGE_REPO=itechuw`) and should stay that way
+unless you have a reason. To switch:
+
+```bash
+make openelis-patched          # clone the tag, apply patches, build
+# then set OE_IMAGE_REPO=his-sandbox in .env
+make up
+docker ps                      # confirms which build is live
+```
+
+Only `openelis-global-2` follows `OE_IMAGE_REPO`. The fhir, frontend, proxy and
+database images are pinned to `itechuw` and never patched.
+
+Four things worth knowing before you do this:
+
+- **The build needs the stack stopped** on an 8 GB host. `make down` first.
+- **It retries up to 5 times** (`BUILD_ATTEMPTS`). Truncated downloads from Maven
+  Central are common on a slow link; retries resume from the Maven cache rather
+  than restarting, because a BuildKit cache mount survives a failed step.
+- **A patch that will not apply stops the build.** That is the process working —
+  upstream changed the code it depends on. Read their change; do not force it.
+- **Switching back** is the same two lines in reverse. Both directions are
+  verified.
+
+Every patch must be re-applied, proven present in the compiled artefact, and
+re-validated against the full suite at each upgrade. The procedure — including
+how to read the class constant pool to prove the change reached the WAR — is in
+[openelis-patches/README.md](../openelis-patches/README.md).
 
 ### Tuning knobs worth knowing at 3am
 
