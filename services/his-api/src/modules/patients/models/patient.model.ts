@@ -3,12 +3,12 @@ import { query, queryOne, type Row } from '@config/db.js';
 import { toDateOnly, toIso } from '@shared/utils/serialization.utils.js';
 import type { IPatient, ICreatePatientInput } from '../types/patient.types.js';
 
-const COLUMNS = `patient_id, external_patient_id, first_name, last_name, sex,
+const COLUMNS = `patient_id, mrn, first_name, last_name, sex,
                  date_of_birth, phone, national_id, created_at`;
 
 const toPatient = (row: Row): IPatient => ({
   patientId: String(row.patient_id),
-  externalPatientId: String(row.external_patient_id),
+  mrn: String(row.mrn),
   firstName: String(row.first_name),
   lastName: String(row.last_name),
   sex: String(row.sex),
@@ -34,11 +34,11 @@ export class PatientModel {
   }
 
   async create(input: ICreatePatientInput): Promise<IPatient> {
-    const mrn = input.externalPatientId ?? (await this.nextMrn());
+    const mrn = input.mrn ?? (await this.nextMrn());
 
     const row = await queryOne<Row>(
       `INSERT INTO his.patients
-           (patient_id, external_patient_id, first_name, last_name, sex,
+           (patient_id, mrn, first_name, last_name, sex,
             date_of_birth, phone, national_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING ${COLUMNS}`,
@@ -80,7 +80,7 @@ export class PatientModel {
         WHERE $1 = '%%'
            OR lower(last_name)  LIKE $1
            OR lower(first_name) LIKE $1
-           OR lower(external_patient_id) LIKE $1
+           OR lower(mrn) LIKE $1
            OR lower(coalesce(national_id, '')) LIKE $1
         ORDER BY created_at DESC
         LIMIT $2`,

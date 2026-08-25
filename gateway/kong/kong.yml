@@ -59,6 +59,14 @@ services:
         methods: [POST]
         strip_path: false
 
+      # Every released result from one encounter. Deliberately the only /visits
+      # route: a visit number is an identifier for one patient's encounter, so
+      # the gateway exposes the results question and nothing broader.
+      - name: visit-results
+        paths: ["~/visits/[^/]+/results$"]
+        methods: [GET]
+        strip_path: false
+
       - name: test-catalogue
         paths: ["/test-catalogue"]
         methods: [GET]

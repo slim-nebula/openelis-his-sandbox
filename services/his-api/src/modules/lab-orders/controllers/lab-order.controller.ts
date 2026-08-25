@@ -33,6 +33,10 @@ export class LabOrderController {
     res.json(await this.orders.getWithResults(req.params.id as string));
   };
 
+  listResultsForVisit = async (req: Request, res: Response): Promise<void> => {
+    res.json(await this.orders.resultsForVisit(req.params.visitNumber as string));
+  };
+
   internalPayload = async (req: Request, res: Response): Promise<void> => {
     const payload = await this.orders.bridgePayload(req.params.id as string);
     if (!payload) {

@@ -91,23 +91,30 @@ public sealed class CatalogueSync(
     private static CatalogueDiff Diff(
         IReadOnlyList<CatalogueEntry> before, IReadOnlyList<CatalogueEntry> after)
     {
-        var oldByLoinc = before.ToDictionary(e => e.Loinc);
-        var newByLoinc = after.ToDictionary(e => e.Loinc);
+        // Keyed on (LOINC, specimen), because that is the identity of an
+        // orderable thing — one code names several of them. Keying on the code
+        // alone threw outright once the menu carried HIV viral load on three
+        // specimens, and would have reported the surviving sibling as "changed"
+        // when a specimen was withdrawn.
+        static (string, string) Key(CatalogueEntry e) => (e.Loinc, e.SpecimenId);
 
-        var added = after.Where(e => !oldByLoinc.ContainsKey(e.Loinc))
+        var oldByKey = before.ToDictionary(Key);
+        var newByKey = after.ToDictionary(Key);
+
+        var added = after.Where(e => !oldByKey.ContainsKey(Key(e)))
                          .Select(Describe).ToList();
-        var removed = before.Where(e => !newByLoinc.ContainsKey(e.Loinc))
+        var removed = before.Where(e => !newByKey.ContainsKey(Key(e)))
                             .Select(Describe).ToList();
 
-        // A test whose specimen changed matters as much as one that appeared:
-        // the HIS would go on asking for the old specimen and the order would
-        // stop binding.
+        // A test whose name or underlying OpenELIS test changed matters as much
+        // as one that appeared. The specimen is part of the key now, so a
+        // specimen change reads as a removal plus an addition — which is what it
+        // clinically is, not one test edited but one withdrawn and another
+        // offered.
         var changed = after
-            .Where(e => oldByLoinc.TryGetValue(e.Loinc, out var old) &&
-                        (old.Name != e.Name ||
-                         old.SpecimenName != e.SpecimenName ||
-                         old.OpenElisTestId != e.OpenElisTestId))
-            .Select(e => $"{Describe(e)} (was {Describe(oldByLoinc[e.Loinc])})")
+            .Where(e => oldByKey.TryGetValue(Key(e), out var old) &&
+                        (old.Name != e.Name || old.OpenElisTestId != e.OpenElisTestId))
+            .Select(e => $"{Describe(e)} (was {Describe(oldByKey[Key(e)])})")
             .ToList();
 
         return new CatalogueDiff(added, removed, changed);

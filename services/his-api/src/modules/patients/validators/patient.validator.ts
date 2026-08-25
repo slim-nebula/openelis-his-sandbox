@@ -26,7 +26,7 @@ const blank = (value: string | undefined): string | undefined => {
 };
 
 export const createPatientSchema = z.object({
-  externalPatientId: z.string().optional(),
+  mrn: z.string().optional(),
   firstName: z.string().min(1, 'firstName and lastName are required.'),
   lastName: z.string().min(1, 'firstName and lastName are required.'),
   sex: z.string().default('U'),
@@ -43,7 +43,7 @@ export const parseCreatePatient = (body: unknown) => {
 
   const value = result.data;
   return {
-    externalPatientId: blank(value.externalPatientId),
+    mrn: blank(value.mrn),
     firstName: value.firstName.trim(),
     lastName: value.lastName.trim(),
     sex: normaliseSex(value.sex),

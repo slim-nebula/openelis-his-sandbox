@@ -110,13 +110,25 @@ poll_has_task() {  # 1 if the poll offered our Task, 0 if it withheld it
 #
 # The property under test is not "we can see it" — it is "once delivered, it is
 # withheld". Those come apart the moment anything else polls, which is always.
+# Wait for the Task to have been DELIVERED, not for a lease to be live.
+#
+# A live lease is a window, and OpenELIS closes it: the moment it imports the
+# order it writes a verdict back, and the bridge ends the lease. On a fast import
+# that window can be shorter than this loop's interval, so polling for
+# `leased_until > now()` was testing whether we outran the laboratory. It timed
+# out here against a Task that had been delivered, imported and ACCEPTED — the
+# lease had worked perfectly and the assertion still failed.
+#
+# `deliveries` is the durable fact: it is incremented on every hand-over and, as
+# of the release-instead-of-delete change, survives the verdict. That is the
+# property worth asserting, and it is the one an operator would actually query.
 LEASED=false
 for _ in $(seq 1 60); do
     [[ -n "$(bridge_sql "SELECT 1 FROM bridge.delivery_leases
-                          WHERE resource_id = '$LEASE_TASK' AND leased_until > now()")" ]] \
+                          WHERE resource_id = '$LEASE_TASK' AND deliveries >= 1")" ]] \
         && { LEASED=true; break; }
     # Nudge it ourselves if OpenELIS has not polled yet. Harmless: whoever wins,
-    # the Task ends up leased, which is the precondition being established.
+    # the Task ends up delivered, which is the precondition being established.
     poll_has_task >/dev/null
     sleep 2
 done
@@ -125,7 +137,7 @@ if [[ "$LEASED" == true ]]; then
     ok "Handing an order to the laboratory takes a delivery lease on it"
 else
     bad "Handing an order to the laboratory takes a delivery lease on it" \
-        "no live lease for $LEASE_TASK after 120s"
+        "no delivery recorded for $LEASE_TASK after 120s"
 fi
 
 task_status_now() {
@@ -235,10 +247,33 @@ else
         "the poison message blocked the partition"
 fi
 
-check "The poison message was routed to the dead-letter topic" \
-    "docker exec his-kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 \
-       --topic ${TOPIC_RESULT_RELEASED}.dlq --from-beginning --timeout-ms 10000 2>/dev/null \
-     | grep -q 'this-is-not-json'"
+# Retried rather than read once.
+#
+# kafka-console-consumer with a fixed timeout is a poor oracle here: it reads
+# from the beginning of a multi-partition topic and gives up on a wall clock, so
+# a consumer-group rebalance — which this suite guarantees, having restarted the
+# broker a few sections earlier — makes it return empty from a topic that holds
+# the message. Observed exactly that: the assertion failed while the DLQ
+# contained the record, correct payload and reason.
+#
+# The property is "it was dead-lettered", which is durable. Reading once is
+# testing whether one consumer session happened to be quick enough.
+DLQ_FOUND=""
+for _ in $(seq 1 6); do
+    if docker exec his-kafka /opt/kafka/bin/kafka-console-consumer.sh \
+         --bootstrap-server kafka:9092 --topic "${TOPIC_RESULT_RELEASED}.dlq" \
+         --from-beginning --timeout-ms 10000 2>/dev/null | grep -q 'this-is-not-json'; then
+        DLQ_FOUND=yes; break
+    fi
+    sleep 3
+done
+
+if [[ -n "$DLQ_FOUND" ]]; then
+    ok "The poison message was routed to the dead-letter topic"
+else
+    bad "The poison message was routed to the dead-letter topic" \
+        "nothing matching in ${TOPIC_RESULT_RELEASED}.dlq after 6 reads"
+fi
 
 # ---------------------------------------------------------------------------
 section "OpenELIS unavailable"

@@ -153,53 +153,79 @@ public sealed class OpenElisClient(BridgeOptions options, ILogger<OpenElisClient
                 .Where(s => s.Id is not null && s.Name is not null)
                 .ToList();
 
-            if (specimens.Count != 1)
+            if (specimens.Count == 0)
             {
-                // OpenELIS will not choose a specimen for us and does not use the
-                // Specimen resource we send to narrow it - verified against the
-                // running instance. A multi-specimen test therefore cannot be
-                // ordered unattended, whatever we put in the message.
-                Skip(specimens.Count == 0 ? "no specimen" : "several specimens");
+                // Nothing to collect. Not orderable in any meaningful sense.
+                Skip("no specimen");
                 continue;
             }
 
-            entries.Add(new CatalogueEntry(
-                Loinc: loincCodes[0]!,
-                OpenElisTestId: testId,
-                Name: basic.RootElement.GetPropertyOrNull("name")?.GetString() ?? name,
-                SpecimenName: specimens[0].Name!,
-                SpecimenId: specimens[0].Id!,
-                ResultUnit: null));
+            // ONE ENTRY PER SPECIMEN, rather than discarding a test that runs on
+            // more than one.
+            //
+            // A LOINC code says what is measured, not what it is measured in, so
+            // "HIV Viral Load" on plasma and on serum are two orderable things
+            // wearing one code. Offering them as one row forced somebody to guess
+            // the specimen later; offering them as two lets the DOCTOR choose,
+            // which is the only point in the workflow where the answer is known
+            // for certain — they know what will be drawn.
+            //
+            // OpenELIS 3.2.2.0 resolves the pair (OGC-1145): it narrows candidate
+            // tests by the sample type on the order. Verified on the running
+            // instance — an order for the three-way-ambiguous 10351-5 carrying a
+            // plasma Specimen imported as `Entered`, not `AwaitingSpecimen`.
+            var testName = basic.RootElement.GetPropertyOrNull("name")?.GetString() ?? name;
+
+            foreach (var specimen in specimens)
+            {
+                entries.Add(new CatalogueEntry(
+                    Loinc: loincCodes[0]!,
+                    OpenElisTestId: testId,
+                    // Qualified when the test runs on several specimens, so the
+                    // doctor's search box shows what actually distinguishes them.
+                    // A bare "HIV Viral Load" three times over is a menu that
+                    // invites picking the wrong one.
+                    Name: specimens.Count == 1 ? testName : $"{testName} ({specimen.Name})",
+                    SpecimenName: specimen.Name!,
+                    SpecimenId: specimen.Id!,
+                    ResultUnit: null));
+            }
         }
 
-        // One LOINC, one test - checked ACROSS tests, not just within one.
+        // Collisions are judged on (LOINC, specimen) - the pair the laboratory
+        // actually resolves on - not on the code alone.
         //
-        // The per-test check above only proves a test has a single LOINC code.
-        // Several tests can carry the SAME code: this catalogue has 94547-7 on
-        // four COVID antibody tests and 777-3 on two platelet tests. OpenELIS
-        // matches an incoming order on the code alone and will not choose
-        // between the candidates, so an order for a shared code stalls at the
-        // accessioning screen exactly as a multi-specimen test does.
+        // Several OpenELIS tests share a code: 94547-7 is on four COVID antibody
+        // tests, 10351-5 on three HIV viral loads. That alone is no longer
+        // disqualifying, because 3.2.2.0 narrows candidates by the sample type
+        // the order carries, and we now send one catalogue row per specimen.
         //
-        // Dropping both sides of a collision is deliberate. Picking one would be
-        // guessing which test the laboratory meant, and guessing wrong sends the
-        // specimen to the wrong bench.
-        var ambiguous = entries.GroupBy(e => e.Loinc)
-                               .Where(g => g.Count() > 1)
+        // What remains unresolvable is two tests sharing a code AND a specimen.
+        // No information in the order could separate them, so both sides are
+        // dropped. Picking one would be guessing which test the laboratory
+        // meant, and guessing wrong sends the specimen to the wrong bench.
+        var ambiguous = entries.GroupBy(e => (e.Loinc, e.SpecimenId))
+                               .Where(g => g.Select(e => e.OpenElisTestId).Distinct().Count() > 1)
                                .ToList();
 
         foreach (var collision in ambiguous)
         {
-            skipped["LOINC shared with another test"] =
-                skipped.GetValueOrDefault("LOINC shared with another test") + collision.Count();
+            skipped["LOINC and specimen shared with another test"] =
+                skipped.GetValueOrDefault("LOINC and specimen shared with another test") + collision.Count();
             log.LogWarning(
-                "LOINC {Loinc} is claimed by {Count} tests ({Tests}); none is orderable from the HIS "
-                + "until the laboratory disambiguates them",
-                collision.Key, collision.Count(),
+                "LOINC {Loinc} on specimen {Specimen} is claimed by {Count} tests ({Tests}); none is "
+                + "orderable from the HIS until the laboratory disambiguates them",
+                collision.Key.Loinc, collision.First().SpecimenName, collision.Count(),
                 string.Join(", ", collision.Select(e => $"{e.OpenElisTestId} {e.Name}")));
         }
 
-        var unique = entries.Where(e => ambiguous.All(g => g.Key != e.Loinc)).ToList();
+        var unique = entries
+            .Where(e => ambiguous.All(g => g.Key != (e.Loinc, e.SpecimenId)))
+            // One test may legitimately list the same specimen twice; the key
+            // must not carry duplicates into an insert that now enforces it.
+            .GroupBy(e => (e.Loinc, e.SpecimenId))
+            .Select(g => g.First())
+            .ToList();
 
         log.LogInformation(
             "OpenELIS catalogue: {Orderable} orderable of {Total} listed ({Skipped})",

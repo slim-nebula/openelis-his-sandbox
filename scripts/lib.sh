@@ -87,6 +87,14 @@ bridge_sql() {
         psql -tAX -U "$BRIDGE_DB_USER" -d "$BRIDGE_DB_NAME" -c "$1" 2>/dev/null | tr -d '[:space:]'
 }
 
+# Same, but preserves whitespace. Required for anything involving specimen names
+# — "Respiratory Swab" and "Whole Blood" both contain a space, and bridge_sql
+# would silently return "RespiratorySwab", which matches nothing in OpenELIS.
+bridge_rows() {
+    docker exec -e PGPASSWORD="$BRIDGE_DB_PASSWORD" his-db-external \
+        psql -tAX -U "$BRIDGE_DB_USER" -d "$BRIDGE_DB_NAME" -c "$1" 2>/dev/null
+}
+
 # Curl from inside the sandbox network, for services that publish no host port.
 in_sandbox() {
     docker exec bridge curl -fsS --max-time 10 "$1" 2>/dev/null

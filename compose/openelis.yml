@@ -13,8 +13,12 @@
 services:
 
   # --- Self-signed keystore/truststore used for OpenELIS-internal TLS --------
+  # Pinned by digest, not by tag: certgen publishes only `main`, a branch tag
+  # that moves. It writes the keystore every other OpenELIS container's TLS
+  # depends on, so "whatever `main` was that day" is not an acceptable input to
+  # a stack whose certificates the bridge pins by thumbprint.
   oe-certs:
-    image: itechuw/certgen:main
+    image: itechuw/certgen@sha256:e27a8194300ba73309e835a4070e9ce531687eb3ee604895de781f3061791635
     platform: linux/amd64
     container_name: openelis-certs
     restart: "no"
@@ -41,7 +45,7 @@ services:
   # Only the public certificate leaves the store. The bridge can recognise
   # OpenELIS; it holds nothing that would let it be OpenELIS.
   oe-peer-cert:
-    image: itechuw/openelis-global-2:develop
+    image: ${OE_IMAGE_REPO}/openelis-global-2:${OE_VERSION}
     platform: linux/amd64
     container_name: openelis-peer-cert
     restart: "no"
@@ -92,7 +96,7 @@ services:
     # pulled, so this adds nothing to a deployment; and its keytool is the same
     # one whose Tomcat will read the store, so a PKCS12 written here is one that
     # side can certainly open.
-    image: itechuw/openelis-global-2:develop
+    image: ${OE_IMAGE_REPO}/openelis-global-2:${OE_VERSION}
     platform: linux/amd64
     container_name: openelis-trust-bridge
     restart: "no"
@@ -129,7 +133,7 @@ services:
 
   # --- LIS application -------------------------------------------------------
   oe.openelis.org:
-    image: itechuw/openelis-global-2:develop
+    image: ${OE_IMAGE_REPO}/openelis-global-2:${OE_VERSION}
     platform: linux/amd64
     container_name: openelis-webapp
     restart: unless-stopped
@@ -170,7 +174,7 @@ services:
 
   # --- Co-resident HAPI FHIR store (OpenELIS's own working store) ------------
   fhir.openelis.org:
-    image: itechuw/openelis-global-2-fhir:develop
+    image: ${OE_IMAGE_REPO}/openelis-global-2-fhir:${OE_VERSION}
     platform: linux/amd64
     container_name: openelis-fhir
     restart: unless-stopped
@@ -203,7 +207,7 @@ services:
 
   # --- OpenELIS lab-user UI --------------------------------------------------
   frontend.openelis.org:
-    image: itechuw/openelis-global-2-frontend:develop
+    image: ${OE_IMAGE_REPO}/openelis-global-2-frontend:${OE_VERSION}
     platform: linux/amd64
     container_name: openelis-frontend
     restart: unless-stopped
@@ -214,7 +218,7 @@ services:
 
   # --- OpenELIS's own edge proxy (separate from the HIS sandbox edge) --------
   oe-proxy:
-    image: itechuw/openelis-global-2-proxy:develop
+    image: ${OE_IMAGE_REPO}/openelis-global-2-proxy:${OE_VERSION}
     platform: linux/amd64
     container_name: openelis-proxy
     restart: unless-stopped

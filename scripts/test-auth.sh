@@ -335,60 +335,24 @@ check "The audit trail and the order name the same person" \
           WHERE o.order_number='$ATTRIB_ORDER' AND e.event_type='ORDER_CREATED'
             AND e.detail LIKE '%usr_id 33%'\") == 1 ]]"
 
-# The payoff, and the reason the id matters rather than just the name. The
-# bridge used to key the FHIR Practitioner on a hash of the display name, so
-# "Dr Attribution Test" and "Dr. Attribution-Test" were two different clinicians
-# in the laboratory's own provider records — permanently, since a laboratory
-# report prints the requesting clinician. Same person, one Practitioner.
-await_requester() {  # await_requester <order-number>
-    for _ in $(seq 1 30); do
-        local r
-        r=$(docker exec bridge curl -s "http://127.0.0.1:8080/fhir/ServiceRequest/$1" \
-            | python3 -c "import sys,json;print(json.load(sys.stdin).get('requester',{}).get('reference',''))" 2>/dev/null)
-        [[ -n "$r" ]] && { echo "$r"; return; }
-        sleep 2
-    done
-}
-
-RESPELLED=$(mint --user 33 --name dr.attribution --full-name "Dr. Attribution-Test" \
-                  --groups "$LAB_ORDER_GROUP")
-RESPELLED_ORDER=$(curl -s -X POST "${API}/lab-orders" \
-    -H "Authorization: Bearer $RESPELLED" -H 'Content-Type: application/json' \
-    -d "{\"patientId\":\"11111111-1111-1111-1111-111111111111\",
-         \"testCode\":\"$(any_active_test_code)\",\"facilityCode\":\"FAC-001\"}" \
-    | json_field "['orderNumber']")
-
-FIRST_REQUESTER=$(await_requester "$ATTRIB_ORDER")
-SECOND_REQUESTER=$(await_requester "$RESPELLED_ORDER")
-
-if [[ -n "$FIRST_REQUESTER" && "$FIRST_REQUESTER" == "$SECOND_REQUESTER" ]]; then
-    ok "The same clinician spelled differently is still ONE practitioner in the lab"
-else
-    bad "The same clinician spelled differently is still ONE practitioner in the lab" \
-        "'$FIRST_REQUESTER' vs '$SECOND_REQUESTER'"
-fi
-
-check_contains "…and the practitioner carries the HIS user id, not only a name" \
-    "docker exec bridge curl -s http://127.0.0.1:8080/fhir/\${FIRST_REQUESTER}" \
-    'his-sandbox.local/user'
-
-# Recorded, not merely computable.
+# The clinician does not travel, and that is now asserted rather than assumed.
 #
-# The id IS derived from the user id, so this mapping could be recomputed — but
-# FHIR is explicit that a logical id is opaque and that "external systems need
-# not and should not attempt to determine their internal structure". Nothing
-# obliges a server to preserve ours across versioning or a resource recreated
-# after a purge. Storing the correlation means the derivation is an
-# implementation detail rather than the thing the integration rests on.
-check "The clinician's FHIR identity is recorded, not just derivable" \
-    "[[ \$(bridge_sql \"SELECT count(*) FROM bridge.practitioner_identities
-                        WHERE his_user_id = '33'\") == 1 ]]"
+# This block used to check the opposite: that two spellings of one name produced
+# ONE laboratory Practitioner, and that bridge.practitioner_identities recorded
+# which clinician it was. Both were correct while we published the ordering
+# doctor. We no longer do — the laboratory is not told who ordered, because it
+# does not act on it — so the identity table is gone (bridge/007) and there is
+# no Practitioner to collide.
+#
+# What replaces them is the guarantee that matters: attribution stays complete
+# INSIDE the HIS, and nothing about the clinician leaves it.
+check "The order records the clinician from the token" \
+    "[[ \$(his_sql \"SELECT ordering_provider_id FROM his.lab_orders
+                     WHERE order_number='$ATTRIB_ORDER'\") == 33 ]]"
 
-# The direction a hash cannot go. Given a Practitioner seen on a resource, which
-# clinician is it? Before this table that question had no answer.
-check "…and it answers the reverse question, which hashing cannot" \
-    "[[ \$(bridge_sql \"SELECT his_user_id FROM bridge.practitioner_identities
-                        WHERE fhir_practitioner_id = '\${FIRST_REQUESTER#Practitioner/}'\") == 33 ]]"
+check "…and the clinician is NOT published to the laboratory" \
+    "[[ -z \"\$(docker exec bridge curl -s http://127.0.0.1:8080/fhir/ServiceRequest/$ATTRIB_ORDER \
+        | python3 -c \"import sys,json;print(json.load(sys.stdin).get('requester',{}).get('reference',''))\" 2>/dev/null)\" ]]"
 
 # ---------------------------------------------------------------------------
 section "6 · The bridge is a service, not a person"

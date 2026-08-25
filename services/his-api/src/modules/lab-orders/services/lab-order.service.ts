@@ -36,6 +36,10 @@ export class LabOrderService {
     return this.orders.resultsForPatient(patientId);
   }
 
+  resultsForVisit(visitNumber: string): Promise<IResultSummary[]> {
+    return this.orders.resultsForVisit(visitNumber);
+  }
+
   /**
    * The payload the bridge fetches after consuming lab.order.created.
    *

@@ -62,8 +62,22 @@
 
       <h3>Place a lab order</h3>
       <form id="order-form" class="grid">
-        <label>Test
-          <select name="testCode" id="test-select" required></select>
+        <!-- A searchable box, not a dropdown.
+             The laboratory decides the menu, and it can be long — and it holds
+             several entries that differ ONLY by specimen ("HIV Viral Load
+             (Plasma)" vs "(Serum)" vs "(DBS)"). Scrolling a select to tell
+             those apart invites picking the neighbour by accident; typing
+             "HIV" and reading three labelled options does not. The doctor
+             picks the specimen variant here, which is what makes the order
+             unambiguous by the time the laboratory sees it. -->
+        <label class="combo-label">Test
+          <div class="combo" id="test-combo">
+            <input id="test-search" type="text" role="combobox" autocomplete="off"
+                   aria-expanded="false" aria-controls="test-options" aria-autocomplete="list"
+                   placeholder="Type to search the laboratory's menu…" required />
+            <input type="hidden" name="testCode" id="test-code" />
+            <ul id="test-options" class="combo-options" role="listbox" hidden></ul>
+          </div>
         </label>
         <!-- There is no "ordering provider" box any more, and its absence is
              the point. The order is attributed to whoever is signed in; the

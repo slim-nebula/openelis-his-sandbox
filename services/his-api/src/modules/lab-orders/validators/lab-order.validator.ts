@@ -6,6 +6,12 @@ export const createLabOrderSchema = z.object({
   testCode: z.string().min(1, 'testCode is required.'),
   facilityCode: z.string().min(1, 'facilityCode is required.'),
   priority: z.string().optional(),
+  // Accepted from the caller, unlike orderingProvider below. The visit is
+  // context the calling HIS knows and this service does not — the doctor is
+  // working inside an encounter, and nothing in the token says which one. It
+  // describes the encounter rather than asserting who the caller is, so it
+  // carries none of the attribution risk that moved the provider to the token.
+  visitNumber: z.string().max(64, 'visitNumber must be 64 characters or fewer.').optional(),
 });
 
 export const parseCreateLabOrder = (body: unknown) => {
@@ -37,6 +43,10 @@ export const parseCreateLabOrder = (body: unknown) => {
     testCode: value.testCode.trim(),
     facilityCode: value.facilityCode.trim(),
     priority: value.priority?.trim().toLowerCase() || 'routine',
+    // An empty or whitespace-only visit is stored as NULL rather than '': the
+    // column means "we do not know which visit", and a blank string would read
+    // as a visit whose number happens to be empty.
+    visitNumber: value.visitNumber?.trim() || undefined,
   };
 };
 

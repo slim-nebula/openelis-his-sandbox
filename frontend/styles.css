@@ -197,3 +197,53 @@ tr.retracted td.mono   { opacity: .6; }
   font-size: .78rem;
   letter-spacing: .04em;
 }
+
+/* --- searchable test picker ------------------------------------------------
+   The list overlays the form rather than pushing it down: the laboratory's menu
+   can be long, and a control that reflows the fields below it as you type makes
+   the "Create lab order" button move under the cursor. */
+.combo { position: relative; }
+.combo input[type="text"] { width: 100%; box-sizing: border-box; }
+
+.combo-options {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgb(27 31 36 / 12%);
+}
+
+.combo-options li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.combo-options li:hover,
+.combo-options li.active { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+
+/* The specimen is the whole reason this control exists — several tests differ
+   only by it — so it is shown on every row, never truncated away. */
+.combo-name { color: var(--ink); font-size: 13px; }
+.combo-meta { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+
+.combo-empty {
+  padding: 10px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+  cursor: default;
+}
+.combo-empty:hover { background: none; }

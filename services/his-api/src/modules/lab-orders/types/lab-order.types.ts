@@ -10,6 +10,12 @@ export interface ILabOrder {
   orderingProviderId: string | null;
   facilityCode: string;
   priority: string;
+  /**
+   * The encounter this order was placed during. Null for orders predating the
+   * column. Never sent to OpenELIS — a returning result is filed against it by
+   * order correlation, so it never has to survive a trip through the laboratory.
+   */
+  visitNumber: string | null;
   statusDetail: string | null;
   /** Laboratory-side progress within ACCEPTED_BY_LIS. Null until the lab says so. */
   labProgress: string | null;
@@ -32,6 +38,8 @@ export interface ICreateLabOrderInput {
   testCode: string;
   facilityCode: string;
   priority?: string | undefined;
+  /** Which visit the doctor is in. Supplied by the caller; see 009_visit_number.sql. */
+  visitNumber?: string | undefined;
 }
 
 /** Who placed the order, established from the token rather than the payload. */
@@ -43,7 +51,19 @@ export interface IOrderingClinician {
 export interface IResultSummary {
   resultId: string;
   orderId: string;
+  /** The order number the laboratory knew this by. */
+  orderNumber: string | null;
   patientId: string;
+  /**
+   * The encounter this result belongs to, so the caller can file it against the
+   * right visit rather than only the right patient. Joined from the order
+   * rather than stored on the result, so it cannot disagree with its source.
+   * Null for orders placed before the visit was recorded.
+   *
+   * The patient's file number is deliberately not carried: the calling HIS owns
+   * the patient record and resolves it from patientId.
+   */
+  visitNumber: string | null;
   testCode: string;
   testName: string;
   resultValue: string | null;

@@ -1,6 +1,6 @@
 export interface IPatient {
   patientId: string;
-  externalPatientId: string;
+  mrn: string;
   firstName: string;
   lastName: string;
   sex: string;
@@ -11,7 +11,7 @@ export interface IPatient {
 }
 
 export interface ICreatePatientInput {
-  externalPatientId?: string | undefined;
+  mrn?: string | undefined;
   firstName: string;
   lastName: string;
   sex: string;

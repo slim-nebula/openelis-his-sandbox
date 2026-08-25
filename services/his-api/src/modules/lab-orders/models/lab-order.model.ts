@@ -14,13 +14,32 @@ import type {
 } from '../types/lab-order.types.js';
 
 const ORDER_COLUMNS = `order_id, order_number, patient_id, test_code, test_name, order_status,
-                       ordering_provider, ordering_provider_id, facility_code, priority, status_detail,
-                       lab_progress, lab_progress_at, lab_accession,
+                       ordering_provider, ordering_provider_id, facility_code, priority, visit_number,
+                       status_detail, lab_progress, lab_progress_at, lab_accession,
                        created_at, updated_at`;
 
-const RESULT_COLUMNS = `result_id, order_id, patient_id, test_code, test_name, result_value,
-                        result_unit, reference_range, interpretation, result_status,
-                        released_at, openelis_result_ref, received_at`;
+/**
+ * How a result is read back.
+ *
+ * Carries the three things a receiving system needs to file it and nothing
+ * more: WHICH patient (patient_id), WHICH encounter (visit_number), and WHICH
+ * order it answers (order_number). The MRN is deliberately absent — the calling
+ * HIS owns the patient record and resolves the file number from patient_id
+ * itself, so shipping it here would only be a second copy of something the
+ * caller already holds, arriving by a longer route.
+ *
+ * visit_number and order_number are joined from the order rather than copied
+ * onto lab_results_summary. The encounter is a property of the order, and
+ * duplicating it here would create a second place for it to be wrong — a result
+ * that disagreed with its own order about which visit it came from is worse
+ * than one that has to be joined.
+ */
+const RESULT_SELECT = `SELECT r.result_id, r.order_id, r.patient_id, r.test_code, r.test_name,
+                              r.result_value, r.result_unit, r.reference_range, r.interpretation,
+                              r.result_status, r.released_at, r.openelis_result_ref, r.received_at,
+                              o.visit_number, o.order_number
+                         FROM his.lab_results_summary r
+                         JOIN his.lab_orders o ON o.order_id = r.order_id`;
 
 const toOrder = (row: Row): ILabOrder => ({
   orderId: String(row.order_id),
@@ -34,6 +53,8 @@ const toOrder = (row: Row): ILabOrder => ({
     ? null : String(row.ordering_provider_id),
   facilityCode: String(row.facility_code),
   priority: String(row.priority),
+  visitNumber: row.visit_number === null || row.visit_number === undefined
+    ? null : String(row.visit_number),
   statusDetail: row.status_detail === null ? null : String(row.status_detail),
   labProgress: row.lab_progress === null || row.lab_progress === undefined
     ? null : String(row.lab_progress),
@@ -47,7 +68,13 @@ const toOrder = (row: Row): ILabOrder => ({
 const toResult = (row: Row): IResultSummary => ({
   resultId: String(row.result_id),
   orderId: String(row.order_id),
+  orderNumber: row.order_number === null || row.order_number === undefined
+    ? null : String(row.order_number),
   patientId: String(row.patient_id),
+  // The encounter this belongs to. The caller resolves the patient's file
+  // number from patient_id in its own records.
+  visitNumber: row.visit_number === null || row.visit_number === undefined
+    ? null : String(row.visit_number),
   testCode: String(row.test_code),
   testName: String(row.test_name),
   resultValue: row.result_value === null ? null : String(row.result_value),
@@ -118,8 +145,9 @@ export class LabOrderModel {
       const inserted = await client.query(
         `INSERT INTO his.lab_orders
              (order_id, order_number, patient_id, test_code, test_name, order_status,
-              ordering_provider, ordering_provider_id, facility_code, priority, correlation_id)
-         VALUES ($1, $2, $3, $4, $5, 'CREATED', $6, $7, $8, $9, $10)
+              ordering_provider, ordering_provider_id, facility_code, priority, visit_number,
+              correlation_id)
+         VALUES ($1, $2, $3, $4, $5, 'CREATED', $6, $7, $8, $9, $10, $11)
          RETURNING ${ORDER_COLUMNS}`,
         [
           orderId,
@@ -131,6 +159,7 @@ export class LabOrderModel {
           clinician.id,
           input.facilityCode,
           input.priority ?? 'routine',
+          input.visitNumber ?? null,
           correlationId,
         ],
       );
@@ -380,17 +409,32 @@ export class LabOrderModel {
 
   async resultsForPatient(patientId: string): Promise<IResultSummary[]> {
     const rows = await query<Row>(
-      `SELECT ${RESULT_COLUMNS} FROM his.lab_results_summary
-        WHERE patient_id = $1 ORDER BY released_at DESC`,
+      `${RESULT_SELECT} WHERE r.patient_id = $1 ORDER BY r.released_at DESC`,
       [patientId],
+    );
+    return rows.map(toResult);
+  }
+
+  /**
+   * Every released result from one visit.
+   *
+   * Joined through lab_orders rather than stored on the result row. The visit is
+   * a property of the order — the encounter it was placed during — and copying
+   * it onto the result would create a second place for it to be wrong. The
+   * result already carries order_id, so the join is exact rather than a
+   * heuristic match on patient and date.
+   */
+  async resultsForVisit(visitNumber: string): Promise<IResultSummary[]> {
+    const rows = await query<Row>(
+      `${RESULT_SELECT} WHERE o.visit_number = $1 ORDER BY r.released_at DESC`,
+      [visitNumber],
     );
     return rows.map(toResult);
   }
 
   async resultsForOrder(orderId: string): Promise<IResultSummary[]> {
     const rows = await query<Row>(
-      `SELECT ${RESULT_COLUMNS} FROM his.lab_results_summary
-        WHERE order_id = $1 ORDER BY released_at DESC`,
+      `${RESULT_SELECT} WHERE r.order_id = $1 ORDER BY r.released_at DESC`,
       [orderId],
     );
     return rows.map(toResult);

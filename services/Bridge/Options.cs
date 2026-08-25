@@ -209,20 +209,19 @@ public sealed record HisOrder(
     string? SpecimenSnomed,
     string? ResultUnit,
     string OrderStatus,
-    string OrderingProvider,
-    /// <summary>
-    /// The clinician's usr_id, from the token the order was placed with. Null
-    /// only for orders placed before the HIS recorded identity.
-    /// </summary>
-    string? OrderingProviderId,
+    // No ordering clinician. The HIS records who placed every order and keeps
+    // it; the laboratory is not told, because it does not act on it. his-api may
+    // still send the fields — System.Text.Json ignores what this record omits.
     string FacilityCode,
     string Priority,
     DateTimeOffset CreatedAt,
     HisPatient Patient);
 
+// No file number here. The bridge never needed it — OpenELIS discards it, and
+// the HIS resolves it from PatientId in its own records. his-api may still send
+// the field; System.Text.Json ignores what this record does not declare.
 public sealed record HisPatient(
     Guid PatientId,
-    string ExternalPatientId,
     string FirstName,
     string LastName,
     string Sex,

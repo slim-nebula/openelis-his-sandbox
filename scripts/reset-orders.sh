@@ -122,7 +122,7 @@ his -c "TRUNCATE his.lab_order_events,
 # suites then fail at "Order accepted by the HIS" with an empty response - a
 # foreign key violation that looks nothing like its cause. Restore it.
 his -c "INSERT INTO his.patients
-            (patient_id, external_patient_id, first_name, last_name, sex, date_of_birth, phone, national_id)
+            (patient_id, mrn, first_name, last_name, sex, date_of_birth, phone, national_id)
         VALUES ('11111111-1111-1111-1111-111111111111', 'MRN-000001',
                 'Amina', 'Traore', 'F', '1988-04-17', '+22370000001', 'NID-000001')
         ON CONFLICT (patient_id) DO NOTHING;" >/dev/null
@@ -132,7 +132,7 @@ his -c "INSERT INTO his.patients
 # forever across resets and stop matching the row count anyone eyeballing the
 # table expects.
 his -c "SELECT setval('his.mrn_seq',
-            (SELECT coalesce(max(substring(external_patient_id from '^MRN-([0-9]+)\$')::bigint), 1)
+            (SELECT coalesce(max(substring(mrn from '^MRN-([0-9]+)\$')::bigint), 1)
                FROM his.patients));" >/dev/null
 
 # --- Verify ----------------------------------------------------------------

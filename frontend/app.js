@@ -180,7 +180,7 @@ async function loadPatients(query = '') {
   body.innerHTML = patients
     .map(
       (p) => `<tr>
-        <td class="mono">${p.externalPatientId}</td>
+        <td class="mono">${p.mrn}</td>
         <td>${p.firstName} ${p.lastName}</td>
         <td>${p.sex}</td>
         <td>${p.dateOfBirth}</td>
@@ -201,7 +201,7 @@ document.getElementById('patient-form').addEventListener('submit', async (event)
       method: 'POST',
       body: JSON.stringify(formOf(event.target)),
     });
-    toast(`Created ${patient.externalPatientId}`);
+    toast(`Created ${patient.mrn}`);
     event.target.reset();
     await loadPatients();
     await selectPatient(patient.patientId);
@@ -227,7 +227,7 @@ async function selectPatient(patientId) {
   document.getElementById('detail-name').textContent =
     `${selectedPatient.firstName} ${selectedPatient.lastName}`;
   document.getElementById('detail-summary').innerHTML = `
-    <dt>MRN</dt><dd>${selectedPatient.externalPatientId}</dd>
+    <dt>MRN</dt><dd>${selectedPatient.mrn}</dd>
     <dt>Patient ID</dt><dd>${selectedPatient.patientId}</dd>
     <dt>Sex / DOB</dt><dd>${selectedPatient.sex} · ${selectedPatient.dateOfBirth}</dd>
     <dt>National ID</dt><dd>${selectedPatient.nationalId ?? '—'}</dd>`;
@@ -289,11 +289,117 @@ function startPolling() {
 
 // --- ordering --------------------------------------------------------------
 
+// --- the test picker -------------------------------------------------------
+//
+// Searchable rather than a dropdown, because the menu is the laboratory's and
+// can be long, and because several entries differ only by specimen. The visible
+// input holds what the user typed; the SUBMITTED value is a hidden field that
+// only ever changes when an option is actually chosen. That split matters: a
+// half-typed "HIV" must never be submittable as a test code, so typing clears
+// the selection and the form refuses until something real is picked.
+
+let catalogue = [];
+let activeOption = -1;
+
 async function loadCatalogue() {
-  const tests = await api('/test-catalogue');
-  document.getElementById('test-select').innerHTML = tests
-    .map((t) => `<option value="${t.testCode}">${t.testName} — LOINC ${t.loincCode}</option>`)
-    .join('');
+  catalogue = await api('/test-catalogue');
+}
+
+const comboInput = () => document.getElementById('test-search');
+const comboCode = () => document.getElementById('test-code');
+const comboList = () => document.getElementById('test-options');
+
+function closeOptions() {
+  comboList().hidden = true;
+  comboInput().setAttribute('aria-expanded', 'false');
+  activeOption = -1;
+}
+
+function matchesFor(term) {
+  const q = term.trim().toLowerCase();
+  // An empty box shows the whole menu — the doctor may not know what to type,
+  // and an empty list would read as "the laboratory offers nothing".
+  const hits = q === ''
+    ? catalogue
+    : catalogue.filter((t) =>
+        t.testName.toLowerCase().includes(q) ||
+        t.testCode.toLowerCase().includes(q) ||
+        (t.loincCode ?? '').toLowerCase().includes(q) ||
+        (t.specimenType ?? '').toLowerCase().includes(q));
+  return hits.slice(0, 50);
+}
+
+function renderOptions(term) {
+  const list = comboList();
+  const hits = matchesFor(term);
+
+  if (hits.length === 0) {
+    list.innerHTML = '<li class="combo-empty">No test matches — the menu comes '
+      + 'from the laboratory, so an unlisted test is one it does not offer.</li>';
+  } else {
+    list.innerHTML = hits
+      .map((t, i) => `<li role="option" id="test-opt-${i}" data-code="${t.testCode}"
+             class="${i === activeOption ? 'active' : ''}">
+             <span class="combo-name">${t.testName}</span>
+             <span class="combo-meta">${t.specimenType ?? '—'} · LOINC ${t.loincCode}</span>
+           </li>`)
+      .join('');
+  }
+  list.hidden = false;
+  comboInput().setAttribute('aria-expanded', 'true');
+  return hits;
+}
+
+function chooseOption(test) {
+  comboInput().value = `${test.testName} (${test.specimenType ?? '—'})`;
+  comboCode().value = test.testCode;
+  comboInput().setCustomValidity('');
+  closeOptions();
+}
+
+function wireTestCombo() {
+  const input = comboInput();
+  const list = comboList();
+
+  input.addEventListener('input', () => {
+    // Typing invalidates any previous choice. Without this, editing the text
+    // after picking would submit the OLD code while showing new text.
+    comboCode().value = '';
+    input.setCustomValidity('Choose a test from the list.');
+    activeOption = -1;
+    renderOptions(input.value);
+  });
+
+  input.addEventListener('focus', () => renderOptions(input.value));
+
+  input.addEventListener('keydown', (event) => {
+    const hits = matchesFor(input.value);
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (list.hidden) renderOptions(input.value);
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      activeOption = (activeOption + step + hits.length) % Math.max(hits.length, 1);
+      renderOptions(input.value);
+    } else if (event.key === 'Enter' && !list.hidden && activeOption >= 0 && hits[activeOption]) {
+      event.preventDefault();
+      chooseOption(hits[activeOption]);
+    } else if (event.key === 'Escape') {
+      closeOptions();
+    }
+  });
+
+  list.addEventListener('mousedown', (event) => {
+    // mousedown, not click: blur would close the list before click landed.
+    const item = event.target.closest('li[data-code]');
+    if (!item) return;
+    event.preventDefault();
+    const test = catalogue.find((t) => t.testCode === item.dataset.code);
+    if (test) chooseOption(test);
+  });
+
+  document.addEventListener('click', (event) => {
+    if (!document.getElementById('test-combo').contains(event.target)) closeOptions();
+  });
 }
 
 document.getElementById('order-form').addEventListener('submit', async (event) => {
@@ -352,6 +458,7 @@ document.getElementById('signin-btn').addEventListener('click', async () => {
 
 (async function boot() {
   renderSession();
+  wireTestCombo();
   await refreshHealth();
   setInterval(refreshHealth, 15000);
 

@@ -8,7 +8,7 @@ export class PatientService {
 
   async create(input: ICreatePatientInput): Promise<IPatient> {
     const patient = await this.patients.create(input);
-    logger.info(`Patient ${patient.externalPatientId} registered (${patient.patientId})`);
+    logger.info(`Patient ${patient.mrn} registered (${patient.patientId})`);
     return patient;
   }
 

@@ -179,35 +179,30 @@ public sealed class BridgeStore(
     /// skipped rather than stored under a placeholder — a row claiming to
     /// identify a clinician it cannot is worse than no row.
     /// </summary>
-    public async Task RecordPractitionerIdentityAsync(
-        string? hisUserId, string practitionerId, string? displayName, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(hisUserId)) return;
-
-        await using var conn = await dataSource.OpenConnectionAsync(ct);
-        await conn.ExecuteAsync(new CommandDefinition("""
-            INSERT INTO bridge.practitioner_identities
-                   (his_user_id, fhir_practitioner_id, display_name)
-            VALUES (@hisUserId, @practitionerId, @displayName)
-            ON CONFLICT (his_user_id) DO UPDATE
-               SET fhir_practitioner_id = excluded.fhir_practitioner_id,
-                   display_name         = excluded.display_name,
-                   last_seen            = now();
-            """, new { hisUserId, practitionerId, displayName }, cancellationToken: ct));
-    }
-
     /// <summary>
-    /// Releases the lease once the LIS has given its verdict. Not required for
-    /// correctness — the Task leaves `requested` at the same moment, so the poll
-    /// stops matching it either way — but it keeps the table to live orders and
-    /// keeps `deliveries` meaning what it says.
+    /// Ends the lease once the laboratory has given a verdict, WITHOUT erasing
+    /// the delivery history.
+    ///
+    /// This used to DELETE the row, which quietly defeated the point of the
+    /// table. `deliveries` is the attempt counter OpenELIS does not have — the
+    /// only record of how many times an order had to be handed over before it
+    /// stuck — and deleting on success threw that away for every order that
+    /// worked, leaving the counter meaningful only for failures. It also meant a
+    /// Task re-delivered later started counting from one again, so the number
+    /// under-reported precisely when someone was investigating.
+    ///
+    /// Expiring instead releases the Task just as effectively — the claim query
+    /// tests `leased_until <= now()` — and keeps first_at, last_at and the
+    /// count. Retention sweeps the table; releasing is not the place to prune.
     /// </summary>
     public async Task ReleaseDeliveryLeaseAsync(string resourceId, CancellationToken ct)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
-        await conn.ExecuteAsync(new CommandDefinition(
-            "DELETE FROM bridge.delivery_leases WHERE resource_id = @resourceId;",
-            new { resourceId }, cancellationToken: ct));
+        await conn.ExecuteAsync(new CommandDefinition("""
+            UPDATE bridge.delivery_leases
+               SET leased_until = now() - interval '1 second'
+             WHERE resource_id = @resourceId;
+            """, new { resourceId }, cancellationToken: ct));
     }
 
     /// <summary>Total matching the same predicate, so a bundle can report a truthful total when it is truncated.</summary>

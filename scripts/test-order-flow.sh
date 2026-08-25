@@ -29,13 +29,20 @@ RESULT_TIMEOUT="${RESULT_TIMEOUT:-600}"
 # ---------------------------------------------------------------------------
 section "1 · Create a patient (frontend -> proxy -> Kong -> his-api)"
 
+# Held as variables, not literals, because section 5b asserts that these exact
+# values survive the trip into OpenELIS. A fixture that drifts from its own
+# assertion would assert nothing.
+P_SEX="M"
+P_DOB="1979-11-02"
+P_NID="NID-E2E-001"
+
 PATIENT_JSON=$(api_curl -sf -X POST "${API}/patients" \
     -H 'Content-Type: application/json' \
-    -d '{"firstName":"Ibrahim","lastName":"Diallo","sex":"M",
-         "dateOfBirth":"1979-11-02","phone":"+22370000042","nationalId":"NID-E2E-001"}')
+    -d "{\"firstName\":\"Ibrahim\",\"lastName\":\"Diallo\",\"sex\":\"$P_SEX\",
+         \"dateOfBirth\":\"$P_DOB\",\"phone\":\"+22370000042\",\"nationalId\":\"$P_NID\"}")
 
 PATIENT_ID=$(echo "$PATIENT_JSON" | json_field "['patientId']")
-MRN=$(echo "$PATIENT_JSON" | json_field "['externalPatientId']")
+MRN=$(echo "$PATIENT_JSON" | json_field "['mrn']")
 
 if [[ -n "$PATIENT_ID" ]]; then
     ok "Patient created: $MRN ($PATIENT_ID)"
@@ -169,6 +176,52 @@ if [[ "${EO_COUNT:-0}" -ge 1 ]]; then
 else
     bad "Electronic order exists in the OpenELIS database" \
         "no clinlims.electronic_order row with external_id = $ORDER_NUMBER"
+fi
+
+# ---------------------------------------------------------------------------
+section "5b · Demographics the laboratory calculates with"
+
+# Sex and date of birth are not descriptive fields here — OpenELIS selects the
+# reference range from them. ResultLimitServiceImpl.selectForPatient() branches
+# four ways: age AND sex, sex only, age only, or a default range. So a sex that
+# arrives blank, or a birth date that shifts by a day across the timezone
+# boundary, does not fail anything loudly. It silently selects a LESS specific
+# range, and every result is then reported against that range.
+#
+# That failure mode is invisible from the order flow, which is exactly why it is
+# asserted rather than trusted. Note also that OpenELIS carries the birth date as
+# a formatted STRING internally (FhirTransformServiceImpl -> PatientSearchResults
+# -> DateUtil.convertTimestampToStringDate), so it is a genuine round trip
+# through the instance's configured date format, not a direct column copy.
+#
+# Asserted across every row with this national id rather than the newest one, so
+# the check does not depend on ordering and would also catch a duplicate patient
+# that imported with different demographics.
+OE_ALL=$(oe_sql "SELECT count(*) FROM clinlims.patient WHERE national_id = '$P_NID'")
+OE_SEX=$(oe_sql "SELECT count(*) FROM clinlims.patient
+                  WHERE national_id = '$P_NID' AND gender = '$P_SEX'")
+OE_DOB=$(oe_sql "SELECT count(*) FROM clinlims.patient
+                  WHERE national_id = '$P_NID' AND birth_date::date = DATE '$P_DOB'")
+
+if [[ "${OE_ALL:-0}" -lt 1 ]]; then
+    bad "Patient reached OpenELIS" "no clinlims.patient row with national_id = $P_NID"
+elif [[ "$OE_SEX" == "$OE_ALL" ]]; then
+    ok "Sex survives the trip to OpenELIS: $P_SEX (reference-range input)"
+else
+    bad "Sex survives the trip to OpenELIS" \
+        "expected all $OE_ALL row(s) to have gender '$P_SEX'; only $OE_SEX do. \
+OpenELIS maps anything that is not MALE/FEMALE to a NULL gender, which drops the \
+patient onto an age-only reference range."
+fi
+
+if [[ "${OE_ALL:-0}" -ge 1 ]]; then
+    if [[ "$OE_DOB" == "$OE_ALL" ]]; then
+        ok "Date of birth survives the trip to OpenELIS: $P_DOB (age input)"
+    else
+        bad "Date of birth survives the trip to OpenELIS" \
+            "expected all $OE_ALL row(s) to have birth_date $P_DOB; only $OE_DOB do. \
+A one-day shift here changes the age band, which matters most for neonatal ranges."
+    fi
 fi
 
 # ---------------------------------------------------------------------------

@@ -202,15 +202,6 @@ public sealed class OrderConsumer(
             mapped.Task.Id!, mapped.ServiceRequest.Id!, mapped.Patient.Id!, mapped.Specimen.Id!,
             "requested", 0, correlationId), mapped.All, ct);
 
-        // Record which clinician this Practitioner is, rather than leaving it
-        // implicit in how the id was derived. The derivation still happens — it
-        // has to, because OpenELIS pulls these resources and parses the id — but
-        // nothing downstream should have to reverse a hash to answer "whose
-        // Practitioner is this?", and the FHIR specification is explicit that a
-        // logical id is opaque and not ours to read meaning out of.
-        await store.RecordPractitionerIdentityAsync(
-            order.OrderingProviderId, mapped.Requester.Id!, order.OrderingProvider, ct);
-
         log.LogInformation(
             "Published FHIR Task {TaskId} for order {OrderNumber} (LOINC {Loinc}); awaiting OpenELIS poll",
             mapped.Task.Id, order.OrderNumber, order.LoincCode);

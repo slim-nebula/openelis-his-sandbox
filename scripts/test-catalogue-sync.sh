@@ -64,22 +64,62 @@ section "2 · Every offered test is one OpenELIS can actually bind"
 # This is the assertion that would have caught the original defect on day one.
 LOINCS=$(bridge_sql "SELECT string_agg(quote_literal(loinc), ',') FROM bridge.test_catalogue")
 
-AMBIGUOUS_LOINC=$(oe_sql "
-    SELECT coalesce(string_agg(loinc, ', '), '')
-    FROM (SELECT t.loinc FROM clinlims.test t
-           WHERE t.loinc IN ($LOINCS) AND t.is_active = 'Y'
-           GROUP BY t.loinc HAVING count(*) > 1) d")
+# The invariant is on the PAIR, not the code.
+#
+# A LOINC may legitimately name several orderable things — 10351-5 is HIV viral
+# load on DBS, plasma and serum — and OpenELIS 3.2.2.0 resolves them by the
+# sample type the order carries. What must never happen is two ACTIVE tests
+# sharing a LOINC *and* a specimen: nothing in an order could separate those, so
+# the laboratory would be guessing which bench the specimen goes to.
+#
+# bridge_rows, not bridge_sql: specimen names contain spaces.
+PAIRS=$(bridge_rows "SELECT string_agg('(' || quote_literal(loinc) || ',' ||
+                                              quote_literal(specimen_name) || ')', ',')
+                       FROM bridge.test_catalogue")
 
-if [[ -z "$AMBIGUOUS_LOINC" ]]; then
-    ok "No offered LOINC resolves to more than one OpenELIS test"
+AMBIGUOUS_PAIR=$(oe_sql "
+    SELECT coalesce(string_agg(d.loinc || ' on ' || d.specimen, ', '), '')
+    FROM (SELECT t.loinc, tos.description AS specimen
+            FROM clinlims.test t
+            JOIN clinlims.sampletype_test stt ON stt.test_id = t.id
+            JOIN clinlims.type_of_sample tos  ON tos.id = stt.sample_type_id
+           WHERE (t.loinc, tos.description) IN ($PAIRS)
+             AND t.is_active = 'Y'
+           GROUP BY t.loinc, tos.description
+          HAVING count(DISTINCT t.id) > 1) d")
+
+if [[ -z "$AMBIGUOUS_PAIR" ]]; then
+    ok "No offered (LOINC, specimen) resolves to more than one OpenELIS test"
 else
-    bad "No offered LOINC resolves to more than one OpenELIS test" \
-        "shared: $AMBIGUOUS_LOINC — orders for these would stall at accessioning"
+    bad "No offered (LOINC, specimen) resolves to more than one OpenELIS test" \
+        "shared: $AMBIGUOUS_PAIR — orders for these could go to the wrong bench"
 fi
 
-# The other half of the same guarantee. OpenELIS does not use the Specimen we
-# send to narrow a multi-specimen test, so one specimen per test is required and
-# not merely preferred.
+# The specimen we send has to be one OpenELIS recognises, BY NAME.
+#
+# createMapsForTests narrows candidates with String.equals on the sample type
+# description, and on no match it falls back to treating the order as ambiguous
+# — silently. A renamed sample type in OpenELIS would therefore take these tests
+# out of service with no error anywhere, which is exactly the kind of failure
+# that has to be asserted rather than noticed.
+UNKNOWN_SPECIMEN=$(oe_sql "
+    SELECT coalesce(string_agg(p.loinc || ' / ' || p.specimen, ', '), '')
+    FROM (VALUES $PAIRS) AS p(loinc, specimen)
+    WHERE NOT EXISTS (SELECT 1 FROM clinlims.type_of_sample tos
+                       WHERE tos.description = p.specimen)")
+
+if [[ -z "$UNKNOWN_SPECIMEN" ]]; then
+    ok "Every offered specimen name matches an OpenELIS sample type exactly"
+else
+    bad "Every offered specimen name matches an OpenELIS sample type exactly" \
+        "unmatched: $UNKNOWN_SPECIMEN — these would silently fall back to ambiguous"
+fi
+
+# A single OpenELIS TEST must still map to exactly one sample type, even though
+# a LOINC may now span several. The two are different things: 10351-5 spans
+# three specimens because it names three separate tests, each with one specimen.
+# A single test claiming several would be ambiguous again, and this time with
+# nothing in the order able to resolve it.
 MULTI_SPECIMEN=$(oe_sql "
     SELECT coalesce(string_agg(d.description, ', '), '')
     FROM (SELECT t.description
@@ -137,8 +177,33 @@ ORPHANS=$(his_sql "SELECT count(*) FROM his.lab_orders o
                     WHERE NOT EXISTS (SELECT 1 FROM his.test_catalogue c WHERE c.test_code = o.test_code)")
 check "No historical order lost the test it refers to" "[[ '$ORPHANS' == 0 ]]"
 
+# The fixture is created HERE, by this suite, rather than assumed to exist.
+#
+# It used to be merely asserted, and that made this suite silently depend on
+# `make rejection` having run first — that is the only thing that creates DRIFT.
+# On a database with history the row was always left over from some earlier run,
+# so the dependency was invisible; on a fresh one the assertion simply failed,
+# and it failed in a way that looked like a catalogue bug rather than a missing
+# fixture. A suite that cannot be run on its own is not a test, it is a ritual.
+#
+# source = LOCAL is stated, not defaulted: the column defaults to DISCOVERED,
+# and a DISCOVERED row is one the sync owns and deactivates as soon as OpenELIS
+# stops offering it — which for a LOINC OpenELIS has never heard of is
+# immediately. Declaring it is the whole point of the assertion below.
+his_sql "INSERT INTO his.test_catalogue
+             (test_code, test_name, loinc_code, specimen_type, specimen_snomed,
+              result_unit, is_active, source)
+         VALUES ('DRIFT', 'Unmapped Drift Test', '99999-9', 'Serum', '119364003',
+                 'U/L', true, 'LOCAL')
+         ON CONFLICT (test_code) DO UPDATE SET is_active = true, source = 'LOCAL'" >/dev/null
+
+# Re-sync now that the LOCAL row exists, so the assertion tests what it claims:
+# that a sync LEAVES IT ALONE, not merely that the row is present.
+bridge_api POST /catalogue/sync >/dev/null
+his_admin POST /admin/catalogue/refresh >/dev/null
+
 check "DRIFT survives a sync as a LOCAL row" \
-    "[[ \$(his_sql \"SELECT count(*) FROM his.test_catalogue WHERE test_code='DRIFT' AND source='LOCAL'\") == 1 ]]"
+    "[[ \$(his_sql \"SELECT count(*) FROM his.test_catalogue WHERE test_code='DRIFT' AND source='LOCAL' AND is_active\") == 1 ]]"
 
 # ---------------------------------------------------------------------------
 section "4 · A suspicious sync is refused, not applied"
@@ -148,7 +213,7 @@ section "4 · A suspicious sync is refused, not applied"
 # empty the doctor's menu with one button press.
 bridge_sql "INSERT INTO bridge.test_catalogue (loinc, openelis_test_id, name, specimen_name, specimen_id)
             SELECT 'FAKE-'||g, g::text, 'Fixture '||g, 'Serum', '2' FROM generate_series(1,90) g
-            ON CONFLICT (loinc) DO NOTHING" >/dev/null
+            ON CONFLICT (loinc, specimen_id) DO NOTHING" >/dev/null
 INFLATED=$(bridge_sql "SELECT count(*) FROM bridge.test_catalogue")
 info "inflated the cached menu to $INFLATED so a real sync looks like a collapse"
 

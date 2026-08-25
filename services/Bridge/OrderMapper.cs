@@ -27,27 +27,9 @@ public static class OrderMapper
     public const string LoincSystem = "http://loinc.org";
     public const string OrderNumberSystem = "http://his-sandbox.local/lab-order";
 
-    /// <summary>Namespace for identifiers that belong to the HIS, not to the laboratory.</summary>
-    public const string HisSystem = "http://his-sandbox.local";
-
     public static MappedOrder Map(HisOrder order, string labOwnerReference)
     {
         var patientId = order.Patient.PatientId.ToString();
-        // Keyed on the clinician's usr_id, NOT on their name.
-        //
-        // This used to hash the display name, which made "Dr. Konate",
-        // "Dr. Konaté" and "dr konate" three different practitioners in the
-        // laboratory's own provider records — permanently, since a laboratory
-        // report prints the requesting clinician. A name is a spelling; an id
-        // is a person.
-        //
-        // Falling back to the name keeps orders placed before the HIS recorded
-        // identity mapping where they always did, rather than silently moving
-        // historical orders to a new practitioner.
-        var practitionerKey = string.IsNullOrWhiteSpace(order.OrderingProviderId)
-            ? $"provider|{order.OrderingProvider}"
-            : $"provider-id|{order.OrderingProviderId}";
-        var practitionerId = DeterministicGuid(practitionerKey).ToString();
 
         // The ServiceRequest id must be the ORDER NUMBER, not the order UUID.
         // OpenELIS's Incoming Orders view reads
@@ -71,19 +53,12 @@ public static class OrderMapper
         {
             Id = patientId,
             Active = true,
-            Identifier =
-            [
-                // OpenELIS looks for this exact type coding to pick up the MRN.
-                new Identifier
-                {
-                    Type = new CodeableConcept
-                    {
-                        Coding = [new Coding($"{OeSystem}/genIdType", "externalId")]
-                    },
-                    Value = order.Patient.ExternalPatientId
-                },
-                new Identifier($"{OeSystem}/pat_guid", patientId)
-            ],
+            // The HIS patient id, and the national id when there is one. The
+            // file number is deliberately NOT sent: the HIS owns the patient
+            // record and resolves it from this id, and OpenELIS discards it
+            // anyway — its inbound mapper matches identifiers by `system`, and
+            // the file number's only carrier was a type coding with no system.
+            Identifier = [new Identifier($"{OeSystem}/pat_guid", patientId)],
             Name = [new HumanName { Family = order.Patient.LastName, Given = [order.Patient.FirstName] }],
             Gender = order.Patient.Sex switch
             {
@@ -104,28 +79,23 @@ public static class OrderMapper
                     order.Patient.Phone)
             ];
 
-        var (family, given) = SplitProviderName(order.OrderingProvider);
-        var practitioner = new Practitioner
-        {
-            Id = practitionerId,
-            Active = true,
-            // The name identifier stays: it is what OpenELIS has always matched
-            // on and what a laboratory technician recognises. The HIS user id is
-            // published alongside it, under its own system, so the laboratory
-            // can tell two clinicians with the same name apart — and so a name
-            // that changes does not become a different person.
-            Identifier = string.IsNullOrWhiteSpace(order.OrderingProviderId)
-                ? [new Identifier($"{OeSystem}/provider", order.OrderingProvider)]
-                :
-                [
-                    new Identifier($"{OeSystem}/provider", order.OrderingProvider),
-                    new Identifier($"{HisSystem}/user", order.OrderingProviderId)
-                ],
-            Name = [new HumanName { Family = family, Given = [given] }]
-        };
+        // The ordering clinician is NOT published.
+        //
+        // The HIS records who ordered every test — lab_orders.ordering_provider
+        // and ordering_provider_id, taken from the verified token — and that is
+        // where accountability lives. It simply does not travel to the
+        // laboratory, because the laboratory does not act on it: the analysis is
+        // driven by the test and the specimen, and a critical value is phoned
+        // back to the HIS, which knows the doctor.
+        //
+        // Not sending it also removes any dependence on upstream defect 2, where
+        // OpenELIS reads the requester from Task.owner — the routing address —
+        // and so can never show the ordering doctor anyway.
 
-        // Represents the receiving laboratory. Published so that OpenELIS can
-        // resolve Task.owner if it ever dereferences it.
+        // Represents the receiving laboratory, and this one DOES have to exist:
+        // Task.owner is how OpenELIS finds orders addressed to it
+        // (Task.OWNER.hasAnyOfIds(remoteStoreIdentifier)), so it is a routing
+        // address, not a person.
         var labPractitioner = new Practitioner
         {
             Id = labPractitionerId,
@@ -166,7 +136,6 @@ public static class OrderMapper
                 Text = order.TestName
             },
             Subject = new ResourceReference($"Patient/{patientId}"),
-            Requester = new ResourceReference($"Practitioner/{practitionerId}"),
             Specimen = [new ResourceReference($"Specimen/{specimenId}")],
             AuthoredOn = order.CreatedAt.ToString("o")
         };
@@ -181,12 +150,11 @@ public static class OrderMapper
             For = new ResourceReference($"Patient/{patientId}"),
             BasedOn = [new ResourceReference($"ServiceRequest/{serviceRequestId}")],
             Owner = new ResourceReference(labOwnerReference),
-            Requester = new ResourceReference($"Practitioner/{practitionerId}"),
             AuthoredOn = order.CreatedAt.ToString("o"),
-            Description = $"{order.TestName} ({order.TestCode}) for {order.Patient.ExternalPatientId}"
+            Description = $"{order.TestName} ({order.TestCode}) — order {order.OrderNumber}"
         };
 
-        return new MappedOrder(task, serviceRequest, patient, specimen, practitioner, labPractitioner);
+        return new MappedOrder(task, serviceRequest, patient, specimen, labPractitioner);
     }
 
     private static RequestPriority MapPriority(string priority) => priority?.ToLowerInvariant() switch
@@ -195,18 +163,6 @@ public static class OrderMapper
         "asap" => RequestPriority.Asap,
         _ => RequestPriority.Routine
     };
-
-    private static (string Family, string Given) SplitProviderName(string provider)
-    {
-        var cleaned = provider.Replace("Dr.", "", StringComparison.OrdinalIgnoreCase).Trim();
-        var parts = cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        return parts.Length switch
-        {
-            0 => ("Unknown", "Provider"),
-            1 => (parts[0], "Provider"),
-            _ => (parts[^1], string.Join(' ', parts[..^1]))
-        };
-    }
 
     /// <summary>
     /// Name-based UUID (RFC 4122 v5, SHA-1) so that reprocessing the same order
@@ -244,9 +200,8 @@ public sealed record MappedOrder(
     ServiceRequest ServiceRequest,
     Patient Patient,
     Specimen Specimen,
-    Practitioner Requester,
     Practitioner LabOwner)
 {
     public IReadOnlyList<Resource> All =>
-        [Patient, Requester, LabOwner, Specimen, ServiceRequest, Task];
+        [Patient, LabOwner, Specimen, ServiceRequest, Task];
 }

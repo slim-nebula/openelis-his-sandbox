@@ -36,10 +36,19 @@ export class CatalogueModel {
   /**
    * Replaces the menu with what OpenELIS currently offers, in one transaction.
    *
-   * Matched on loinc_code so a test already known keeps its established
-   * test_code and the orders referencing it stay intact. A newly discovered
-   * test has no local code to preserve, so it takes its LOINC: unfamiliar to
-   * read, but stable and unambiguous, which is what a key needs to be.
+   * Matched on (loinc_code, specimen_type) so a test already known keeps its
+   * established test_code and the orders referencing it stay intact.
+   *
+   * The pair, not the code. A LOINC names what is measured, not what it is
+   * measured in, and OpenELIS's catalogue carries several tests per code —
+   * 10351-5 is HIV viral load on DBS, on plasma and on serum. Matching on the
+   * code alone made those impossible to represent, and the sync withheld all
+   * 17 of them from the doctor rather than pick one.
+   *
+   * A newly discovered row takes `<loinc>|<specimen>` as its test_code. That
+   * keeps the property the LOINC alone used to provide — derived only from what
+   * the laboratory told us, so it is identical on every sync and every
+   * installation — and restores the uniqueness the bare code no longer has.
    */
   async mirror(tests: DiscoveredTest[]): Promise<IMirrorOutcome> {
     return transaction(async (client) => {
@@ -54,16 +63,21 @@ export class CatalogueModel {
           `INSERT INTO his.test_catalogue
                (test_code, test_name, loinc_code, specimen_type, specimen_snomed,
                 result_unit, is_active, source, synced_at)
-           VALUES ($1, $2, $1, $3, NULL, $4, true, 'DISCOVERED', now())
-           ON CONFLICT (loinc_code) DO UPDATE SET
+           VALUES ($1, $3, $2, $4, NULL, $5, true, 'DISCOVERED', now())
+           ON CONFLICT (loinc_code, specimen_type) DO UPDATE SET
                test_name     = excluded.test_name,
-               specimen_type = excluded.specimen_type,
                result_unit   = coalesce(excluded.result_unit, his.test_catalogue.result_unit),
                is_active     = true,
                source        = 'DISCOVERED',
                synced_at     = now()
            WHERE his.test_catalogue.source <> 'LOCAL'`,
-          [test.loinc, test.name, test.specimenName, test.resultUnit ?? null],
+          [
+            `${test.loinc}|${test.specimenName}`,
+            test.loinc,
+            test.name,
+            test.specimenName,
+            test.resultUnit ?? null,
+          ],
         );
         upserted += result.rowCount ?? 0;
       }
@@ -71,13 +85,18 @@ export class CatalogueModel {
       // Withdrawn tests are DEACTIVATED, never deleted: historical orders
       // reference them, and an order from last year must still say what it was
       // for. LOCAL rows are left alone.
+      //
+      // Compared on the PAIR, like the upsert above. Comparing on loinc_code
+      // alone would keep a withdrawn specimen alive whenever a sibling sharing
+      // its code survived — the laboratory drops HIV-on-serum, and the doctor
+      // carries on ordering it because HIV-on-plasma is still offered.
       const deactivated = await client.query(
         `UPDATE his.test_catalogue
             SET is_active = false, synced_at = now()
           WHERE source = 'DISCOVERED'
             AND is_active
-            AND loinc_code <> ALL ($1)`,
-        [tests.map((test) => test.loinc)],
+            AND (loinc_code || '|' || coalesce(specimen_type, '')) <> ALL ($1::text[])`,
+        [tests.map((test) => `${test.loinc}|${test.specimenName}`)],
       );
 
       return {
