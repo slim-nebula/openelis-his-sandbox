@@ -128,6 +128,9 @@ rejection: ## LIS rejection round trip - catalogue drift
 corrections: ## Corrections and retractions of an already-released result
 	@bash scripts/test-corrections.sh $(ORDER)
 
+collection: ## Specimen collection - the outpatient and inpatient workflows
+	@bash scripts/test-collection.sh
+
 catalogue-test: ## Catalogue discovery - filters, guards and the HIS mirror
 	@bash scripts/test-catalogue-sync.sh
 

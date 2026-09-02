@@ -94,13 +94,34 @@
             <option value="stat">STAT</option>
           </select>
         </label>
+        <!-- This choice decides WHO observes the specimen being drawn, and so
+             where the collection time can possibly come from.
+
+             Outpatient: the patient goes to the laboratory and a technician
+             draws there. The laboratory saw it, records it, and sends it back
+             with the result. Nothing for the ward to do.
+
+             Inpatient: a nurse draws at the bedside and nobody in the
+             laboratory sees it. The order is HELD until the ward records the
+             draw — because until the tube exists there is nothing for the
+             laboratory to act on, and because the collection time cannot be
+             sent afterwards: once OpenELIS imports a Task it stops polling it. -->
+        <label>Patient class
+          <select name="patientClass" id="patient-class">
+            <option value="OUTPATIENT">Outpatient — drawn at the laboratory</option>
+            <option value="INPATIENT">Inpatient — drawn on the ward</option>
+          </select>
+        </label>
+        <p class="hint" id="class-hint">
+          The laboratory draws the specimen and reports the collection time back.
+        </p>
         <button type="submit">Create lab order</button>
       </form>
 
       <h3>Lab orders</h3>
       <table id="orders">
         <thead>
-          <tr><th>Order number</th><th>Test</th><th>Status</th><th>Created</th></tr>
+          <tr><th>Order number</th><th>Test</th><th>Status</th><th>Created</th><th>Specimen collection</th></tr>
         </thead>
         <tbody></tbody>
       </table>
@@ -108,7 +129,7 @@
       <h3>Released results <span class="hint">returned from OpenELIS via the bridge</span></h3>
       <table id="results">
         <thead>
-          <tr><th>Test</th><th>Specimen</th><th>Value</th><th>Reference range</th><th>Interpretation</th><th>Status</th><th>Released</th><th>Order number</th><th>OpenELIS record</th></tr>
+          <tr><th>Test</th><th>Specimen</th><th>Value</th><th>Reference range</th><th>Interpretation</th><th>Status</th><th>Collected</th><th>Released</th><th>Order number</th><th>OpenELIS record</th></tr>
         </thead>
         <tbody></tbody>
       </table>

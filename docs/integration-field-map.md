@@ -169,6 +169,13 @@ carries now.
 | Test | `test_catalogue.loinc_code` | `ServiceRequest.code` (LOINC) | yes |
 | **Specimen** | `test_catalogue.specimen_type` | `Specimen.type` | yes — and load-bearing, see §3 |
 | Priority | `lab_orders.priority` | `ServiceRequest.priority` | yes |
+| Collection time | `lab_orders.collected_at` | `Specimen.collection.collectedDateTime` | yes — **inpatient orders only**; read on import by `LabOrderSearchProvider.addCollection` and pre-filled onto the accessioner's screen |
+
+`Specimen.receivedTime` is deliberately **not** sent. It used to carry the order
+creation time, which told the laboratory it had received a specimen before
+anyone had drawn blood. Receipt is an event the laboratory observes in its own
+building; asserting it from here was a false statement about someone else's
+premises.
 
 Sex and date of birth are not descriptive. `ResultLimitServiceImpl.selectForPatient()`
 picks the reference range four ways from them — age and sex, sex only, age only,
@@ -196,6 +203,7 @@ Not sending the clinician retired an upstream defect outright — see §4.
 | `specimenType` | joined from `test_catalogue` — never split out of `test_code`, since single-specimen tests keep a bare code |
 | `resultValue`, `resultUnit`, `referenceRange`, `interpretation`, `resultStatus` | the LIS |
 | `interpretationCode` | the LIS — the HL7 code (`AA`/`HH`/`LL` = critical) behind the label, so severity never depends on the laboratory's wording |
+| `collectedAt`, `collectionSource` | the ward's own record first, the LIS's second — whoever observed the draw. **Never** `Observation.effective`, which OpenELIS sets to the analysis RELEASE date |
 | `previousValue`, `previousReleasedAt` | recovered from the `lab_order_events` audit trail on a correction; ISO 15189 7.4.1.8 |
 | `openelisResultRef` | mandatory back-reference to the record OpenELIS owns |
 

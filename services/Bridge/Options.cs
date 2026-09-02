@@ -214,6 +214,16 @@ public sealed record HisOrder(
     // still send the fields — System.Text.Json ignores what this record omits.
     string FacilityCode,
     string Priority,
+    // OUTPATIENT or INPATIENT. Only the inpatient path carries a collection
+    // time outward: an outpatient specimen is drawn in the laboratory, which
+    // observes that collection and reports it back to us instead.
+    string? PatientClass,
+    // When the WARD drew the specimen, for an inpatient order. Goes onto
+    // Specimen.collection.collectedDateTime, which OpenELIS reads on import
+    // (LabOrderSearchProvider.addCollection) and pre-fills onto the
+    // accessioner's screen. Null for an outpatient order, and null is correct
+    // there rather than missing.
+    DateTimeOffset? CollectedAt,
     DateTimeOffset CreatedAt,
     HisPatient Patient);
 

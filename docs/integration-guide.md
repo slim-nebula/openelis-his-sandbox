@@ -79,7 +79,8 @@ POST /lab-orders
   "testCode":     "10351-5|Plasma",  required — from the catalogue row
   "facilityCode": "FAC-001",         required
   "priority":     "routine",         optional: routine | asap | stat
-  "visitNumber":  "V-2026-0042"      optional, but send it — see step 6
+  "visitNumber":  "V-2026-0042",     optional, but send it — see step 6
+  "patientClass": "OUTPATIENT"       optional, defaults to OUTPATIENT — see 3b
 }
 ```
 
@@ -94,6 +95,63 @@ full contract is in
 
 **The ordering doctor is taken from the verified token, never from the body.**
 Ordering on behalf of another clinician is not supported, deliberately.
+
+### Step 3b — Patient class decides the collection workflow
+
+A collection time is a fact about a physical event, and **only whoever watched
+it can state it**. That single rule produces two workflows, and `patientClass`
+picks between them.
+
+#### OUTPATIENT — the laboratory observes the draw
+
+The patient walks to the laboratory and a technician draws there.
+
+```
+08:20  Doctor orders            → dispatches immediately
+09:10  Technician draws         → types it into OpenELIS
+                                  (sample_item.collection_date)
+11:30  Released                 → comes back on Specimen.collection.collected
+```
+
+Nothing for the ward to do. **Do not send a collection time** for one of these —
+you would be asserting an event you did not witness, and creating a second
+version of a fact that has one observer.
+
+#### INPATIENT — the ward observes the draw, and the order waits
+
+A nurse draws at the bedside. Nobody in the laboratory sees it, so if you do not
+capture it on the ward it is lost for good — the accessioner can only type what
+someone wrote on the tube.
+
+```
+06:00  Doctor orders            → AWAITING_COLLECTION, nothing sent
+06:15  Nurse records the draw   → POST /lab-orders/{orderNumber}/collection
+                                  { "collectedAt": "2026-09-02T06:15:00Z" }
+                                → NOW dispatches, carrying
+                                  Specimen.collection.collectedDateTime
+07:40  Lab accessions           → screen PRE-FILLED with 06:15
+11:30  Released
+```
+
+**Why the order waits.** The draw happens after the order is placed, so the
+collection time does not exist at creation — and it cannot be sent afterwards
+either: once OpenELIS imports a Task it moves the status off `requested` and
+never polls it again. Holding is also the honest position; until the tube exists
+there is nothing for the laboratory to act on.
+
+The collection time and the dispatch commit in **one transaction**. Either alone
+is a failure retrying cannot fix: a time with no dispatch strands the order with
+a nurse believing it is done, and a dispatch with no time loses the only reason
+the order was waiting.
+
+Two refusals to expect, both deliberate: recording a draw against an
+**outpatient** order is a 400, and recording the same draw **twice** is a 400
+rather than a silent re-send.
+
+**The inpatient path is optional.** If your wards will not reliably record draw
+times, order everything as `OUTPATIENT` and take whatever the laboratory
+captures. A missing collection time displayed as *"not recorded"* is honest; a
+half-used workflow that sometimes holds orders nobody comes back to is not.
 
 ## Step 4 — Publish the event
 
@@ -150,6 +208,8 @@ ranges. Show it, or your clinicians cannot tell the two apart.
   "resultStatus":        "corrected",
   "previousValue":       "13.8",
   "previousReleasedAt":  "2026-08-14T09:15:00Z",
+  "collectedAt":         "2026-08-14T06:15:00Z",
+  "collectionSource":    "ward",
   "openelisResultRef":   "…"
 }
 ```
@@ -162,6 +222,22 @@ returns; both are joined from the order row that `orderNumber` identifies. That
 is what makes filing correct even when results arrive out of order, or when a
 correction lands weeks after the encounter closed —
 [§1b](integration-field-map.md#1b-the-identity-contract).
+
+**Show `collectedAt` next to `releasedAt`, and never substitute one for the
+other.** A result released five minutes ago may be from blood drawn six hours
+ago, and release time alone cannot say so. `collectionSource` tells you which
+system observed the draw — `ward` or `laboratory`. When both are absent, display
+**"not recorded"**: a blank cannot be told apart from a rendering fault, and a
+fabricated collection time is indistinguishable from an observed one, so a
+clinician will act on it.
+
+> **Trap.** Do not read the collection time from `Observation.effective`. FHIR
+> convention says `effective` is the diagnostically relevant time and US Core
+> describes it as *"typically the time of specimen collection"* — but OpenELIS
+> sets it to `analysis.getReleasedDate()`, falling back to `getStartedDate()`
+> (`FhirTransformServiceImpl`). Following the specification here gets you the
+> release time: a plausible timestamp, hours wrong, with nothing failing. The
+> real value is on the `Specimen` the report references.
 
 Results can be **corrected after release**. Treat `resultStatus` as a state, keep
 the history, and never overwrite a previous value in place.

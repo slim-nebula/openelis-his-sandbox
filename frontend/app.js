@@ -127,6 +127,9 @@ function progressNote(order) {
 function statusBadge(status) {
   const cls = {
     CREATED: 'wait',
+    // Not a failure and not progress: the order is correct and complete, and is
+    // waiting on a physical act. The laboratory has not been told about it yet.
+    AWAITING_COLLECTION: 'wait',
     SENT_TO_LIS: 'wait',
     ACCEPTED_BY_LIS: 'wait',
     RESULT_AVAILABLE: 'ok',
@@ -176,6 +179,33 @@ function interpretationCell(r) {
   // plainly rather than inventing a severity we were not told - a made-up red is
   // as harmful as a missing one.
   return label;
+}
+
+// The ward's side of an order: has the specimen been drawn yet?
+//
+// Only an inpatient order has anything to do here. An outpatient order is drawn
+// in the laboratory, so there is no ward action and saying "—" is the truth
+// rather than an omission.
+function collectionCell(o) {
+  if (o.patientClass !== 'INPATIENT') return '<span class="muted-cell">drawn at the lab</span>';
+  if (o.collectedAt) return `<span class="collected">${fmtDate(o.collectedAt)}</span>`;
+  if (o.orderStatus !== 'AWAITING_COLLECTION') return '<span class="unrecorded">not recorded</span>';
+  return `<button class="draw-btn" data-order="${o.orderNumber}">Record draw</button>`;
+}
+
+// Collection time, and where it came from.
+//
+// A result released five minutes ago may be from blood drawn six hours ago, and
+// nothing on a released-time-only display says so (ISO 15189 7.4.1.7.a).
+//
+// "not recorded" is spelled out rather than left blank, because a blank cell
+// cannot be told apart from a rendering fault — and because the alternative,
+// quietly showing a received or released time in its place, would look exactly
+// like an observed collection time and be believed.
+function collectedCell(r) {
+  if (!r.collectedAt) return '<span class="unrecorded">not recorded</span>';
+  const from = r.collectionSource === 'ward' ? 'ward' : 'lab';
+  return `${fmtDate(r.collectedAt)} <span class="source">${from}</span>`;
 }
 
 // A clinician may have acted on the value this one replaced, and needs to know
@@ -291,10 +321,11 @@ async function refreshPatientData() {
             <td>${o.testName}</td>
             <td>${statusBadge(o.orderStatus)}${progressNote(o)}</td>
             <td>${fmtDate(o.createdAt)}</td>
+            <td>${collectionCell(o)}</td>
           </tr>`
         )
         .join('')
-    : '<tr><td colspan="4" class="empty">No orders yet.</td></tr>';
+    : '<tr><td colspan="5" class="empty">No orders yet.</td></tr>';
 
   const resultsBody = document.querySelector('#results tbody');
   resultsBody.innerHTML = results.length
@@ -323,13 +354,14 @@ async function refreshPatientData() {
             }</td>
             <td>${isRetracted(r) ? '—' : interpretationCell(r)}</td>
             <td>${resultStatusBadge(r.resultStatus)}</td>
+            <td class="collected">${collectedCell(r)}</td>
             <td>${fmtDate(r.releasedAt)}</td>
             <td class="mono">${r.orderNumber ?? '—'}</td>
             <td class="mono">${r.openelisResultRef}</td>
           </tr>`
         )
         .join('')
-    : '<tr><td colspan="9" class="empty">Nothing released yet. Validate and release the order in OpenELIS.</td></tr>';
+    : '<tr><td colspan="10" class="empty">Nothing released yet. Validate and release the order in OpenELIS.</td></tr>';
 }
 
 // Orders move through the LIS asynchronously, so the view refreshes itself
@@ -463,7 +495,50 @@ document.getElementById('order-form').addEventListener('submit', async (event) =
       method: 'POST',
       body: JSON.stringify({ ...formOf(event.target), patientId: selectedPatient.patientId }),
     });
-    toast(`Order ${order.orderNumber} created — sending to OpenELIS`);
+    toast(
+      order.orderStatus === 'AWAITING_COLLECTION'
+        // Say what is NOT happening. A nurse who assumes the laboratory already
+        // has this order will not go and draw the blood.
+        ? `Order ${order.orderNumber} created — waiting for the specimen to be drawn. `
+          + 'It reaches the laboratory when the draw is recorded.'
+        : `Order ${order.orderNumber} created — sending to OpenELIS`,
+    );
+    await refreshPatientData();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+// Tell the doctor what their choice means before they submit, not after.
+document.getElementById('patient-class').addEventListener('change', (event) => {
+  document.getElementById('class-hint').textContent =
+    event.target.value === 'INPATIENT'
+      ? 'The order waits on the ward until a nurse records the draw, then goes to the laboratory carrying that time.'
+      : 'The laboratory draws the specimen and reports the collection time back.';
+});
+
+// Recording the bedside draw. Delegated, because the rows are re-rendered by
+// the poll every five seconds and a handler bound to a row would not survive it.
+document.getElementById('orders').addEventListener('click', async (event) => {
+  const button = event.target.closest('.draw-btn');
+  if (!button) return;
+
+  // Defaulted to now for convenience, but shown for confirmation and editable:
+  // a nurse records a round after finishing it, and "now" would quietly be
+  // minutes or hours wrong on every tube but the last.
+  const suggested = new Date();
+  const entered = window.prompt(
+    'When was the specimen drawn?\n\nISO-8601, e.g. ' + suggested.toISOString(),
+    suggested.toISOString(),
+  );
+  if (!entered) return;
+
+  try {
+    const order = await api(`/lab-orders/${button.dataset.order}/collection`, {
+      method: 'POST',
+      body: JSON.stringify({ collectedAt: entered.trim() }),
+    });
+    toast(`Draw recorded — order ${order.orderNumber} released to the laboratory`);
     await refreshPatientData();
   } catch (err) {
     toast(err.message, true);

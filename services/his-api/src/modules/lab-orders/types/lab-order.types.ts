@@ -16,6 +16,20 @@ export interface ILabOrder {
    * order correlation, so it never has to survive a trip through the laboratory.
    */
   visitNumber: string | null;
+  /**
+   * OUTPATIENT — the patient goes to the laboratory and a technician draws the
+   * blood there, so the laboratory observes the collection and reports it back.
+   *
+   * INPATIENT — a nurse draws at the bedside and nobody in the laboratory sees
+   * it. The order is held at AWAITING_COLLECTION until the ward records the
+   * draw, then dispatches carrying the collection time.
+   */
+  patientClass: string;
+  /**
+   * When the ward drew the specimen. Inpatient orders only, and null until the
+   * nurse records it — which is also what releases the order to the laboratory.
+   */
+  collectedAt: string | null;
   statusDetail: string | null;
   /** Laboratory-side progress within ACCEPTED_BY_LIS. Null until the lab says so. */
   labProgress: string | null;
@@ -40,6 +54,22 @@ export interface ICreateLabOrderInput {
   priority?: string | undefined;
   /** Which visit the doctor is in. Supplied by the caller; see 009_visit_number.sql. */
   visitNumber?: string | undefined;
+  /**
+   * OUTPATIENT (the default) or INPATIENT. Context the calling HIS knows and we
+   * do not — like the visit, and unlike the ordering clinician, which is an
+   * identity claim the caller must not make.
+   *
+   * It decides the workflow: an outpatient order dispatches immediately and the
+   * laboratory reports the collection time back; an inpatient order waits for
+   * the ward to record the draw and carries that time outward.
+   */
+  patientClass?: string | undefined;
+}
+
+/** Recording a bedside draw. See 013_specimen_collection.sql. */
+export interface IRecordCollectionInput {
+  /** ISO-8601. Must not be in the future; a draw is a thing that has happened. */
+  collectedAt: string;
 }
 
 /** Who placed the order, established from the token rather than the payload. */
@@ -101,6 +131,22 @@ export interface IResultSummary {
    */
   previousValue: string | null;
   previousReleasedAt: string | null;
+  /**
+   * When the specimen was drawn — the time a clinician needs in order to judge
+   * whether this value still describes the patient. `releasedAt` alone cannot
+   * answer that: a result signed out five minutes ago may be from blood taken
+   * six hours ago (ISO 15189:2022 7.4.1.7.a).
+   *
+   * Whoever observed the draw is the source, so this coalesces the ward's
+   * record first and the laboratory's second — we never depend on a round trip
+   * for a fact we already hold. Null when nobody wrote it down, and it MUST be
+   * displayed as "not recorded" rather than falling back to a received or
+   * released time: an invented collection time is indistinguishable from an
+   * observed one, and a clinician will act on it.
+   */
+  collectedAt: string | null;
+  /** 'ward' | 'laboratory' | null — which system observed the draw. */
+  collectionSource: string | null;
   resultStatus: string;
   releasedAt: string | null;
   openelisResultRef: string;
@@ -127,6 +173,15 @@ export interface IBridgeOrderPayload {
   orderingProviderId: string | null;
   facilityCode: string;
   priority: string;
+  /** OUTPATIENT or INPATIENT — see 013_specimen_collection.sql. */
+  patientClass: string;
+  /**
+   * The bedside draw time, for an inpatient order. The bridge puts it on
+   * Specimen.collection.collectedDateTime, which OpenELIS reads on import and
+   * pre-fills onto the accessioner's screen. Null for an outpatient order: the
+   * laboratory observes that draw and reports it back instead.
+   */
+  collectedAt: string | null;
   createdAt: string | null;
   patient: unknown;
 }
@@ -144,6 +199,18 @@ export interface IReleasedResultMessage {
   interpretation?: string | null;
   /** HL7 v3 ObservationInterpretation code; see IResultSummary. */
   interpretationCode?: string | null;
+  /**
+   * Collection time as the LABORATORY observed it, read from
+   * Specimen.collection.collected on the Specimen the DiagnosticReport
+   * references.
+   *
+   * Never from Observation.effective: OpenELIS sets that to
+   * analysis.getReleasedDate() (FhirTransformServiceImpl), so a reader
+   * following the FHIR convention that `effective` means collection time gets
+   * the release time instead — a plausible timestamp, hours wrong, with
+   * nothing failing.
+   */
+  labCollectedAt?: string | null;
   resultStatus: string;
   releasedAt: string;
 }

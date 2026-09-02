@@ -1,5 +1,9 @@
 import type { Request, Response } from 'express';
-import { parseCreateLabOrder, parseReleasedResult } from '../validators/lab-order.validator.js';
+import {
+  parseCreateLabOrder,
+  parseRecordCollection,
+  parseReleasedResult,
+} from '../validators/lab-order.validator.js';
 import type { LabOrderService } from '../services/lab-order.service.js';
 import type { IReleasedResultMessage } from '../types/lab-order.types.js';
 
@@ -27,6 +31,22 @@ export class LabOrderController {
       parseCreateLabOrder(req.body), clinician, req.correlationId,
     );
     res.status(201).location(`/lab-orders/${order.orderId}`).json(order);
+  };
+
+  /**
+   * The nurse's action: the specimen has been drawn.
+   *
+   * This is what dispatches an inpatient order. Until it happens the laboratory
+   * has heard nothing, because there was nothing yet for it to act on — the
+   * order and the collection time leave together, in one transaction.
+   */
+  recordCollection = async (req: Request, res: Response): Promise<void> => {
+    const order = await this.orders.recordCollection(
+      req.params.orderNumber as string,
+      parseRecordCollection(req.body),
+      req.correlationId,
+    );
+    res.json(order);
   };
 
   getById = async (req: Request, res: Response): Promise<void> => {

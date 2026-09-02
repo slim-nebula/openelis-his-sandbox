@@ -72,10 +72,27 @@ export class LabOrderService {
         ? null : String(row.ordering_provider_id),
       facilityCode: String(row.facility_code),
       priority: String(row.priority),
+      patientClass: String(row.patient_class ?? 'OUTPATIENT'),
+      collectedAt: toIso(row.collected_at),
       createdAt: toIso(row.created_at),
       patient,
 
     };
+  }
+
+  /**
+   * Records a bedside draw and releases the order the ward was holding.
+   *
+   * Only meaningful for an inpatient order: an outpatient specimen is drawn in
+   * the laboratory, which observes the collection and reports it back, so
+   * recording it here would manufacture a second version of one fact.
+   */
+  recordCollection(
+    orderNumber: string,
+    collectedAt: Date,
+    correlationId: string,
+  ): Promise<ILabOrder> {
+    return this.orders.recordCollection(orderNumber, collectedAt, correlationId);
   }
 
   storeResult(message: IReleasedResultMessage): Promise<boolean> {

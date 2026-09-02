@@ -15,6 +15,7 @@ import type {
 
 const ORDER_COLUMNS = `order_id, order_number, patient_id, test_code, test_name, order_status,
                        ordering_provider, ordering_provider_id, facility_code, priority, visit_number,
+                       patient_class, collected_at,
                        status_detail, lab_progress, lab_progress_at, lab_accession,
                        created_at, updated_at`;
 
@@ -39,6 +40,16 @@ const RESULT_SELECT = `SELECT r.result_id, r.order_id, r.patient_id, r.test_code
                               r.interpretation_code,
                               r.result_status, r.released_at, r.openelis_result_ref, r.received_at,
                               o.visit_number, o.order_number,
+                              -- Whoever observed the draw is the source. The ward's own
+                              -- record comes first: we do not depend on a round trip for a
+                              -- fact we already hold. The laboratory's is the fallback, and
+                              -- for an outpatient it is the only one there is.
+                              COALESCE(o.collected_at, r.lab_collected_at) AS collected_at,
+                              CASE
+                                  WHEN o.collected_at    IS NOT NULL THEN 'ward'
+                                  WHEN r.lab_collected_at IS NOT NULL THEN 'laboratory'
+                                  ELSE NULL
+                              END AS collection_source,
                               c.specimen_type,
                               prev.prev_value, prev.prev_released_at
                          FROM his.lab_results_summary r
@@ -81,6 +92,8 @@ const toOrder = (row: Row): ILabOrder => ({
   priority: String(row.priority),
   visitNumber: row.visit_number === null || row.visit_number === undefined
     ? null : String(row.visit_number),
+  patientClass: String(row.patient_class ?? 'OUTPATIENT'),
+  collectedAt: toIso(row.collected_at),
   statusDetail: row.status_detail === null ? null : String(row.status_detail),
   labProgress: row.lab_progress === null || row.lab_progress === undefined
     ? null : String(row.lab_progress),
@@ -119,6 +132,9 @@ const toResult = (row: Row): IResultSummary => ({
     ? null : String(row.prev_value),
   previousReleasedAt: row.prev_released_at === null || row.prev_released_at === undefined
     ? null : String(row.prev_released_at),
+  collectedAt: toIso(row.collected_at),
+  collectionSource: row.collection_source === null || row.collection_source === undefined
+    ? null : String(row.collection_source),
   resultStatus: String(row.result_status),
   releasedAt: toIso(row.released_at),
   openelisResultRef: String(row.openelis_result_ref),
@@ -137,6 +153,48 @@ const appendEvent = async (
     `INSERT INTO his.lab_order_events (order_id, event_type, detail, correlation_id, payload)
      VALUES ($1, $2, $3, $4, $5::jsonb)`,
     [orderId, type, detail, correlationId, payloadJson],
+  );
+};
+
+/**
+ * Writes the outbox row that dispatches an order to the laboratory.
+ *
+ * Shared by creation and by recording a bedside draw, because they are the same
+ * act arriving by two routes: an outpatient order dispatches the moment it is
+ * placed, an inpatient one when the specimen actually exists. Keeping one
+ * function means the payload cannot drift between them.
+ *
+ * Nothing here touches Kafka. The outbox relay publishes, and that separation is
+ * the point: one commit decides whether the order and its event both exist.
+ */
+const queueDispatch = async (
+  client: PoolClient,
+  o: {
+    orderId: string;
+    orderNumber: string;
+    patientId: string;
+    testCode: string;
+    loincCode: string;
+    correlationId: string;
+  },
+): Promise<void> => {
+  const payload = JSON.stringify({
+    eventId: randomUUID(),
+    eventType: 'lab.order.created',
+    occurredAt: new Date().toISOString(),
+    correlationId: o.correlationId,
+    orderId: o.orderId,
+    orderNumber: o.orderNumber,
+    patientId: o.patientId,
+    testCode: o.testCode,
+    loincCode: o.loincCode,
+  });
+
+  await client.query(
+    `INSERT INTO his.outbox
+         (event_id, aggregate_type, aggregate_id, topic, partition_key, payload, correlation_id)
+     VALUES ($1, 'lab_order', $2, $3, $4, $5::jsonb, $6)`,
+    [randomUUID(), o.orderId, config.kafka.topics.orderCreated, o.orderId, payload, o.correlationId],
   );
 };
 
@@ -180,12 +238,27 @@ export class LabOrderModel {
       const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
       const orderNumber = `LAB-${stamp}-${orderId.replace(/-/g, '').slice(0, 8).toUpperCase()}`;
 
+      // An inpatient specimen is drawn at the bedside AFTER the order is placed,
+      // so its collection time does not exist yet. It cannot be sent later
+      // either: once OpenELIS imports a Task it moves the status off
+      // `requested` and never polls it again. So the order waits here, no
+      // outbox row is written, and recording the draw is what dispatches it.
+      //
+      // Holding it is also the honest thing to do — until the tube exists there
+      // is nothing for the laboratory to act on.
+      const patientClass = (input.patientClass ?? 'OUTPATIENT').toUpperCase();
+      if (patientClass !== 'OUTPATIENT' && patientClass !== 'INPATIENT') {
+        throw new DomainError(`patientClass must be OUTPATIENT or INPATIENT, not '${input.patientClass}'.`);
+      }
+      const awaitingCollection = patientClass === 'INPATIENT';
+      const initialStatus = awaitingCollection ? 'AWAITING_COLLECTION' : 'CREATED';
+
       const inserted = await client.query(
         `INSERT INTO his.lab_orders
              (order_id, order_number, patient_id, test_code, test_name, order_status,
               ordering_provider, ordering_provider_id, facility_code, priority, visit_number,
-              correlation_id)
-         VALUES ($1, $2, $3, $4, $5, 'CREATED', $6, $7, $8, $9, $10, $11)
+              patient_class, correlation_id)
+         VALUES ($1, $2, $3, $4, $5, $12, $6, $7, $8, $9, $10, $13, $11)
          RETURNING ${ORDER_COLUMNS}`,
         [
           orderId,
@@ -199,6 +272,8 @@ export class LabOrderModel {
           input.priority ?? 'routine',
           input.visitNumber ?? null,
           correlationId,
+          initialStatus,
+          patientClass,
         ],
       );
 
@@ -214,29 +289,106 @@ export class LabOrderModel {
         null,
       );
 
-      const payload = JSON.stringify({
-        eventId: randomUUID(),
-        eventType: 'lab.order.created',
-        occurredAt: new Date().toISOString(),
-        correlationId,
-        orderId,
-        orderNumber,
-        patientId: input.patientId,
-        testCode: String(testRow.test_code),
-        loincCode: String(testRow.loinc_code),
-      });
-
-      await client.query(
-        `INSERT INTO his.outbox
-             (event_id, aggregate_type, aggregate_id, topic, partition_key, payload, correlation_id)
-         VALUES ($1, 'lab_order', $2, $3, $4, $5::jsonb, $6)`,
-        [randomUUID(), orderId, config.kafka.topics.orderCreated, orderId, payload, correlationId],
-      );
+      if (!awaitingCollection) {
+        await queueDispatch(client, {
+          orderId,
+          orderNumber,
+          patientId: input.patientId,
+          testCode: String(testRow.test_code),
+          loincCode: String(testRow.loinc_code),
+          correlationId,
+        });
+      }
 
       logger.info(
-        `Order ${orderNumber} created for patient ${input.patientId} (correlation ${correlationId})`,
+        awaitingCollection
+          ? `Order ${orderNumber} created for patient ${input.patientId}, held for bedside collection (correlation ${correlationId})`
+          : `Order ${orderNumber} created for patient ${input.patientId} (correlation ${correlationId})`,
       );
       return toOrder(inserted.rows[0] as Row);
+    });
+  }
+
+  /**
+   * Records a bedside draw, and dispatches the order it was waiting on.
+   *
+   * The two happen in ONE transaction on purpose. A collection time written
+   * without an outbox row leaves an order the laboratory never hears about,
+   * with a nurse believing the job is done; an outbox row without the time
+   * sends the laboratory an order whose whole reason for waiting has been lost.
+   * Neither is recoverable by retrying, so neither may exist alone.
+   */
+  async recordCollection(
+    orderNumber: string,
+    collectedAt: Date,
+    correlationId: string,
+  ): Promise<ILabOrder> {
+    return transaction(async (client) => {
+      // FOR UPDATE: two nurses on the same tube would otherwise both pass the
+      // status check and both queue a dispatch, sending the order twice.
+      const found = await client.query(
+        `SELECT order_id, order_status, patient_class, patient_id, test_code, collected_at
+           FROM his.lab_orders WHERE order_number = $1 FOR UPDATE`,
+        [orderNumber],
+      );
+      if (found.rowCount === 0) throw new DomainError(`Unknown order '${orderNumber}'.`);
+      const order = found.rows[0] as Row;
+
+      if (String(order.patient_class) !== 'INPATIENT') {
+        throw new DomainError(
+          `Order ${orderNumber} is an outpatient order. The laboratory observes and reports `
+          + 'that collection itself, so recording it here would create a second version of one fact.',
+        );
+      }
+      if (String(order.order_status) !== 'AWAITING_COLLECTION') {
+        throw new DomainError(
+          `Order ${orderNumber} is ${String(order.order_status)}, not AWAITING_COLLECTION. `
+          + 'Its collection has already been recorded.',
+        );
+      }
+      // A draw is something that has happened. A future timestamp is a typo or a
+      // clock problem, and it would make the specimen look fresher than it is.
+      if (collectedAt.getTime() > Date.now() + 60_000) {
+        throw new DomainError('collectedAt is in the future.');
+      }
+
+      const testRow = await client.query(
+        'SELECT test_code, loinc_code FROM his.test_catalogue WHERE test_code = $1',
+        [String(order.test_code)],
+      );
+      if (testRow.rowCount === 0) {
+        throw new DomainError(`Test '${String(order.test_code)}' is no longer in the catalogue.`);
+      }
+
+      const orderId = String(order.order_id);
+      const updated = await client.query(
+        `UPDATE his.lab_orders
+            SET collected_at = $1, order_status = 'CREATED', updated_at = now()
+          WHERE order_id = $2
+        RETURNING ${ORDER_COLUMNS}`,
+        [collectedAt.toISOString(), orderId],
+      );
+
+      await appendEvent(
+        client,
+        orderId,
+        'SPECIMEN_COLLECTED',
+        `Specimen drawn at ${collectedAt.toISOString()}; order released to the laboratory`,
+        correlationId,
+        null,
+      );
+
+      await queueDispatch(client, {
+        orderId,
+        orderNumber,
+        patientId: String(order.patient_id),
+        testCode: String((testRow.rows[0] as Row).test_code),
+        loincCode: String((testRow.rows[0] as Row).loinc_code),
+        correlationId,
+      });
+
+      logger.info(`Order ${orderNumber} collected at ${collectedAt.toISOString()}; dispatching`);
+      return toOrder(updated.rows[0] as Row);
     });
   }
 
@@ -262,6 +414,9 @@ export class LabOrderModel {
               c.loinc_code, c.specimen_type, c.specimen_snomed, c.result_unit,
               o.order_status, o.ordering_provider, o.ordering_provider_id,
               o.facility_code, o.priority,
+              -- What the ward recorded, for an inpatient draw. Null for an
+              -- outpatient, whose collection the laboratory observes itself.
+              o.patient_class, o.collected_at,
               o.created_at, o.patient_id
          FROM his.lab_orders o
          JOIN his.test_catalogue c ON c.test_code = o.test_code
@@ -389,8 +544,8 @@ export class LabOrderModel {
         `INSERT INTO his.lab_results_summary
              (result_id, order_id, patient_id, test_code, test_name, result_value,
               result_unit, reference_range, interpretation, interpretation_code,
-              result_status, released_at, openelis_result_ref)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+              result_status, released_at, openelis_result_ref, lab_collected_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          ON CONFLICT (openelis_result_ref) DO UPDATE SET
              result_value        = excluded.result_value,
              result_unit         = excluded.result_unit,
@@ -399,6 +554,10 @@ export class LabOrderModel {
              interpretation_code = excluded.interpretation_code,
              result_status       = excluded.result_status,
              released_at         = excluded.released_at,
+             -- A correction does not re-draw the blood. Keep the collection time
+             -- we already have if the corrected report omits it.
+             lab_collected_at    = COALESCE(excluded.lab_collected_at,
+                                            his.lab_results_summary.lab_collected_at),
              received_at         = now()`,
         [
           randomUUID(),
@@ -414,6 +573,7 @@ export class LabOrderModel {
           message.resultStatus,
           message.releasedAt,
           message.openelisResultRef,
+          message.labCollectedAt ?? null,
         ],
       );
 

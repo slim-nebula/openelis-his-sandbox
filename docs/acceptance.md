@@ -6,6 +6,7 @@ Every criterion in the brief, mapped to the automated check that proves it.
 make smoke       platform and wiring
 make auth        tokens, revocation, degraded mode, the audit trail
 make catalogue-test  the test menu, and the specimen abbreviations
+make collection  the outpatient and inpatient collection workflows
 make negative    outages: broker, Redis, API, OpenELIS
 make rejection   refusal, drift, and a withdrawn specimen
 make e2e         order flow into OpenELIS  (pauses for the manual lab step)
@@ -17,7 +18,7 @@ is added, and a number in a document that nobody updates is worse than no number
 — run the suite and read the total it prints.
 
 Run against the real stack: **OpenELIS Global 2 3.2.2.0**, against its own
-external database. Most recent full unattended run: **196 passed, 0 failed**.
+external database. Most recent full unattended run: **216 passed, 0 failed**.
 The patched build was verified at 195, suite for suite, before the results
 display work added a check.
 

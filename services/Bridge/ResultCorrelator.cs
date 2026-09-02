@@ -243,6 +243,9 @@ public sealed class ResultCorrelator(
             resultUnit = unit,
             referenceRange = range,
             interpretation,
+            // When the LABORATORY says the specimen was drawn. For an outpatient
+            // this is the only record of it that exists anywhere.
+            labCollectedAt = await CollectedAtAsync(store, report, ct),
             // The code travels beside the label so the receiving system can
             // distinguish critically abnormal (AA/HH/LL) from merely abnormal
             // (A/H/L) without pattern-matching on the laboratory's wording.
@@ -256,6 +259,58 @@ public sealed class ResultCorrelator(
 
         log.LogInformation("Forwarded released result {Ref} for order {OrderNumber}: {Value} {Unit}",
             resultRef, tracked.OrderNumber, value, unit);
+    }
+
+    /// <summary>
+    /// When the specimen was drawn, as the laboratory recorded it.
+    ///
+    /// NOT from Observation.effective. FHIR convention says `effective` is the
+    /// diagnostically relevant time and US Core describes it as "typically the
+    /// time of specimen collection" - but OpenELIS sets it to
+    /// analysis.getReleasedDate(), falling back to getStartedDate()
+    /// (FhirTransformServiceImpl). A reader following the specification would
+    /// get the release time: a plausible timestamp, hours wrong, with nothing
+    /// failing. The real value is on the Specimen the report references
+    /// (DiagnosticReport.addSpecimen), and the Observation names it too.
+    ///
+    /// Null-safe on purpose. OpenELIS calls specimen.setCollection()
+    /// unconditionally - unlike setReceivedTime(), which it guards - so a
+    /// specimen with no collection date still arrives carrying a `collection`
+    /// element built around a null. Testing for the element is not enough;
+    /// the DATE has to be there.
+    /// </summary>
+    private static async Task<string?> CollectedAtAsync(
+        BridgeStore store, DiagnosticReport report, CancellationToken ct)
+    {
+        var specimenIds = report.Specimen.Select(IdOf)
+            .Concat(await ObservationSpecimenIdsAsync(store, report, ct))
+            .Where(x => x is not null)
+            .Distinct();
+
+        foreach (var id in specimenIds)
+        {
+            var specimen = await store.GetReceivedAsync<Specimen>("Specimen", id!, ct);
+            if (specimen?.Collection?.Collected is FhirDateTime collected &&
+                !string.IsNullOrWhiteSpace(collected.Value))
+            {
+                return collected.Value;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The Observation names the same Specimen; a useful second route.</summary>
+    private static async Task<IEnumerable<string?>> ObservationSpecimenIdsAsync(
+        BridgeStore store, DiagnosticReport report, CancellationToken ct)
+    {
+        var ids = new List<string?>();
+        foreach (var id in report.Result.Select(IdOf).Where(x => x is not null))
+        {
+            var observation = await store.GetReceivedAsync<Observation>("Observation", id!, ct);
+            if (observation?.Specimen is not null) ids.Add(IdOf(observation.Specimen));
+        }
+        return ids;
     }
 
     private static async Task<Observation?> FirstObservationAsync(

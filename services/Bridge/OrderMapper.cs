@@ -121,8 +121,16 @@ public static class OrderMapper
             Id = specimenId,
             Status = Specimen.SpecimenStatus.Available,
             Subject = new ResourceReference($"Patient/{patientId}"),
-            // FhirDateTime-backed: the POCO property is a string, not a DateTime.
-            ReceivedTime = order.CreatedAt.ToString("o"),
+            // ReceivedTime is NOT set.
+            //
+            // It used to carry order.CreatedAt, which told the laboratory it had
+            // received a specimen at the moment the doctor clicked "order" —
+            // before anyone had drawn blood. Receipt is an event the LABORATORY
+            // observes, in its own building, and asserting it from here was a
+            // false statement in a clinical record about someone else's premises.
+            //
+            // The collection time below is different: for an inpatient the ward
+            // genuinely observed the draw, and is the only party that could.
             // THE CODING OPENELIS ACTUALLY READS comes first.
             //
             // LabOrderSearchProvider walks Specimen.type.coding looking for one
@@ -142,7 +150,8 @@ public static class OrderMapper
             {
                 Coding = BuildSpecimenCodings(order, specimenAbbreviation),
                 Text = order.SpecimenType
-            }
+            },
+            Collection = BuildCollection(order)
         };
 
         var serviceRequest = new ServiceRequest
@@ -211,6 +220,29 @@ public static class OrderMapper
         }
 
         return codings;
+    }
+
+    /// <summary>
+    /// The bedside draw, when the ward observed one.
+    ///
+    /// OpenELIS reads this on import - LabOrderSearchProvider.addCollection
+    /// takes Specimen.collection.collectedDateTime through to the accessioner's
+    /// screen, pre-filled, and on to sample_item.collection_date. Unlike
+    /// ServiceRequest.encounter, which is dropped, this one genuinely survives.
+    ///
+    /// Returns null rather than an empty Collection when there is no time. An
+    /// outpatient specimen is drawn in the laboratory and its collection is the
+    /// laboratory's to record; sending an empty element would suggest we had
+    /// something to say about it and lost it.
+    /// </summary>
+    private static Specimen.CollectionComponent? BuildCollection(HisOrder order)
+    {
+        if (order.CollectedAt is not { } collected) return null;
+
+        return new Specimen.CollectionComponent
+        {
+            Collected = new FhirDateTime(collected)
+        };
     }
 
     private static RequestPriority MapPriority(string priority) => priority?.ToLowerInvariant() switch

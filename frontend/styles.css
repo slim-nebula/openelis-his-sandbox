@@ -171,6 +171,30 @@ tbody tr:last-child td { border-bottom: 0; }
   letter-spacing: .02em;
 }
 
+/* Collection time. Quieter than the result, louder than nothing - the doctor
+   needs it to judge whether the value still describes the patient. */
+.collected { white-space: nowrap; }
+.collected .source,
+.muted-cell { color: var(--muted); font-size: 12px; }
+
+/* "not recorded" is a real answer and is styled as one. Left blank it would be
+   indistinguishable from a rendering fault, and a reader would assume the
+   system knew and had failed to say. */
+.unrecorded { color: var(--muted); font-style: italic; font-size: 12px; }
+
+/* The ward's one action on an order. Deliberately a button rather than a link:
+   it changes clinical state and releases the order to the laboratory. */
+.draw-btn {
+  font-size: 12px;
+  padding: 3px 9px;
+  border: 1px solid var(--accent, #2563eb);
+  background: transparent;
+  color: var(--accent, #2563eb);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.draw-btn:hover { background: var(--accent, #2563eb); color: #fff; }
+
 /* Deliberately attached under the value it replaced, not in its own column:
    the correction is only meaningful next to the number it changes. */
 .superseded {

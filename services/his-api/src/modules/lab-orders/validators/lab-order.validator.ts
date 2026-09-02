@@ -12,7 +12,37 @@ export const createLabOrderSchema = z.object({
   // describes the encounter rather than asserting who the caller is, so it
   // carries none of the attribution risk that moved the provider to the token.
   visitNumber: z.string().max(64, 'visitNumber must be 64 characters or fewer.').optional(),
+  // Which of the two collection workflows this order follows. Also caller
+  // context rather than an identity claim: the calling HIS knows whether the
+  // patient is in a bed or at a clinic desk, and this service cannot.
+  patientClass: z.enum(['OUTPATIENT', 'INPATIENT'], {
+    message: 'patientClass must be OUTPATIENT or INPATIENT.',
+  }).optional(),
 });
+
+/**
+ * Recording a bedside draw.
+ *
+ * collectedAt is required and has no default. "Now" would be wrong often enough
+ * to matter — a nurse records the round after finishing it, not at each bedside
+ * — and a defaulted time is indistinguishable from an observed one once it is
+ * in the column.
+ */
+export const recordCollectionSchema = z.object({
+  collectedAt: z.string().min(1, 'collectedAt is required.'),
+});
+
+export const parseRecordCollection = (body: unknown): Date => {
+  const result = recordCollectionSchema.safeParse(body);
+  if (!result.success) {
+    throw new DomainError(result.error.issues[0]?.message ?? 'Invalid collection payload.');
+  }
+  const parsed = new Date(result.data.collectedAt);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new DomainError('collectedAt must be an ISO-8601 date-time.');
+  }
+  return parsed;
+};
 
 export const parseCreateLabOrder = (body: unknown) => {
   // Refused, not ignored.
@@ -47,6 +77,7 @@ export const parseCreateLabOrder = (body: unknown) => {
     // column means "we do not know which visit", and a blank string would read
     // as a visit whose number happens to be empty.
     visitNumber: value.visitNumber?.trim() || undefined,
+    patientClass: value.patientClass ?? 'OUTPATIENT',
   };
 };
 

@@ -70,6 +70,7 @@ Then open the frontend at **http://localhost:8090** and the OpenELIS UI at
 make smoke           platform and wiring
 make auth            tokens, revocation, degraded mode, the audit trail
 make catalogue-test  the test menu, and the specimen abbreviations
+make collection      the outpatient and inpatient collection workflows
 make negative        outages: broker, Redis, API, OpenELIS
 make rejection       refusal, drift, and a withdrawn specimen
 make e2e             an order into OpenELIS   (pauses for the manual lab step)
@@ -78,8 +79,8 @@ make corrections     corrections and retractions of a released result
 make progress        laboratory progress within an order
 ```
 
-The first five run unattended and are the ones to trust before a change:
-**196 checks, currently 0 failures.** `make e2e` deliberately pauses for a human
+The first six run unattended and are the ones to trust before a change:
+**216 checks, currently 0 failures.** `make e2e` deliberately pauses for a human
 to release a result in the OpenELIS UI, because that step is a real laboratory
 action and pretending otherwise would prove nothing.
 
