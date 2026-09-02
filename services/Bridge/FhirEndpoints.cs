@@ -19,10 +19,29 @@ public static class FhirEndpoints
 {
     private const string FhirJson = "application/fhir+json";
 
+    /// <summary>
+    /// What we will accept a push of, and what the capability statement declares.
+    ///
+    /// This list must stay a SUPERSET of
+    /// org.openelisglobal.fhir.subscriber.resources in common.properties.
+    /// OpenELIS registers one Subscription per name there and pushes to us
+    /// unconditionally; a type missing here is refused at the door, which shows
+    /// up as a permanently failing export on the laboratory's side rather than
+    /// as anything visible on ours. Adding a name to that property without
+    /// adding it here is strictly worse than not subscribing at all.
+    ///
+    /// Organization is here for referral (send-out) testing: it names the
+    /// laboratory a specimen was sent to. Nothing reads it yet - no referral has
+    /// ever run in this system - but it must be subscribed and accepted BEFORE
+    /// the first send-out, because resources are pushed when they change and a
+    /// reference laboratory configured earlier is not re-pushed just because we
+    /// started listening.
+    /// </summary>
     private static readonly string[] SupportedTypes =
     [
         "Task", "ServiceRequest", "Patient", "Specimen", "Practitioner",
-        "Observation", "DiagnosticReport", "QuestionnaireResponse", "Location", "Encounter"
+        "Observation", "DiagnosticReport", "QuestionnaireResponse", "Location", "Encounter",
+        "Organization"
     ];
 
     public static void MapFhirEndpoints(this WebApplication app)

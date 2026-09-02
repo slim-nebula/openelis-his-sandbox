@@ -624,3 +624,122 @@ auto-fills the collection date. This instance has `auto-fill collection
 date/time = false`, so an accessioner who does not know the draw time leaves it
 blank rather than stamping the arrival time. **Check that setting before
 trusting the field at any real site.**
+
+---
+
+## 8. Referral testing — what is ready, and what is not
+
+When our laboratory cannot perform a test it sends the specimen to another
+laboratory. Nothing in this sandbox does that yet, and no referral has ever run
+— what follows is the state of the plumbing, verified against 3.2.2.0 source and
+against the live instance.
+
+### OpenELIS has a real referral module
+
+Not a stub. `clinlims.referral` records the receiving `organization_id` and
+`organization_name`, `sent_date`, `result_recieved_date`, a reason, a priority,
+and the unhappy paths explicitly — `lost_status` / `lost_date` / `lost_reason`
+and `canceled` / `cancel_reason`. `referral_result` links the value that came
+back, and `shipment` / `shipping_box` track the physical package.
+
+The vocabularies ship seeded: ten `referral_reason` rows ("Equipment failure",
+"Confirmation requested", "Reagents unavailable"…) and four `referral_type`
+rows. `organization_type` id **6** is `referralLab` — *"An organization to which
+samples may be sent"* — and a reference laboratory has to be tagged with it
+before it can be selected.
+
+The workflow is worklist-driven (`ReferredOutTests`) or triggered at result
+entry. It is **post-accessioning**: a sample is referred after it arrives, not
+instead of arriving.
+
+Two columns that look relevant and are not: the `so_*` family on `analysis`
+(`so_send_date`, `so_notify_received_date`, …) is dead code with no
+business-logic call sites, as is `referring_test_result`. `referral` /
+`referral_result` is the live module.
+
+### The gap that decides how hard this is
+
+**`DiagnosticReport.performer` and `Observation.performer` are never set
+anywhere in OpenELIS** — zero call sites for `setPerformer` or `addPerformer`.
+No field on a returning result says who actually performed it.
+
+That matters beyond convenience: ISO 15189:2022 7.4.1.7.c and CLIA
+42 CFR 493.1291(i)(3) both place the duty to name the performing laboratory on
+the *referring* laboratory's report. A result that leaves OpenELIS carrying no
+performer cannot satisfy that downstream without reconstruction.
+
+So naming the laboratory means walking a chain rather than reading a field:
+
+```
+DiagnosticReport → the analysis it belongs to
+                 → the referral Task    (referral.fhir_uuid, published by
+                                         FhirReferralServiceImpl)
+                 → the Organization the Task names
+```
+
+**That chain has never been exercised.** No referral Task has ever reached this
+bridge, so the shape of one is unverified and nothing here should be built
+against an assumption about it.
+
+### What was done ahead of time, and why
+
+`Organization` has been added to
+`org.openelisglobal.fhir.subscriber.resources` and to the bridge's
+`SupportedTypes`, taking the registered subscriptions from 8 to 9 — confirmed
+active against the FHIR store, with `make export-status` still `OK`.
+
+Subscribing before there is anything to receive is deliberate. **Resources are
+pushed when they change.** A reference laboratory configured last month is not
+re-pushed merely because we started listening today, so subscribing after the
+first referral can leave us holding a Task pointing at an Organization we never
+received. The mirror correctly holds no `Organization` today: the single
+configured organization has not changed since.
+
+> **Trap for anyone editing that property.** The bridge's `SupportedTypes` must
+> stay a **superset** of the subscriber resource list. OpenELIS registers one
+> Subscription per name and pushes unconditionally; a type it pushes that the
+> bridge does not accept is refused at the door, which surfaces as a permanently
+> failing export on the *laboratory's* side and nothing visible on ours. Adding
+> a name to the property without adding it to the bridge is strictly worse than
+> not subscribing at all.
+
+### The signal worth having first
+
+Naming the performing laboratory is the harder half. The more useful half is
+cheaper: **telling the ward that a test went out at all.**
+
+A send-out takes days rather than hours. Today an order would sit at
+`ACCEPTED_BY_LIS` for a week with no explanation and the ward would telephone
+the laboratory. `REFERRED_OUT` belongs on the existing `lab_progress` channel
+alongside `IN_LABORATORY` and `AWAITING_VALIDATION` — not as an order status,
+because the integration state has not changed; the laboratory has the order and
+is working on it.
+
+Two more, from the dedicated publishers `publishReferralLost` and
+`publishReferralRejected`:
+
+| Progress | What the ward does |
+|---|---|
+| `REFERRED_OUT` | stop expecting it tomorrow; stop telephoning |
+| `REFERRAL_LOST` | **redraw the patient** |
+| `REFERRAL_CANCELLED` | the test is not coming; decide what to do instead |
+
+`REFERRAL_LOST` should not be a quiet grey note. A specimen that never arrived
+means somebody needs another needle, and nobody discovers that by watching a
+screen — it belongs with the correction alerting in
+[integration-guide.md § Step 6b](integration-guide.md#step-6b--corrections-need-an-alert-not-a-badge).
+
+### The one instruction that matters now
+
+Configuring a reference laboratory is a laboratory-administration act, done in
+the OpenELIS UI, and this project does not write OpenELIS data. But the rule
+should be given to the laboratory **before the first send-out**, because it is
+unrecoverable afterwards:
+
+> When a specimen is sent to another laboratory, use OpenELIS's referral
+> function. Do not enter the result as though it was performed in-house.
+
+A result typed in as in-house has no organisation, no sent date and no link to
+the sample that left the building. A year of send-outs recorded that way cannot
+be reconstructed, and each one is a result the clinician will trend against an
+in-house value as though the two were comparable.

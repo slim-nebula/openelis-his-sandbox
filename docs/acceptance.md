@@ -75,11 +75,19 @@ through the same FHIR push the laboratory uses.
 
 ## What "verified" means for criterion 6
 
-The outbound channel is proven live, not assumed: OpenELIS registered 8 FHIR
+The outbound channel is proven live, not assumed: OpenELIS registered **9** FHIR
 `Subscription` resources pointing at the bridge, its `data_export_task` row
 targets `http://bridge:8080/fhir`, and the bridge has received real
-`Patient` / `ServiceRequest` / `Specimen` / `Task` / `Practitioner` /
-`Organization` resources pushed by OpenELIS during ordinary operation.
+`Patient` / `ServiceRequest` / `Specimen` / `Task` / `Practitioner` resources
+pushed by OpenELIS during ordinary operation.
+
+**Correction.** This previously said 8 subscriptions and listed `Organization`
+among the resources received. Neither was checked when written, and both were
+wrong: `Organization` was not in
+`org.openelisglobal.fhir.subscriber.resources`, so no such subscription existed
+and none could have arrived. It is subscribed now — see below — and the mirror
+still holds none, correctly, because the one configured organization has not
+changed since and resources are pushed on change.
 
 `DiagnosticReport` and `Observation` only exist once a lab user validates and
 releases a result, so `make results` delivers those two through the bridge's
