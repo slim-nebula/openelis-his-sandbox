@@ -586,6 +586,25 @@ two differ is a defect, not a feature. Recording the ordering provider from
 anywhere except the verified session would be reintroducing the problem this
 section describes.
 
+**Recording a bedside draw is attributed but not separately authorised.**
+`POST /lab-orders/{orderNumber}/collection` sits behind the same user token and
+`LAB_ORDER_GROUP` check as placing an order, and is audited as an update
+(`laborder.collect`, `U`) with the order in the resource field. That is the
+right shape for the sandbox, and it is not the right shape for a hospital:
+drawing blood is a **nursing** act, and a real estate would give it its own
+group rather than letting anyone who can order a test also assert that a
+specimen was drawn.
+
+Note what the assertion is worth. The collection time it records travels to the
+laboratory, is pre-filled onto the accessioner's screen, and ends up shaping a
+clinician's judgement of whether a result still describes the patient. It is
+refused when the order is not `AWAITING_COLLECTION`, when the order is an
+outpatient one, and when the timestamp is in the future — but nothing verifies
+that the person recording it is the person who held the needle, and nothing
+could. **The control here is attribution, not prevention:** `his.audit_events`
+names who said it, and `lab_order_events` keeps a `SPECIMEN_COLLECTED` row with
+the time and correlation id.
+
 **Authorisation is one group name per surface.** `LAB_ORDER_GROUP` and
 `BRIDGE_OPS_GROUP` are membership checks, not permissions. The estate does real
 authorisation with Casbin against policies IAM owns; a second, differently

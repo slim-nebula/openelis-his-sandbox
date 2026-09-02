@@ -35,6 +35,27 @@ display work added a check.
 | 9 | No direct database coupling between OpenELIS and the HIS sandbox | `make smoke` | no database container on the sandbox network; the bridge's credentials are refused by the HIS database (`CONNECT` denied); OpenELIS holds no HIS credentials at all |
 | 10 | OpenELIS runs containerised while its database is externalised | `make smoke` | `datasource.url` on the running webapp points at `openelis-db.external`, which lives in a separate compose project and network |
 
+## Beyond the brief — specimen collection time
+
+Not an acceptance criterion, but ISO 15189:2022 7.4.1.7.a requires it and a
+released-time-only display cannot tell a clinician whether a value still
+describes the patient.
+
+| Behaviour | Verified by |
+|---|---|
+| An outpatient order dispatches immediately; no ward collection time is claimed | `make collection` §1 |
+| An inpatient order is held at `AWAITING_COLLECTION` with **no outbox row and no bridge tracking row** — the laboratory has heard nothing | `make collection` §2 |
+| Recording the draw writes the time and queues the dispatch in one transaction, with a `SPECIMEN_COLLECTED` audit row | `make collection` §3 |
+| `Specimen.collection.collectedDateTime` is asserted **on the wire**, from the published resource rather than from intent | `make collection` §4 |
+| `Specimen.receivedTime` is no longer sent — it used to claim the laboratory received a specimen before anyone drew blood | `make collection` §4 |
+| A ward draw against an outpatient order, a second draw, a future timestamp, and an unknown patient class are each refused with 400 | `make collection` §5 |
+| The API exposes `collectedAt` and `collectionSource`, present or null | `make collection` §6 |
+
+The outpatient **read-back** is not covered end to end: it needs a lab user to
+accession a real sample and type a collection date, which is the manual step in
+`make e2e`. The projection of a laboratory-reported collection time is exercised
+through the same FHIR push the laboratory uses.
+
 ## Non-functional requirements
 
 | Requirement | Where it lives |
@@ -139,6 +160,13 @@ an oversight:
 - **The databases are containers.** On a laptop with only Docker Desktop, the
   "external database server" boundary is enforced by project and network
   separation rather than by separate hosts.
+- **An inpatient order can wait forever.** `AWAITING_COLLECTION` has no timeout,
+  deliberately: expiring a real pending order because a nurse was busy would be
+  worse than leaving it visible. It is the ward's worklist, and a real estate
+  would put an escalation on top of it rather than an expiry underneath.
+- **Nothing verifies who drew the blood.** Recording a collection is attributed
+  through the token and audited, but a ward user asserting a draw time is
+  trusted. See `docs/security.md` §9.
 - **Result release is manual.** Driving OpenELIS's validation UI
   programmatically would couple the tests to its frontend; a lab user performing
   the step is also closer to what phase 3 is meant to exercise. `make results`

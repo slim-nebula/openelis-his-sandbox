@@ -145,7 +145,7 @@ his-edge-proxy ──► his-kong ──► his-api ──┬──► his_sandb
                                               his-api ──► his_sandbox  (result + visit + order number)
 ```
 
-Two details that matter more than they look:
+Three details that matter more than they look:
 
 **OpenELIS pulls, we don't push.** The bridge holds the order and waits. That is
 OpenELIS's design, and it means the laboratory is never interrupted by us.
@@ -153,6 +153,14 @@ OpenELIS's design, and it means the laboratory is never interrupted by us.
 **Results correlate by a two-hop chain**, not by patient or timestamp:
 `DiagnosticReport → ServiceRequest → ServiceRequest → order number`. That is why
 a result lands on the right order even when a patient has several open.
+
+**An inpatient order does not start at the top of that diagram.** It is held at
+`AWAITING_COLLECTION` with no outbox row until a nurse records the bedside draw,
+because a collection time can only be stated by whoever watched the draw and it
+does not exist when the doctor places the order. Everything above then happens
+normally, with the collection time riding along on the Specimen. Outpatient
+orders skip the hold entirely — the laboratory draws those and reports the time
+back. See [data-flow.md §7](data-flow.md#7-who-observes-the-draw).
 
 ---
 

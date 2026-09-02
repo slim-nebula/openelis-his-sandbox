@@ -97,6 +97,7 @@ docker exec bridge curl -s 'http://localhost:8080/fhir/Task?status=requested&own
 | 2 · order flow | `make e2e` | no, up to LIS acceptance |
 | 3 · lab workflow | `make e2e` (second half) | **yes** — release the result in the OpenELIS UI |
 | 4 · negative paths | `make negative` | no |
+| 5 · collection workflows | `make collection` | no — both outpatient and inpatient |
 
 `make e2e` runs phases 2 and 3 in one pass: it drives the order into OpenELIS
 automatically, then pauses and waits (default 10 minutes) for a lab user to
@@ -208,6 +209,48 @@ accredited component. Every asymmetry in this design exists because of that.
 ---
 
 ## 5. Recovery
+
+### An order is sitting at `AWAITING_COLLECTION`
+
+**Check this first, and do not escalate it as an integration fault.** It is the
+one state in which nothing has been sent to the laboratory — no outbox row, no
+Kafka event, no FHIR Task. Every other stalled state means a system did not do
+its job. This one means **a specimen has not been drawn**, and no amount of
+restarting anything will move it.
+
+```bash
+make psql-his
+```
+```sql
+SELECT order_number, patient_class, created_at, now() - created_at AS waiting
+  FROM his.lab_orders
+ WHERE order_status = 'AWAITING_COLLECTION'
+ ORDER BY created_at;
+```
+
+Only inpatient orders reach it. If an **outpatient** order is here, that is a
+genuine fault — it should have dispatched at creation.
+
+The fix is a clinical action, not an operational one: the ward records the draw,
+which writes the collection time and queues the dispatch in one transaction.
+
+```bash
+curl -sf -X POST -H "Authorization: Bearer $HIS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"collectedAt":"2026-09-02T06:15:00Z"}' \
+  http://localhost:8090/api/lab-orders/LAB-YYYYMMDD-XXXXXXXX/collection
+```
+
+**Do not "unstick" one of these by hand in the database.** Setting the status to
+`CREATED` without an outbox row produces an order that will never be sent and
+now looks dispatched — strictly worse than the state you started in. Writing the
+outbox row without a collection time sends the laboratory an order whose whole
+reason for waiting has been lost. They commit together for exactly this reason.
+
+An order that has been waiting for hours is usually a ward-process question —
+was the blood drawn and nobody recorded it? — not a system one. There is
+deliberately **no automatic timeout**: expiring a real pending order because a
+nurse was busy would be worse than leaving it visible.
 
 ### An order is stuck at `SENT_TO_LIS`
 

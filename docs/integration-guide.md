@@ -318,13 +318,23 @@ HIS watching for new ids will not see corrections at all.
 
 ## Step 7 — Handle the unhappy paths
 
-Your HIS must react to three outcomes, not one:
+Your HIS must react to four outcomes, not one:
 
 | status | meaning | what to do |
 |---|---|---|
+| `AWAITING_COLLECTION` | **the laboratory has heard nothing** — an inpatient order waiting on a bedside draw | not a fault: put it on the ward's worklist. Nothing will move it but a nurse |
 | `REJECTED_BY_LIS` | the laboratory refused the order | show the doctor the reason; it is in `status_detail` |
 | `FAILED` | the bridge refused to send it | usually a stale catalogue — re-sync, re-order |
 | no result after a long time | nobody has accessioned it | needs a human; there is no automatic timeout today |
+
+`AWAITING_COLLECTION` is the one that looks like a stall and is not. Every other
+waiting state means a system has the order and has not finished with it; this one
+means **nothing has been sent** — no event, no Task — because the specimen does
+not exist yet. Triage it as a ward question, never as an integration incident.
+
+There is deliberately no timeout on it. Expiring a real pending order because a
+nurse was busy would be worse than leaving it visible, so **build an escalation
+on top of that queue** rather than expecting the sandbox to clear it.
 
 **Known ambiguity, and you should design around it:** OpenELIS reports
 `rejected` both when the laboratory genuinely declines a test **and** when it hits

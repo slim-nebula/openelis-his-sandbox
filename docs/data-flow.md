@@ -21,6 +21,7 @@ sequenceDiagram
     participant KG as Kong<br/>gateway
     participant API as his-api<br/>Patient + Lab Order
     participant HDB as his_sandbox<br/>external DB
+    participant OutboxRelay as OutboxRelay
     participant K as Kafka
     participant BR as bridge<br/>FHIR R4 server
     participant BDB as bridge_sandbox<br/>external DB
@@ -38,10 +39,11 @@ sequenceDiagram
     API->>HDB: SELECT test_catalogue WHERE test_code
     API->>HDB: SELECT patient exists
     Note right of API: Unknown test or patient → 400,<br/>nothing is written
-    API->>HDB: INSERT lab_orders status=CREATED<br/>+ lab_order_events ORDER_CREATED
-    API->>K: publish lab.order.created<br/>key=orderId, header X-Correlation-ID
-    Note right of API: Publish failure → order marked FAILED,<br/>caller gets 502, never a silent success
+    API->>HDB: INSERT lab_orders + lab_order_events<br/>+ his.outbox — ONE transaction
+    Note right of API: Nothing here touches Kafka. One commit decides<br/>whether the order and its event both exist
     API-->>Doc: 201 order_number LAB-YYYYMMDD-XXXXXXXX
+    OutboxRelay-->>K: publish lab.order.created<br/>key=orderId, header X-Correlation-ID
+    Note right of API: patientClass=INPATIENT → status AWAITING_COLLECTION<br/>and NO outbox row: the laboratory hears nothing<br/>until the ward records the draw (§7)
     end
 
     rect rgb(234, 245, 236)
@@ -229,7 +231,10 @@ exactly which hop failed.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> CREATED: POST /lab-orders<br/>row committed
+    [*] --> CREATED: POST /lab-orders<br/>patientClass=OUTPATIENT<br/>row + outbox committed
+    [*] --> AWAITING_COLLECTION: POST /lab-orders<br/>patientClass=INPATIENT<br/>row only — NO outbox
+
+    AWAITING_COLLECTION --> CREATED: POST /lab-orders/{n}/collection<br/>draw time + outbox, one transaction
 
     CREATED --> SENT_TO_LIS: bridge published the FHIR Task<br/>lab.order.sent
     CREATED --> FAILED: Kafka unreachable<br/>502 to the caller
@@ -246,6 +251,15 @@ stateDiagram-v2
     FAILED --> [*]
     RESULT_AVAILABLE --> [*]
 
+    note left of AWAITING_COLLECTION
+        The laboratory has heard
+        NOTHING. No outbox row,
+        no Kafka event, no Task.
+        Waiting on a nurse, not
+        on a system.
+        Verified by make collection
+    end note
+
     note right of REJECTED_BY_LIS
         Almost always test identity:
         no OpenELIS test carries
@@ -255,6 +269,20 @@ stateDiagram-v2
         Verified by make rejection
     end note
 ```
+
+### AWAITING_COLLECTION is not a failure, and not progress
+
+It is the only state in which **nothing has been sent to the laboratory** — no
+outbox row, no Kafka event, no FHIR Task. An order sitting here is not stuck in
+a hop; it is waiting on a physical act that has not happened.
+
+That distinction matters when something looks wrong. Every other stalled state
+means a system did not do its job. This one means **a specimen has not been
+drawn**, and no amount of restarting anything will move it.
+
+Only an inpatient order enters it. An outpatient specimen is drawn in the
+laboratory, so its order dispatches at creation and the laboratory reports the
+collection time back — see [§7](#7-who-observes-the-draw).
 
 ---
 
@@ -483,3 +511,116 @@ outright.
 What makes that acceptable is that drift is loud rather than silent: an order
 OpenELIS cannot match returns `REJECTED_BY_LIS` with a reason, lands in the
 order's audit trail, and is covered by the rejection suite.
+
+---
+
+## 7. Who observes the draw
+
+A collection time is a fact about a physical event, and only whoever watched it
+can state it. That one rule decides everything below, including which direction
+the data moves.
+
+Why it is worth the trouble: the results table used to show a single time, the
+moment the laboratory signed the result out. A doctor reading "released 11:30"
+at 11:35 concludes the value is current. If the blood was drawn at 06:00 it is
+five and a half hours old and the patient has had fluids since. Nothing on the
+screen was wrong; there was not enough of it. ISO 15189:2022 7.4.1.7.a requires
+the collection time when it matters for patient care, and this is the case it
+matters for.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as Ward / clinic
+    participant API as his-api
+    participant BR as Bridge
+    participant OE as OpenELIS
+
+    rect rgb(238, 246, 255)
+    Note over W,OE: OUTPATIENT — the laboratory observes the draw
+    W->>API: POST /lab-orders patientClass=OUTPATIENT
+    API->>API: status=CREATED, outbox row written
+    API-->>BR: lab.order.created
+    BR->>OE: Task + ServiceRequest + Specimen<br/>NO collection element
+    Note over OE: technician draws, types the time<br/>sample_item.collection_date
+    OE-->>BR: DiagnosticReport → Specimen<br/>collection.collected
+    BR-->>API: lab.result.released labCollectedAt
+    end
+
+    rect rgb(245, 240, 255)
+    Note over W,OE: INPATIENT — the ward observes it, and the order waits
+    W->>API: POST /lab-orders patientClass=INPATIENT
+    API->>API: status=AWAITING_COLLECTION<br/>NO outbox row
+    Note over BR,OE: the laboratory has heard nothing
+    W->>API: POST /lab-orders/{n}/collection<br/>collectedAt
+    API->>API: collected_at + outbox, ONE transaction
+    API-->>BR: lab.order.created
+    BR->>OE: Specimen.collection.collectedDateTime
+    Note over OE: accessioner screen PRE-FILLED
+    end
+```
+
+### Why an inpatient order waits
+
+The draw happens after the order is placed, so the collection time does not
+exist at creation. It cannot be sent afterwards either: once OpenELIS imports a
+Task it moves the status off `requested` and never polls it again, so a
+follow-up update is never read.
+
+Holding is also the honest position. Until the tube exists there is nothing for
+the laboratory to act on, and an order in the Incoming Orders queue for a
+specimen nobody has drawn is a queue entry that means nothing.
+
+The collection time and the outbox row commit **together**. Either alone is a
+failure that retrying cannot fix: a time with no dispatch strands the order with
+a nurse believing the job is done, and a dispatch with no time loses the only
+reason the order was waiting.
+
+### What survives, and what does not
+
+| Direction | Field | Fate |
+|---|---|---|
+| HIS → OpenELIS | `Specimen.collection.collectedDateTime` | **read** by `LabOrderSearchProvider.addCollection`, pre-filled onto the accessioner's screen, persisted to `sample_item.collection_date` |
+| HIS → OpenELIS | `Specimen.collection.collector` | read on import (`item.setCollector`) — but we do not send one |
+| HIS → OpenELIS | `Specimen.receivedTime` | **no longer sent** — see below |
+| OpenELIS → HIS | `Specimen.collection.collected` | populated from `sample_item.collection_date` |
+| OpenELIS → HIS | `Specimen.collection.collector` | **silently dropped** — `transformToCollection` accepts the parameter and never uses it |
+
+`Specimen.receivedTime` used to carry the order creation time, which told the
+laboratory it had received a specimen at the moment the doctor clicked "order",
+before anyone had drawn blood. Receipt is an event the laboratory observes in
+its own building; asserting it from here was a false statement in a clinical
+record about someone else's premises. It is gone.
+
+### Two traps, both verified in 3.2.2.0 source
+
+**`Observation.effective` is the RELEASE time, not the collection time.** FHIR
+convention says `effective` is the diagnostically relevant time, and US Core
+describes it as *"typically the time of specimen collection"*. OpenELIS sets it
+to `analysis.getReleasedDate()`, falling back to `getStartedDate()`
+(`FhirTransformServiceImpl`). A developer following the specification gets a
+plausible timestamp, hours wrong, with nothing failing. The real value is on the
+`Specimen` that `DiagnosticReport.specimen` references.
+
+**A `collection` element does not imply a collection date.** OpenELIS calls
+`specimen.setCollection()` unconditionally, while `setReceivedTime()` directly
+above it is null-guarded. A specimen with no collection date still arrives
+carrying a `collection` element built around a null, so testing for the element
+is not enough — the reader checks for the date itself.
+
+### When nobody wrote it down
+
+Both columns are nullable and null is a first-class state, displayed as **"not
+recorded"**.
+
+That is not a gap left open. An inpatient draw the ward did not record is
+genuinely unknown, and the accessioner can only type what someone wrote on the
+tube. The alternative — quietly substituting a received or released time — would
+be indistinguishable from an observed collection time, and a clinician would act
+on it. A fabricated collection time is worse than none.
+
+One configuration note for a real deployment: OpenELIS has a site setting that
+auto-fills the collection date. This instance has `auto-fill collection
+date/time = false`, so an accessioner who does not know the draw time leaves it
+blank rather than stamping the arrival time. **Check that setting before
+trusting the field at any real site.**
