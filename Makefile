@@ -197,10 +197,22 @@ trust-bridge: ## Import our CA into OpenELIS's truststore, then restart it
 openelis-patched: ## Build OpenELIS from the upstream tag with our patches applied (VERSION=)
 	@bash scripts/build-openelis.sh $(VERSION)
 
+# USER and GROUPS are inherited from the SHELL by every make invocation — make
+# imports the environment as variables — so a plain $(if $(USER),…) silently
+# passed --user <your login name> here, minting usr_id: null and a token every
+# service rejects with "Invalid token structure". It looked like it worked: the
+# script printed a token and "Signed in as sandbox.user".
+#
+# $(origin …) is the fix rather than renaming the knob: it honours USER= typed
+# on the command line and ignores the one the shell exported. GROUPS has the
+# same collision (it is also a bash special variable), so it gets the same
+# treatment.
 token: ## Sign in as a sandbox user and print a token (USER=, NAME=, GROUPS=, TTL=)
 	@bash scripts/mint-token.sh \
-	  $(if $(USER),--user $(USER),) $(if $(NAME),--name $(NAME),) \
-	  $(if $(GROUPS),--groups $(GROUPS),) $(if $(TTL),--ttl $(TTL),)
+	  $(if $(filter command line,$(origin USER)),--user $(USER),) \
+	  $(if $(NAME),--name $(NAME),) \
+	  $(if $(filter command line,$(origin GROUPS)),--groups $(GROUPS),) \
+	  $(if $(TTL),--ttl $(TTL),)
 
 topics: ## List Kafka topics
 	@docker exec his-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list

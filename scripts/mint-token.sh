@@ -71,6 +71,26 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# usr_id must be a NUMBER, and it is worth failing loudly rather than minting a
+# token that cannot work.
+#
+# The claim is built with Number(process.env.MINT_USER_ID). Anything
+# non-numeric becomes NaN, JSON.stringify turns NaN into null, and the services
+# reject the result with "Invalid token structure" — after this script has
+# already printed the token and a cheerful "Signed in as …" line. The token
+# looks fine, the failure surfaces three layers away in an HTTP 401, and nothing
+# connects the two.
+#
+# This is not hypothetical: `make token` passed --user $(USER), and USER is
+# inherited from the shell by every make invocation, so it silently minted
+# --user <your login name> and produced usr_id: null on any interactive machine.
+if ! [[ "$USER_ID" =~ ^[0-9]+$ ]]; then
+    echo "--user must be a number (usr_id), not '$USER_ID'." >&2
+    echo "A non-numeric value mints a token with usr_id: null, which every" >&2
+    echo "service rejects with 'Invalid token structure'." >&2
+    exit 2
+fi
+
 if ! docker ps --format '{{.Names}}' | grep -qx his-api; then
     echo "his-api is not running — start the sandbox with 'make up' first." >&2
     exit 1
