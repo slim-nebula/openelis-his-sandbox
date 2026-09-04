@@ -227,9 +227,6 @@ public sealed record HisOrder(
     DateTimeOffset CreatedAt,
     HisPatient Patient);
 
-// No file number here. The bridge never needed it — OpenELIS discards it, and
-// the HIS resolves it from PatientId in its own records. his-api may still send
-// the field; System.Text.Json ignores what this record does not declare.
 public sealed record HisPatient(
     Guid PatientId,
     string FirstName,
@@ -238,6 +235,20 @@ public sealed record HisPatient(
     DateOnly DateOfBirth,
     string? Phone,
     string? NationalId);
+
+// The patient's file number (MRN) is NOT sent, and the reason has been narrowed
+// to the one that actually holds.
+//
+// It is NOT that "OpenELIS discards it". That was recorded earlier and is
+// false: an attempt had carried the file number on a type coding with no
+// system, and OpenELIS matches identifiers by SYSTEM. Sending it as
+// .../pat_subjectNumber works - verified end to end, it lands as the SUBJECT
+// identity and shows on the accessioning screen as "Unique Health ID number".
+//
+// It is that the HIS can resolve the folder number from the patient id in its
+// own records, so shipping it would put a second copy of one fact into another
+// system, with somewhere new for it to drift. One identifier crosses the
+// boundary for the patient, and that is deliberate.
 
 public sealed record OrderCreatedEvent(
     string? EventId,

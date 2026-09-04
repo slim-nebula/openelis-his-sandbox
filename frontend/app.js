@@ -72,12 +72,22 @@ async function api(path, options = {}) {
     },
   });
 
-  // 401 means the session is gone — expired, revoked, or never present. Saying
-  // so plainly beats "Authorization token is required" appearing in a toast
-  // over an empty patient list.
+  // 401 means the session is gone — expired, revoked, or superseded because
+  // somebody minted a second token for the same usr_id (running any test suite
+  // does exactly that, since the suites sign in as user 1).
+  //
+  // DISCARD the token rather than merely re-rendering. Keeping a token the
+  // server has already refused leaves the page looking signed in, so the button
+  // offers "Sign out" instead of a paste prompt — and the fix, clicking it
+  // twice, is not something anyone would guess. Dropping it makes the page tell
+  // the truth and puts the prompt one click away.
   if (response.status === 401) {
+    localStorage.removeItem(SESSION_KEY);
     renderSession();
-    throw new Error('Not signed in. Run `make token` and use the Sign in button.');
+    throw new Error(
+      'Session ended — this token was expired, revoked, or replaced by a newer '
+      + 'one for the same user. Run `make token USER=42` and sign in again.',
+    );
   }
 
   if (!response.ok) {
@@ -287,8 +297,35 @@ document.getElementById('patient-search').addEventListener('keydown', (event) =>
 
 // --- selected patient ------------------------------------------------------
 
+// The encounter the clinician is currently working inside.
+//
+// Deliberately NOT a box on the order form. A doctor does not retype the visit
+// for each test - they are inside a visit and place several orders within it,
+// which is exactly the one-visit-many-orders shape the API is built around.
+// Putting it on the form would teach the opposite.
+//
+// It lives only in this page. A real HIS takes the visit from its own
+// admissions or encounter module; there is none here, so the sandbox mints one
+// so the concept is visible rather than theoretical.
+let currentVisit = null;
+
+const newVisitNumber = () => {
+  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const suffix = Math.random().toString(16).slice(2, 6).toUpperCase();
+  return `V-${stamp}-${suffix}`;
+};
+
+function renderVisit() {
+  const el = document.getElementById('current-visit');
+  if (el) el.textContent = currentVisit ?? '—';
+}
+
 async function selectPatient(patientId) {
   selectedPatient = await api(`/patients/${patientId}`);
+
+  // A new patient selection starts a new encounter. Carrying the previous
+  // patient's visit over would file one patient's results against another's.
+  currentVisit = newVisitNumber();
 
   document.getElementById('detail').hidden = false;
   document.getElementById('detail-name').textContent =
@@ -298,6 +335,7 @@ async function selectPatient(patientId) {
     <dt>Patient ID</dt><dd>${selectedPatient.patientId}</dd>
     <dt>Sex / DOB</dt><dd>${selectedPatient.sex} · ${selectedPatient.dateOfBirth}</dd>
     <dt>National ID</dt><dd>${selectedPatient.nationalId ?? '—'}</dd>`;
+  renderVisit();
 
   await refreshPatientData();
   startPolling();
@@ -318,6 +356,7 @@ async function refreshPatientData() {
         .map(
           (o) => `<tr>
             <td class="mono">${o.orderNumber}</td>
+            <td class="mono visit-cell${o.visitNumber === currentVisit ? ' current' : ''}">${o.visitNumber ?? '—'}</td>
             <td>${o.testName}</td>
             <td>${statusBadge(o.orderStatus)}${progressNote(o)}</td>
             <td>${fmtDate(o.createdAt)}</td>
@@ -325,7 +364,7 @@ async function refreshPatientData() {
           </tr>`
         )
         .join('')
-    : '<tr><td colspan="5" class="empty">No orders yet.</td></tr>';
+    : '<tr><td colspan="6" class="empty">No orders yet.</td></tr>';
 
   const resultsBody = document.querySelector('#results tbody');
   resultsBody.innerHTML = results.length
@@ -356,12 +395,13 @@ async function refreshPatientData() {
             <td>${resultStatusBadge(r.resultStatus)}</td>
             <td class="collected">${collectedCell(r)}</td>
             <td>${fmtDate(r.releasedAt)}</td>
+            <td class="mono visit-cell${r.visitNumber === currentVisit ? ' current' : ''}">${r.visitNumber ?? '—'}</td>
             <td class="mono">${r.orderNumber ?? '—'}</td>
             <td class="mono">${r.openelisResultRef}</td>
           </tr>`
         )
         .join('')
-    : '<tr><td colspan="10" class="empty">Nothing released yet. Validate and release the order in OpenELIS.</td></tr>';
+    : '<tr><td colspan="11" class="empty">Nothing released yet. Validate and release the order in OpenELIS.</td></tr>';
 }
 
 // Orders move through the LIS asynchronously, so the view refreshes itself
@@ -493,7 +533,14 @@ document.getElementById('order-form').addEventListener('submit', async (event) =
   try {
     const order = await api('/lab-orders', {
       method: 'POST',
-      body: JSON.stringify({ ...formOf(event.target), patientId: selectedPatient.patientId }),
+      // The visit rides along with every order placed during it. This is the
+      // one identifier the laboratory never sees: it is filed against locally
+      // when the result comes back, by way of the order number.
+      body: JSON.stringify({
+        ...formOf(event.target),
+        patientId: selectedPatient.patientId,
+        ...(currentVisit ? { visitNumber: currentVisit } : {}),
+      }),
     });
     toast(
       order.orderStatus === 'AWAITING_COLLECTION'
@@ -507,6 +554,17 @@ document.getElementById('order-form').addEventListener('submit', async (event) =
   } catch (err) {
     toast(err.message, true);
   }
+});
+
+// The patient came back another day. A new encounter, same patient record —
+// which is the case the visit exists for: results from today must not appear
+// on last month's page.
+document.getElementById('new-visit-btn').addEventListener('click', async () => {
+  if (!selectedPatient) return;
+  currentVisit = newVisitNumber();
+  renderVisit();
+  toast(`New visit ${currentVisit} — orders from now on file against it`);
+  await refreshPatientData();
 });
 
 // Tell the doctor what their choice means before they submit, not after.

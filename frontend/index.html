@@ -60,6 +60,18 @@
       <h2>2 · <span id="detail-name"></span></h2>
       <dl id="detail-summary" class="summary"></dl>
 
+      <!-- The encounter, shown here rather than on the order form.
+           A doctor is INSIDE a visit and places several orders within it; every
+           order below inherits this one. "New visit" is the patient coming back
+           another day — a new encounter, with its own orders and its own
+           results, against the same patient record. -->
+      <div class="visitbar">
+        <span class="visit-label">Visit</span>
+        <span id="current-visit" class="mono">—</span>
+        <button id="new-visit-btn" type="button">New visit</button>
+        <span class="hint">every order below is filed against this encounter</span>
+      </div>
+
       <h3>Place a lab order</h3>
       <form id="order-form" class="grid">
         <!-- A searchable box, not a dropdown.
@@ -121,7 +133,7 @@
       <h3>Lab orders</h3>
       <table id="orders">
         <thead>
-          <tr><th>Order number</th><th>Test</th><th>Status</th><th>Created</th><th>Specimen collection</th></tr>
+          <tr><th>Order number</th><th>Visit</th><th>Test</th><th>Status</th><th>Created</th><th>Specimen collection</th></tr>
         </thead>
         <tbody></tbody>
       </table>
@@ -129,7 +141,7 @@
       <h3>Released results <span class="hint">returned from OpenELIS via the bridge</span></h3>
       <table id="results">
         <thead>
-          <tr><th>Test</th><th>Specimen</th><th>Value</th><th>Reference range</th><th>Interpretation</th><th>Status</th><th>Collected</th><th>Released</th><th>Order number</th><th>OpenELIS record</th></tr>
+          <tr><th>Test</th><th>Specimen</th><th>Value</th><th>Reference range</th><th>Interpretation</th><th>Status</th><th>Collected</th><th>Released</th><th>Visit</th><th>Order number</th><th>OpenELIS record</th></tr>
         </thead>
         <tbody></tbody>
       </table>

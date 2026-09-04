@@ -282,6 +282,27 @@ OpenELIS maps anything that is not MALE/FEMALE to a NULL gender, which drops the
 patient onto an age-only reference range."
 fi
 
+# The patient id is the ONLY patient identifier that crosses the boundary, and
+# that is deliberate: the HIS resolves the folder number from it locally, so
+# sending one would be a second copy of a fact we already hold.
+#
+# Asserted here because it is the identifier OpenELIS matches the patient on -
+# and the one the accessioning screen uses to find them.
+OE_GUID=$(oe_rows "SELECT pi.identity_data
+                     FROM clinlims.patient p
+                     JOIN clinlims.patient_identity pi ON pi.patient_id = p.id
+                     JOIN clinlims.patient_identity_type t ON t.id = pi.identity_type_id
+                    WHERE p.external_id = '$PATIENT_ID' AND t.identity_type = 'GUID'
+                    LIMIT 1")
+
+if [[ "$OE_GUID" == "$PATIENT_ID" ]]; then
+    ok "Patient id stored as the GUID identity OpenELIS matches on"
+else
+    bad "Patient id stored as the GUID identity OpenELIS matches on" \
+        "expected '$PATIENT_ID', got '${OE_GUID:-none}'. This is what the accessioning \
+screen looks the patient up by; without it the lab user gets a blank patient form."
+fi
+
 if [[ "${OE_ALL:-0}" -ge 1 ]]; then
     if [[ "$OE_DOB" == "$OE_ALL" ]]; then
         ok "Date of birth survives the trip to OpenELIS: $P_DOB (age input)"

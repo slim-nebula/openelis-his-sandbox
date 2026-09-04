@@ -158,6 +158,40 @@ tbody tr:last-child td { border-bottom: 0; }
    dried blood spot are different examinations reported under one name. */
 .specimen { color: var(--muted); white-space: nowrap; }
 
+/* The encounter, shown beside the patient rather than on the order form: a
+   doctor is inside a visit and places several orders within it. */
+.visitbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 4px;
+  padding: 8px 10px;
+  background: #f4f6fa;
+  border-radius: 6px;
+}
+.visitbar .visit-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--muted);
+}
+.visitbar .hint { margin: 0; }
+#new-visit-btn {
+  font-size: 12px;
+  padding: 3px 9px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  border-radius: 4px;
+  cursor: pointer;
+}
+#new-visit-btn:hover { background: var(--accent); color: #fff; }
+
+/* Rows from earlier encounters stay legible but recede, so "this visit" reads
+   at a glance against a patient who has been here before. */
+.visit-cell { color: var(--muted); }
+.visit-cell.current { color: var(--fg, inherit); font-weight: 600; }
+
 /* Severity, not status. The critical tier gets the strongest treatment on the
    page because it is the one a clinician must not scroll past - and it is
    deliberately louder than the status badge beside it, which carries far less

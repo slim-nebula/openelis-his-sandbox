@@ -186,7 +186,7 @@ specific range. `make e2e` asserts both survive the trip.
 
 | Field | Why not |
 |---|---|
-| **Patient file number (MRN)** | The HIS owns the patient record and resolves it from `patient_id`. Sending it would be a second copy of something the caller already holds. OpenELIS also discarded it — its inbound mapper matches identifiers by `system`, and the file number's only carrier was a type coding with no system. |
+| **Patient file number (MRN)** | The HIS resolves the folder number from `patient_id` in its own records, so sending it would put a second copy of one fact into another system with somewhere new to drift. **Correction:** this row also used to claim OpenELIS discards it. That is false — the earlier attempt carried it on a type coding with no `system`, and OpenELIS matches identifiers by system. Sent as `…/pat_subjectNumber` it lands as the `SUBJECT` identity and displays as "Unique Health ID number"; verified end to end, then deliberately not adopted. |
 | **Ordering clinician** | The laboratory does not act on it: the analysis is driven by the test and the specimen, and a critical value is phoned back to the HIS, which knows the doctor. Attribution stays complete in the HIS — `lab_orders.ordering_provider_id` from the verified token, plus `his.audit_events`. |
 | **Visit / encounter** | Never has to survive a round trip. A returning result is matched to its ORDER first, and the order remembers the visit. OpenELIS would drop it anyway — encounter handling is commented out at `FhirApiWorkFlowServiceImpl.java:577`. |
 | Requesting organisation, location | Not needed once the requester is not shown. Was previously listed here as a gap to close; it is not a gap, it is out of scope. |
