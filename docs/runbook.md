@@ -15,7 +15,7 @@ before any order will be accepted.
 make up          # renders config → starts databases → builds and starts apps
 make sync-catalogue  # read the orderable test menu from OpenELIS into the HIS
 make smoke       # confirm the platform before sending clinical data
-make token       # sign in — the clinical API and the frontend need a user token
+make token USER=42  # sign in — the suites own user 1, so browse on another id
 ```
 
 `make up` is safe to re-run; it is idempotent.
@@ -491,6 +491,34 @@ same day; it is not a middle-of-the-night problem.
 **Restarting Redis signs out every user** — sessions are held in memory with no
 persistence. Prefer to do that outside clinic hours. Afterwards, everyone
 including `make token` must sign in again.
+
+### "Session ended or token revoked" while you were using the browser
+
+**Running a test suite signs you out.** The session in Redis stores the token
+itself, so only one token per `usr_id` can be live at a time — minting a second
+for the same user silently invalidates the first.
+
+Every suite mints `--user 1` as `suite.runner` through `scripts/lib.sh`. So
+`make auth`, `make smoke` or any other suite will end a browser session created
+by a plain `make token`, which also defaults to user 1. The 401 arrives later,
+on whatever you click next, with nothing linking it to the suite you ran.
+
+Confirm it in one command — if `usr_name` is `suite.runner`, that is what
+happened:
+
+```bash
+docker exec his-redis redis-cli HGET user:1 token | cut -d. -f2 | base64 -d
+```
+
+**Browse on a different user id.** The suites own user 1; nothing else does.
+
+```bash
+make token USER=42 NAME=dr.demo
+```
+
+Then tests and a browser session coexist. Note this needs the `$(origin USER)`
+handling in the `token` target — before that fix, `USER=` on the command line
+was indistinguishable from the shell's own `USER` and could not be used.
 
 ### Kafka is down
 
