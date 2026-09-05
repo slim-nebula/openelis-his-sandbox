@@ -312,9 +312,33 @@ one that nobody approved must never arrive there at all.
 The failing version is one plausible line in whichever service finally publishes:
 
 ```ts
-// WRONG — this is whoever clicked "approved"
-ordering_provider_hcp_id: req.user.hcp_id
+// ❌ WRONG — req.user at dispatch is whoever advanced the workflow:
+//    the nurse, the receptionist, the supervisor who approved it
+const clinician = req.user.hcp_id;
+
+// ✅ RIGHT — read what the doctor's order already says
+const { rows } = await client.query(
+  `SELECT ordering_provider, ordering_provider_hcp_id, ordering_provider_license
+     FROM his.lab_orders WHERE order_id = $1`, [orderId]);
+const clinician = rows[0].ordering_provider_hcp_id;
 ```
+
+The word **request** in `req.user` is the trap: it means *"whoever is making
+this HTTP call right now"*, and at dispatch that is not the doctor. Nobody is
+asked to prove anything at this point — the code reads a name off a row, the way
+a pharmacist reads the prescriber off a prescription instead of telephoning the
+surgery.
+
+Three identities sit close together at that moment. Only one is the answer:
+
+| | Holds | At dispatch |
+|---|---|---|
+| `lab_orders.ordering_provider_hcp_id` | the clinician who decided | ✅ **read this** |
+| `lab_orders.ordering_provider_id` | that doctor's login account | audit trail only |
+| `req.user.hcp_id` | whoever is signed in *now* | ❌ never |
+
+`ordering_provider_hcp_id` is written **once**, at creation, from the doctor's
+verified token — and never written again.
 
 It will pass every test you write. For an insured patient the doctor places the
 order and the approval clears in a minute, often in the same session, so the

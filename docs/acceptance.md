@@ -19,7 +19,7 @@ is added, and a number in a document that nobody updates is worse than no number
 — run the suite and read the total it prints.
 
 Run against the real stack: **OpenELIS Global 2 3.2.2.0**, against its own
-external database. Most recent full unattended run: **255 passed, 0 failed**.
+external database. Most recent full unattended run: **260 passed, 0 failed**.
 The patched build was verified at 195, suite for suite, before the results
 display work added a check.
 
@@ -77,6 +77,15 @@ own routing identity.
 | **Known upstream:** shown two names for one clinician, OpenELIS stores one and never updates it | `make requester` §5 |
 | An order with no identified clinician still reaches the laboratory, with no name fabricated and no crash in the wizard | `make requester` §6 |
 | Mononyms, compound names and accented names map correctly; a name the laboratory will refuse is passed through rather than quietly rewritten | `make requester` §7 |
+| **A doctor's order dispatched by someone else — a nurse — still names the DOCTOR to the laboratory, not the dispatcher**, with the nurse's action in the audit trail where an action belongs | `make requester` §8 |
+
+§8 guards the one failure this sandbox cannot otherwise produce. Here an
+outpatient order is placed and dispatched in one request, so "who is signed in"
+and "who ordered this" are always the same person; in a real HIS a workflow sits
+between them and they are not. It uses the inpatient path, which already has the
+shape — doctor orders, order waits, a **different** person causes the dispatch.
+**Mutation-tested**: the bug was written into the dispatch deliberately and §8
+went red, which is the only way to know a guard is a guard.
 
 §3 is the only check that reads the laboratory's actual screen rather than the
 wire — it calls `ajaxQueryXML`, the endpoint the accessioning wizard's own

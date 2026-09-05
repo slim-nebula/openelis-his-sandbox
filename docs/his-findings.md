@@ -659,9 +659,33 @@ The rule:
 The failing version is one reasonable-looking line in whichever service publishes:
 
 ```ts
-// WRONG — this is whoever clicked "approved", not who ordered the test
-ordering_provider_hcp_id: req.user.hcp_id
+// ❌ WRONG — req.user at dispatch is whoever advanced the workflow:
+//    the nurse, the receptionist, the supervisor who approved the insurance
+const clinician = req.user.hcp_id;
+
+// ✅ RIGHT — read what the doctor's order already says
+const order = await client.query(
+  `SELECT ordering_provider, ordering_provider_hcp_id, ordering_provider_license
+     FROM lab_orders WHERE order_id = $1`, [orderId]);
+const clinician = order.rows[0].ordering_provider_hcp_id;
 ```
+
+The word **request** in `req.user` is the trap. It means *"whoever is making this
+HTTP call right now"* — and at dispatch that is a nurse or a receptionist, three
+days after the doctor went home. Nobody is asked to prove anything at this point;
+the code reads a name off a row, the way a pharmacist reads the prescriber off a
+prescription rather than telephoning the surgery.
+
+Three identities sit close together at that moment, and only one is the answer:
+
+| | Holds | At dispatch |
+|---|---|---|
+| `lab_orders.ordering_provider_hcp_id` | the clinician who decided | ✅ **read this** |
+| `lab_orders.ordering_provider_id` | that doctor's login account | audit trail only |
+| `req.user.hcp_id` | whoever is signed in *now* | ❌ never |
+
+Written **once**, at creation, from the doctor's verified token. Never written
+again — not by the approval step, not by the re-creation, not by the publish.
 
 **It will pass every test written against it.** For the insured patient the
 doctor orders and the approval clears within minutes, frequently in the same
@@ -690,8 +714,29 @@ and the clinician travels with it. What must never happen is a screen that lets
 anyone *choose* a doctor's name.
 
 **Write the test that can fail:** create as a doctor, advance and publish as a
-different user, assert the published clinician is still the doctor. A
+*different* user, assert the published clinician is still the doctor. A
 same-session test proves nothing here.
+
+There is a working one to copy — `scripts/test-requester.sh` §8. It uses the
+sandbox's inpatient path, which happens to have the same shape as your workflow:
+
+| Sandbox §8 | Your HIS |
+|---|---|
+| doctor places an **inpatient** order | doctor places an order |
+| held, **nothing published** | held for insurance, nothing published |
+| a **nurse** records the bedside draw | a **supervisor** approves |
+| *then* it dispatches | *then* it dispatches |
+
+Two actors, two moments, publish at the end. Only the reason for the wait
+differs — so no insurance phase had to be modelled to get the property under
+test.
+
+It was **mutation-tested**: the bug above was written into the dispatch
+deliberately, and §8 went red. Which is the point — a rule stated in a document
+is a rule that gets broken quietly, and a test that cannot fail reports safety it
+has not established. That exercise also caught a flaw in the test itself: the
+"…and NOT the nurse" check was passing vacuously when nothing was published at
+all, and now requires a clinician to be present before checking which one it is.
 
 ### The doctor's token will not survive the workflow, and must not need to
 

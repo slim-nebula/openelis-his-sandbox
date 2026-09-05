@@ -481,4 +481,98 @@ DIGITS=$(name_parts "$(order_as "$((BASE_ID + 7))" "Ward 3 Locum")")
 check "A name the laboratory will refuse is passed through, not quietly rewritten" \
     "[[ '$DIGITS' == 'Locum|Ward 3' ]]"
 
+# ---------------------------------------------------------------------------
+section "8 · The clinician survives a handoff to someone else"
+
+# THE ONLY SECTION HERE GUARDING A BUG THIS SANDBOX CANNOT OTHERWISE PRODUCE.
+#
+# An outpatient order is placed and dispatched in one request, so the doctor is
+# still the signed-in user when it goes. A real HIS has a workflow in between —
+# insurance verification, fulfilment, approval — and publishes once at the end.
+# The clinical decision and the dispatch become different moments, by different
+# people, minutes or days apart.
+#
+# That gap has one failure in it, and it is a single plausible line in whichever
+# service finally publishes:
+#
+#     ordering_provider_hcp_id: req.user.hcp_id   // whoever advanced the workflow
+#
+# It passes every same-session test. For an insured patient the approval clears
+# in a minute, often without the doctor leaving the screen, so "who is signed in"
+# and "who ordered this" are the same person and both answers look right. It
+# breaks only when they differ — the delayed, insurance-held, supervisor
+# re-created order, which is also the one least likely to be inspected and the
+# one where the laboratory most needs a real doctor to telephone.
+#
+# We do not model insurance to test it. The INPATIENT path already has the
+# shape: the doctor places an order that publishes nothing, and a DIFFERENT
+# person — the nurse at the bedside — is what causes it to dispatch. Same two
+# actors, same two moments, a different reason for the wait.
+#
+# The rule this asserts: once the order row exists, the clinician is read FROM
+# THE ROW, never from the session of whoever advances it.
+
+DOC_ID=$(( BASE_ID + 8 ))
+NURSE_ID=$(( BASE_ID + 9 ))
+
+# Placed by the doctor, and held — nothing has reached the laboratory yet.
+HANDOFF=$(order_as "$DOC_ID" "Ibrahim Toure" ',"patientClass":"INPATIENT"')
+
+check "The doctor's order is held, with nothing published yet" \
+    "[[ -z '$(requester_of "$HANDOFF")' ]]"
+
+# A different person entirely, with their own clinical identity. If the dispatch
+# ever reads the session instead of the row, THIS is who the laboratory is told
+# ordered the test.
+NURSE_TOKEN=$("$ROOT/scripts/mint-token.sh" --quiet --user "$NURSE_ID" \
+    --name "nurse.$NURSE_ID" --full-name "Mariam Cisse" \
+    ${LAB_ORDER_GROUP:+--groups "$LAB_ORDER_GROUP"} 2>/dev/null)
+
+curl -sf -H "Authorization: Bearer $NURSE_TOKEN" -X POST \
+    "${API}/lab-orders/${HANDOFF}/collection" -H 'Content-Type: application/json' \
+    -d "{\"collectedAt\":\"$(date -u -v-1H '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+        || date -u -d '1 hour ago' '+%Y-%m-%dT%H:%M:%SZ')\"}" -o /dev/null
+
+if await_publish "$HANDOFF"; then
+    ok "The nurse's action dispatched it — a second person, a second moment"
+else
+    bad "The nurse's action dispatched it" "nothing published for $HANDOFF"
+fi
+
+HANDOFF_REQ=$(requester_of "$HANDOFF")
+HANDOFF_HCP=$(bridge_sql "SELECT content -> 'identifier' -> 0 ->> 'value'
+                            FROM bridge.fhir_resources
+                           WHERE resource_type = 'Practitioner'
+                             AND resource_id = '${HANDOFF_REQ#Practitioner/}'")
+HANDOFF_NAME=$(bridge_rows "SELECT content -> 'name' -> 0 ->> 'family'
+                              FROM bridge.fhir_resources
+                             WHERE resource_type = 'Practitioner'
+                               AND resource_id = '${HANDOFF_REQ#Practitioner/}'" | xargs)
+
+# The assertion the whole section exists for.
+check "The laboratory is told the DOCTOR who ordered it…" \
+    "[[ '$HANDOFF_HCP' == '$(hcp_of "$DOC_ID")' && '$HANDOFF_NAME' == 'Toure' ]]"
+
+# Stated separately from the one above so a failure names the actual mistake:
+# "the dispatcher was published as the clinician" is a different diagnosis from
+# "the wrong doctor was published", and they have different fixes.
+#
+# The -n guard is not decoration. Mutation-testing this section — deliberately
+# writing the bug it exists to catch — showed this check passing while the
+# section as a whole was broken: with no requester published at all, "not the
+# nurse" is vacuously true. A check that cannot fail when the thing it guards is
+# broken is worse than no check, because it reports safety.
+check "…and NOT the nurse who dispatched it" \
+    "[[ -n '$HANDOFF_HCP' \
+        && '$HANDOFF_HCP' != '$(hcp_of "$NURSE_ID")' && '$HANDOFF_NAME' != 'Cisse' ]]"
+
+# The nurse is not erased — she observed the draw, and that is hers to have
+# stated. Attribution and action are different records: the order says who
+# decided, the trail says who did what and when.
+check "The nurse's action is in the audit trail, where an action belongs" \
+    "[[ \$(his_sql \"SELECT count(*) FROM his.lab_order_events e
+                      JOIN his.lab_orders o USING (order_id)
+                     WHERE o.order_number='$HANDOFF'
+                       AND e.event_type='SPECIMEN_COLLECTED'\") -ge 1 ]]"
+
 summary
