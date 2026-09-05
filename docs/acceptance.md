@@ -19,7 +19,7 @@ is added, and a number in a document that nobody updates is worse than no number
 — run the suite and read the total it prints.
 
 Run against the real stack: **OpenELIS Global 2 3.2.2.0**, against its own
-external database. Most recent full unattended run: **250 passed, 0 failed**.
+external database. Most recent full unattended run: **255 passed, 0 failed**.
 The patched build was verified at 195, suite for suite, before the results
 display work added a check.
 
@@ -70,6 +70,8 @@ own routing identity.
 | The laboratory's address is an `Organization`, and the running webapp polls for exactly what the bridge stamps | `make requester` §1 |
 | No **undelivered** order is stranded under a different owner — the silent failure mode of changing that value | `make requester` §1 |
 | `ServiceRequest.requester` carries a `Practitioner` whose id is a **UUID**, which `LabOrderSearchProvider` parses unguarded | `make requester` §2 |
+| The Practitioner is keyed on the **clinician** (`hcp.id`) and not the **account** (`usr_id`), and carries the licence number a laboratory recognises | `make requester` §2 |
+| A signed-in **non-clinician** — a receptionist — still gets their order to the laboratory, is recorded in the HIS audit trail, and is **not** passed off as the ordering doctor | `make requester` §6 |
 | The doctor's name appears on the accessioning screen, read from the wizard's own endpoint | `make requester` §3 |
 | One clinician stays one `Practitioner` across orders and across spellings; two clinicians sharing a name stay two | `make requester` §4 |
 | **Known upstream:** shown two names for one clinician, OpenELIS stores one and never updates it | `make requester` §5 |

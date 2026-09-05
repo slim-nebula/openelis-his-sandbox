@@ -28,6 +28,23 @@ export interface AuthenticatedUser {
   group_names: string[];
   group_ids: number[];
   business_unit_ids: number[];
+  /**
+   * The signed-in user's CLINICAL identity, when they have one —
+   * mlh_his_hcp_health_care_provider.id in the real HIS.
+   *
+   * Distinct from usr_id on purpose. usr_id is an account; this is the person a
+   * laboratory holds accountable for a test, and the two do not always both
+   * exist. Absent for a user with no provider row — a receptionist, a ward
+   * clerk — which is a real state and not an error.
+   *
+   * The sandbox carries it as a claim because it has no provider table to look
+   * it up in. A real deployment resolves it from usr_id against org-setup;
+   * either way it is established from the VERIFIED token and never from a
+   * request body. See db/his/015_provider_identity.sql.
+   */
+  hcp_id?: string | undefined;
+  /** The clinician's licence number, when recorded. */
+  hcp_license?: string | undefined;
   /** True when Redis could not be consulted and the session went unverified. */
   degraded: boolean;
 }
@@ -39,6 +56,8 @@ interface JwtPayload {
   group_names?: string[];
   group_ids?: number[];
   business_unit_ids?: number[];
+  hcp_id?: string | number;
+  hcp_license?: string;
 }
 
 /**
@@ -173,6 +192,12 @@ export const authenticateUser = async (
     group_names: payload.group_names ?? [],
     group_ids: payload.group_ids ?? [],
     business_unit_ids: payload.business_unit_ids ?? [],
+    // Left undefined rather than '' when absent. A user with no provider row
+    // has no clinical identity, and an empty string is a value — it would key a
+    // FHIR Practitioner and put a nameless clinician on a laboratory's records.
+    hcp_id: payload.hcp_id === undefined || payload.hcp_id === null
+      ? undefined : String(payload.hcp_id),
+    hcp_license: payload.hcp_license || undefined,
     degraded,
   };
 

@@ -311,16 +311,96 @@ your own HIS:
   your HIS will not reach the laboratory. Get the display name right at the
   source; there is no second chance from this side.
 
-In the estate both come from `mlh_his_hcp_health_care_provider`: `usr_id` is the
-stable key the `Practitioner` uuid is derived from, and `name` is the display
-name. `name` is a single column rather than given/family, which is why the bridge
-splits on whitespace — last token to `family`, the rest to `given` — and why
-`hcp.name` should be written the way the laboratory should print it.
+#### Which identity to send — the account or the clinician
 
-`license_number` on that same row is worth sending as a **second identifier**
-once you wire your own HIS. A laboratory recognises a licence number; `usr_id`
-means nothing outside your estate, and a laboratory reconciling its provider
-records by hand will look for the licence.
+This is the part to get right, because both are available and only one is
+correct.
+
+Your estate keeps them in two different services:
+
+```
+IAM                          HIS-org-setup-service
+  usr_id  ──────────────────►  mlh_his_hcp_health_care_provider
+  the ACCOUNT that signed in     id              ← the CLINICIAN
+                                 usr_id          ← nullable link back
+                                 license_number
+                                 name, name_ar
+```
+
+**Send `hcp.id`.** Three properties of your own schema decide it:
+
+| | Consequence |
+|---|---|
+| `hcp.usr_id` is **nullable** | A visiting consultant or referring physician exists as a provider with no login. Key on the account and those clinicians have no identity to send at all |
+| it has **no unique constraint** | Nothing stops two provider rows sharing one `usr_id`. A key that can collide is not a key |
+| your clinical record already uses `hcp.id` | `mlh_his_sys_patient_locations.ih_hcp_hcp_id` names the attending doctor that way. Send the account and the laboratory's view of "which doctor" cannot be lined up with your own |
+
+An account is a thing someone logs into. A provider is a person accountable for
+a test. The laboratory needs the second.
+
+**This does not weaken the rule that a caller may never name a clinician.** Both
+identities come from the same verified token:
+
+```
+verified token → usr_id → provider row → hcp.id → FHIR Practitioner
+```
+
+The token still decides which account acted. `hcp.id` is the correct name for
+the person behind it. Nothing is read from a request body.
+
+**Keep both columns.** They answer different questions and collapsing them is
+what made this wrong in the first place:
+
+| Column | Answers | Read by |
+|---|---|---|
+| `ordering_provider_id` (`usr_id`) | which **account** placed this order | your audit trail |
+| `ordering_provider_hcp_id` (`hcp.id`) | which **clinician** is accountable | the laboratory |
+
+**When the signed-in user has no provider row** — a receptionist, a ward clerk —
+publish no clinician. The order still goes; the account is not substituted for a
+doctor. A login printed on a laboratory report as though it were a person is a
+false clinical attribution, and worse than an empty field. `make requester` §6
+covers exactly this.
+
+#### The name, and the licence
+
+`hcp.name` is a **single column**, not given/family, so the bridge splits on
+whitespace — last token to `family`, the rest to `given`. Combined with the
+freeze above: **however `hcp.name` is written the first time that clinician
+orders, that is what the laboratory prints from then on.** Worth a rule for your
+team — write `hcp.name` the way it should appear on a laboratory report.
+
+`license_number` goes as a **second identifier**. `hcp.id` means nothing outside
+your estate; a licence number is what a technician reconciling provider records
+recognises, and what a regulator asks for.
+
+#### How the sandbox stands in for this
+
+There is no provider table here. Building one would mean modelling your system
+inside a sandbox meant to demonstrate an integration, and it would go stale the
+first time `org-setup-service` changed. Instead the token carries the claims
+directly:
+
+```bash
+# A clinician
+scripts/mint-token.sh --user 7 --provider-id 4412 --license ML-4412
+# An account with no provider row
+scripts/mint-token.sh --user 8 --name front.desk --no-provider
+```
+
+`mint-token.sh` defaults the provider id to `9000 + usr_id` so the two are never
+the same number in an example — the whole point is that they are different
+things, and a default that made them look alike would teach the wrong lesson.
+
+**Your version replaces the claim with a lookup**, resolving `usr_id` to the
+provider row at the point the order is created. Everything downstream of that —
+`db/his/015_provider_identity.sql`, the bridge's `BuildOrderingClinician` — is
+the same either way.
+
+One sandbox artefact **not** to copy: the licence is stored on the order row
+here. A licence belongs to a practitioner, not to an order, and in your HIS it
+should be joined from the provider row at dispatch. It is on the order here only
+because there is nothing to join to.
 
 Deliberately **not** sent: the file number/MRN, the requesting organisation, and
 the visit number. Full reasoning in

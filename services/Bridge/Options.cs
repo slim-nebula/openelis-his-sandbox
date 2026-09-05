@@ -236,14 +236,24 @@ public sealed record HisOrder(
     string? ResultUnit,
     string OrderStatus,
     // Who placed the order, from the verified token — never the request body
-    // (db/his/008). The display name goes on the laboratory's report; the id is
-    // what the FHIR Practitioner identity is derived from, so that one clinician
-    // stays one clinician however their name is spelled.
-    //
-    // Both nullable: rows predating db/his/008 have no identified orderer, and
-    // the bridge sends no requester at all rather than invent one.
+    // (db/his/008). The display name goes on the laboratory's report.
     string? OrderingProvider,
+    // The ACCOUNT that acted. Carried for completeness and NOT used as the
+    // Practitioner key: it is nullable and non-unique in the source system, and
+    // the rest of the clinical record does not identify doctors this way.
     string? OrderingProviderId,
+    // The CLINICIAN — mlh_his_hcp_health_care_provider.id — and what the FHIR
+    // Practitioner identity is actually derived from, so that one clinician
+    // stays one clinician however their name is spelled and whether or not they
+    // have a login. See db/his/015_provider_identity.sql.
+    //
+    // Null is a real answer, not a gap to fill: a receptionist has an account
+    // and no clinical identity, and rows predating 015 have neither. The bridge
+    // then sends no requester at all rather than substituting the account.
+    string? OrderingProviderHcpId,
+    // Their licence number, published as a second identifier because a
+    // laboratory recognises a licence where an internal id means nothing.
+    string? OrderingProviderLicense,
     string FacilityCode,
     string Priority,
     // OUTPATIENT or INPATIENT. Only the inpatient path carries a collection

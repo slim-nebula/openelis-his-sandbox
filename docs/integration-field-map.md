@@ -171,16 +171,51 @@ carries now.
 | **Specimen** | `test_catalogue.specimen_type` | `Specimen.type` | yes — and load-bearing, see §3 |
 | Priority | `lab_orders.priority` | `ServiceRequest.priority` | yes |
 | Collection time | `lab_orders.collected_at` | `Specimen.collection.collectedDateTime` | yes — **inpatient orders only**; read on import by `LabOrderSearchProvider.addCollection` and pre-filled onto the accessioner's screen |
-| **Ordering clinician** | `lab_orders.ordering_provider` + `ordering_provider_id` | `ServiceRequest.requester` → `Practitioner` | yes — but **only** because the laboratory's own address is typed `Organization`; see §4, defect 3 |
+| **Ordering clinician** | `lab_orders.ordering_provider` + `ordering_provider_hcp_id` | `ServiceRequest.requester` → `Practitioner` | yes — but **only** because the laboratory's own address is typed `Organization`; see §4, defect 3 |
+| Clinician's licence | `lab_orders.ordering_provider_license` | `Practitioner.identifier[1]` | yes — the identifier a laboratory actually recognises |
 | Laboratory (routing address) | `OE_REMOTE_SOURCE_IDENTIFIER` | `Task.owner` → `Organization` | n/a — this is the address OpenELIS polls on, not data about the patient |
 
-The clinician's `Practitioner` id is a **UUID derived from `ordering_provider_id`**,
-never from the name. Two constraints force this. `LabOrderSearchProvider:403`
-calls `UUID.fromString()` on the id with no guard, so a raw `usr_id` throws
-inside the accessioning wizard — a 500 on the technician's screen, not a blank
-field. And a name-derived identity would make "Dr Konate", "Dr Konaté" and "dr
-konate" three clinicians in the laboratory's own provider records, which is
-exactly the defect `db/his/008` closed inside the HIS.
+### Which identity the clinician travels under
+
+The `Practitioner` id is a **UUID derived from the clinician's own id** —
+`mlh_his_hcp_health_care_provider.id` in the HIS this sandbox is built against.
+Not the login account, and never the name.
+
+| Identity | Lives in | Answers | Travels? |
+|---|---|---|---|
+| `usr_id` | IAM | which **account** placed this order | no — stays in `his.audit_events` and `lab_orders.ordering_provider_id` |
+| `hcp.id` | org-setup | which **clinician** is accountable | **yes**, as the Practitioner key |
+| `license_number` | org-setup | how a laboratory recognises them | yes, as a second identifier |
+
+Three properties of the real schema decide this, and all three are checkable:
+
+- **`hcp.usr_id` is nullable.** A visiting consultant or a referring physician
+  exists as a provider with no login at all. Key on the account and those
+  clinicians have no identity to send.
+- **It carries no unique constraint.** Nothing stops two provider rows sharing
+  one `usr_id`. A key that can collide is not a key.
+- **The clinical record already uses `hcp.id`** —
+  `mlh_his_sys_patient_locations.ih_hcp_hcp_id` names the attending doctor that
+  way. Sending the account would leave the laboratory unable to line up with the
+  HIS's own view of which doctor.
+
+This does **not** loosen the rule that a caller may never name a clinician. Both
+identities come from the same verified token; the token still decides which
+account acted, and the provider id is simply the correct name for the person
+behind it (`db/his/015_provider_identity.sql`).
+
+Two constraints force the UUID specifically. `LabOrderSearchProvider:403` calls
+`UUID.fromString()` on the id with no guard, so a raw numeric id throws inside
+the accessioning wizard — a 500 on the technician's screen, not a blank field.
+And a name-derived identity would make "Dr Konate", "Dr Konaté" and "dr konate"
+three clinicians in the laboratory's own provider records, which is exactly the
+defect `db/his/008` closed inside the HIS.
+
+**A signed-in user with no provider row publishes no clinician at all.** A
+receptionist has an account and no clinical identity; the order still reaches
+the laboratory, and the account is not substituted for a doctor. Putting a login
+on a laboratory report as though it were a person would be a false clinical
+attribution, which is worse than an empty field.
 
 The display name is split on whitespace, last token to `family` and the rest to
 `given`, because OpenELIS reads the two separately. It is **not** sanitised:

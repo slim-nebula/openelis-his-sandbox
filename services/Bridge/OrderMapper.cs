@@ -233,41 +233,68 @@ public static class OrderMapper
     /// <summary>
     /// The doctor who placed the order, as a Practitioner OpenELIS can resolve.
     ///
-    /// Keyed on lab_orders.ordering_provider_id — the usr_id from the verified
-    /// token — and never on the name. A name-derived identity makes "Dr Konate",
+    /// KEYED ON THE CLINICAL IDENTITY, NOT THE ACCOUNT.
+    /// lab_orders.ordering_provider_hcp_id is mlh_his_hcp_health_care_provider.id
+    /// in the HIS this sandbox is built against - the clinician a laboratory
+    /// holds accountable for a test. The account that signed in
+    /// (ordering_provider_id / usr_id) stays in the HIS audit trail and is not
+    /// what travels, for three reasons visible in that schema: usr_id is
+    /// nullable, so a consultant with no login has no identity to send; it
+    /// carries no unique constraint, so it can collide; and the clinical record
+    /// already names doctors by hcp.id
+    /// (mlh_his_sys_patient_locations.ih_hcp_hcp_id), so sending the account
+    /// would leave the laboratory unable to line up with the HIS.
+    ///
+    /// Not the name either, ever. A name-derived identity makes "Dr Konate",
     /// "Dr Konaté" and "dr konate" three different clinicians in the
-    /// laboratory's own provider records, which is the defect db/his/008 exists
-    /// to close; deriving the FHIR id from the name here would reopen it one
+    /// laboratory's own provider records - the defect db/his/008 closed inside
+    /// the HIS, which deriving the FHIR id from the name here would reopen one
     /// layer further out.
     ///
     /// The id MUST be a uuid. LabOrderSearchProvider.addRequester calls
-    /// UUID.fromString() on it unguarded, so a raw usr_id like "42" throws
+    /// UUID.fromString() on it unguarded, so a raw id like "9042" throws
     /// IllegalArgumentException inside the accessioning wizard - a 500 on the
     /// laboratory's screen, not a missing field. DeterministicGuid gives the
     /// same uuid for the same clinician on every order, which is also what lets
     /// OpenELIS match an existing local Practitioner instead of accumulating a
     /// duplicate per order.
     ///
-    /// Returns null when the HIS has no identified clinician: historical rows
-    /// predating db/his/008 carry a NULL ordering_provider_id, and an order with
-    /// no verified orderer must not acquire one in transit.
+    /// Returns null when there is no clinical identity, which is a real state
+    /// and not a gap: a receptionist has an account and no provider row, and
+    /// rows predating db/his/015 have neither. An order with no identified
+    /// clinician must not acquire one in transit - least of all the account,
+    /// which would put a login on a laboratory report as though it were a
+    /// person.
     /// </summary>
     private static Practitioner? BuildOrderingClinician(HisOrder order)
     {
-        if (string.IsNullOrWhiteSpace(order.OrderingProviderId)) return null;
+        if (string.IsNullOrWhiteSpace(order.OrderingProviderHcpId)) return null;
         if (string.IsNullOrWhiteSpace(order.OrderingProvider)) return null;
 
         var (given, family) = SplitName(order.OrderingProvider);
         var name = new HumanName { Family = family };
         if (given is not null) name.Given = [given];
 
+        // The stable key first, so the laboratory can reconcile against the HIS
+        // by something better than a spelling.
+        var identifiers = new List<Identifier>
+        {
+            new($"{OeSystem}/hcp_id", order.OrderingProviderHcpId)
+        };
+
+        // The licence second, and it is the one a HUMAN in the laboratory will
+        // use. hcp_id means nothing outside the HIS; a licence number is what a
+        // technician reconciling provider records recognises, and what a
+        // regulator asks for. Absent when the HIS has not recorded one.
+        if (!string.IsNullOrWhiteSpace(order.OrderingProviderLicense))
+            identifiers.Add(new Identifier($"{OeSystem}/provider_license",
+                order.OrderingProviderLicense));
+
         return new Practitioner
         {
-            Id = DeterministicGuid($"practitioner|{order.OrderingProviderId}").ToString(),
+            Id = DeterministicGuid($"practitioner|{order.OrderingProviderHcpId}").ToString(),
             Active = true,
-            // The stable key, carried so the laboratory can reconcile against
-            // the HIS by something better than a spelling.
-            Identifier = [new Identifier($"{OeSystem}/provider_id", order.OrderingProviderId)],
+            Identifier = identifiers,
             Name = [name]
         };
     }

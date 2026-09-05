@@ -6,8 +6,17 @@ export interface ILabOrder {
   testName: string;
   orderStatus: string;
   orderingProvider: string;
-  /** usr_id of the authenticated clinician. Null only for pre-identity orders. */
+  /** usr_id of the authenticated ACCOUNT. Null only for pre-identity orders. */
   orderingProviderId: string | null;
+  /**
+   * The ordering clinician's CLINICAL identity —
+   * mlh_his_hcp_health_care_provider.id in the real HIS. This is what the
+   * laboratory is told; orderingProviderId is what the audit trail keeps. Null
+   * when the signed-in user has no provider row.
+   */
+  orderingProviderHcpId: string | null;
+  /** Their licence number, sent to the laboratory as a second identifier. */
+  orderingProviderLicense: string | null;
   facilityCode: string;
   priority: string;
   /**
@@ -90,10 +99,28 @@ export interface IRecordCollectionInput {
   collectedAt: string;
 }
 
-/** Who placed the order, established from the token rather than the payload. */
+/**
+ * Who placed the order, established from the token rather than the payload.
+ *
+ * Two identities, because two systems ask different questions. `id` is the
+ * ACCOUNT that acted and is what an audit trail needs. `hcpId` is the CLINICIAN
+ * who is accountable for the test and is what the laboratory is told. In the
+ * real HIS they live in different services — IAM and org-setup — and one can
+ * exist without the other. See db/his/015_provider_identity.sql.
+ */
 export interface IOrderingClinician {
+  /** usr_id from the verified token. Always present. */
   id: string;
+  /** usr_full_name — what a laboratory report prints. */
   name: string;
+  /**
+   * mlh_his_hcp_health_care_provider.id. Absent when the signed-in user has no
+   * provider row, in which case no clinician is published rather than one being
+   * invented from the account.
+   */
+  hcpId?: string | undefined;
+  /** The clinician's licence number, when recorded. */
+  license?: string | undefined;
 }
 
 export interface IResultSummary {
@@ -194,11 +221,20 @@ export interface IBridgeOrderPayload {
   orderStatus: string;
   orderingProvider: string;
   /**
-   * Sent so the bridge can key the FHIR Practitioner off a stable id instead of
-   * a hash of the display name — which made every spelling of a clinician's
-   * name a different practitioner in the laboratory's records.
+   * The ACCOUNT that placed the order. Kept for the audit trail; the bridge no
+   * longer keys the laboratory's Practitioner on it.
    */
   orderingProviderId: string | null;
+  /**
+   * What the bridge DOES key the FHIR Practitioner on — the clinician's own id,
+   * stable and unique, rather than the account's or a hash of the display name.
+   * A name-derived identity made every spelling of one clinician a different
+   * practitioner in the laboratory's records; an account-derived one leaves out
+   * every clinician who has no login. See db/his/015_provider_identity.sql.
+   */
+  orderingProviderHcpId: string | null;
+  /** Their licence number, published as a second Practitioner identifier. */
+  orderingProviderLicense: string | null;
   facilityCode: string;
   priority: string;
   /** OUTPATIENT or INPATIENT — see 013_specimen_collection.sql. */

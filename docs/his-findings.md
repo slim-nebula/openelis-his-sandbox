@@ -9,8 +9,9 @@ building the sandbox against your stack — and where the sandbox fixes somethin
 there is working code to copy, not a snippet.
 
 **How to read this.** Part 1 is defects: things that are wrong now. Part 2 is a
-design for something you do not have yet and will be asked for. Part 3 is what
-the sandbox took *from* you.
+design for something you do not have yet and will be asked for. Part 2b is what
+an outside laboratory will ask of `org-setup-service`, including one place where
+the natural choice is the wrong one. Part 3 is what the sandbox took *from* you.
 
 ---
 
@@ -578,6 +579,94 @@ Four things the sandbox cannot decide, because they are policy:
 4. **Clock discipline.** Records from services whose clocks disagree cannot be
    ordered, and an audit trail that cannot be ordered is hard to rely on. NTP
    everywhere, and record `recorded` in UTC.
+
+---
+
+# Part 2b — What a laboratory integration will ask of org-setup
+
+Not defects. Things the schema already has that an outside laboratory needs, and
+the one place a natural choice is the wrong one.
+
+## The ordering clinician is `hcp.id`, not `usr_id`
+
+A laboratory has to name the ordering clinician on its own report — CLIA
+42 CFR 493.1291(a), ISO 15189:2022 7.4.1.6.c — because the laboratory is who
+telephones a critical value. So one of your two identities has to travel, and
+`usr_id` is the tempting one because it is already on every request.
+
+It is the wrong one, for reasons visible in your own schema:
+
+```prisma
+model mlh_his_hcp_health_care_provider {
+  id             Int     @id @default(autoincrement())
+  usr_id         Int?                                   // nullable, not unique
+  license_number String?
+  name, name_ar
+}
+```
+
+- **`usr_id` is nullable.** A visiting consultant, a referring physician, anyone
+  whose account was never created or has been disabled, is a provider with no
+  login. Keyed on the account, those clinicians have no identity to send at all.
+- **No unique constraint on it.** Two provider rows can share one.
+- **`mlh_his_sys_patient_locations.ih_hcp_hcp_id` already identifies the
+  attending doctor by `hcp.id`.** Sending the account would leave the
+  laboratory's records unable to line up with your own.
+
+The token still decides *who*: `verified token → usr_id → provider row →
+hcp.id`. Nothing is read from a request body, so ordering on behalf of another
+clinician stays impossible. Keep `usr_id` on the order for the audit trail —
+"which account acted" and "which clinician is accountable" are different
+questions and both get asked.
+
+**Where the sandbox does it:** `db/his/015_provider_identity.sql`,
+`OrderMapper.BuildOrderingClinician`, proved by `make requester` §2 and §6.
+
+## Send `license_number` too
+
+`hcp.id` means nothing outside your estate. A laboratory technician reconciling
+provider records, and a regulator asking who ordered a test, both work from a
+licence number. It goes as a second `Practitioner.identifier` and costs nothing.
+
+## A user with no provider row must not become a clinician
+
+A receptionist or ward clerk has an account and no `hcp` row. Their order should
+still reach the laboratory — a missing name is a gap in the record, not a reason
+to withhold a test — but **the account must not be substituted for a doctor.** A
+login printed on a laboratory report as though it were a person is a false
+clinical attribution, and worse than an empty field.
+
+Worth deciding on your side: if non-clinicians cannot place orders at all in
+your HIS, refuse at the API instead of degrading. The sandbox degrades because it
+cannot know your policy.
+
+## The Latin name columns are load-bearing for the laboratory
+
+OpenELIS validates names against a configurable character set. The default, and
+what our instance runs, is Latin only:
+
+```
+site_information.lastNameCharset = .'a-zàâçéèêëîïôûùüÿñæœ -
+```
+
+No Arabic. No digits. That applies to `patients.first_name` / `last_name` and to
+`hcp.name` — so `first_name_ar`, `last_name_ar` and `name_ar` cannot be what
+travels.
+
+Your schema has this right: the Latin columns are `NOT NULL` and the `_ar` ones
+optional, so a usable name always exists. But nothing at the database level stops
+a site typing Arabic into a Latin column, and when that happens **the order is
+refused inside the laboratory**, at accessioning, in front of a technician who
+cannot fix it. Your HIS reports success. Worth a validation at entry.
+
+## One name, one chance
+
+`hcp.name` is a single column, and OpenELIS **copies a practitioner on first
+import and never refreshes it** (`docs/upstream-issues/05-...`). Between them:
+however `hcp.name` is spelled the first time that clinician orders a test, that
+is what the laboratory prints from then on. A later correction never arrives.
+
+Write `hcp.name` the way it should appear on a laboratory report.
 
 ---
 

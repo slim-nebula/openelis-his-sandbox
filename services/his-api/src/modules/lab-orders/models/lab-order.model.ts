@@ -15,7 +15,9 @@ import type {
 } from '../types/lab-order.types.js';
 
 const ORDER_COLUMNS = `order_id, order_number, patient_id, test_code, test_name, order_status,
-                       ordering_provider, ordering_provider_id, facility_code, priority, visit_number,
+                       ordering_provider, ordering_provider_id,
+                       ordering_provider_hcp_id, ordering_provider_license,
+                       facility_code, priority, visit_number,
                        patient_class, collected_at,
                        status_detail, lab_progress, lab_progress_at, lab_accession,
                        created_at, updated_at`;
@@ -99,6 +101,16 @@ const toOrder = (row: Row): ILabOrder => ({
   orderingProvider: String(row.ordering_provider),
   orderingProviderId: row.ordering_provider_id === null || row.ordering_provider_id === undefined
     ? null : String(row.ordering_provider_id),
+  // The clinical identity, which is what the bridge keys the laboratory's
+  // Practitioner on. Null is a real answer: the signed-in user had no provider
+  // row, so no clinician is published rather than the account standing in for
+  // one. See db/his/015_provider_identity.sql.
+  orderingProviderHcpId:
+    row.ordering_provider_hcp_id === null || row.ordering_provider_hcp_id === undefined
+      ? null : String(row.ordering_provider_hcp_id),
+  orderingProviderLicense:
+    row.ordering_provider_license === null || row.ordering_provider_license === undefined
+      ? null : String(row.ordering_provider_license),
   facilityCode: String(row.facility_code),
   priority: String(row.priority),
   visitNumber: row.visit_number === null || row.visit_number === undefined
@@ -309,9 +321,11 @@ export class LabOrderModel {
       const inserted = await client.query(
         `INSERT INTO his.lab_orders
              (order_id, order_number, patient_id, test_code, test_name, order_status,
-              ordering_provider, ordering_provider_id, facility_code, priority, visit_number,
+              ordering_provider, ordering_provider_id,
+              ordering_provider_hcp_id, ordering_provider_license,
+              facility_code, priority, visit_number,
               patient_class, correlation_id)
-         VALUES ($1, $2, $3, $4, $5, $12, $6, $7, $8, $9, $10, $13, $11)
+         VALUES ($1, $2, $3, $4, $5, $12, $6, $7, $14, $15, $8, $9, $10, $13, $11)
          RETURNING ${ORDER_COLUMNS}`,
         [
           orderId,
@@ -327,6 +341,12 @@ export class LabOrderModel {
           correlationId,
           initialStatus,
           patientClass,
+          // Both null for a signed-in user with no provider row. That is a real
+          // state — a receptionist has an account and no clinical identity — and
+          // the order still goes to the laboratory, without a clinician, rather
+          // than being refused or having the account substituted for one.
+          clinician.hcpId ?? null,
+          clinician.license ?? null,
         ],
       );
 
@@ -466,6 +486,9 @@ export class LabOrderModel {
       `SELECT o.order_id, o.order_number, o.test_code, o.test_name,
               c.loinc_code, c.specimen_type, c.specimen_snomed, c.result_unit,
               o.order_status, o.ordering_provider, o.ordering_provider_id,
+              -- The clinical identity is what the bridge keys the laboratory's
+              -- Practitioner on; ordering_provider_id stays for the audit trail.
+              o.ordering_provider_hcp_id, o.ordering_provider_license,
               o.facility_code, o.priority,
               -- What the ward recorded, for an inpatient draw. Null for an
               -- outpatient, whose collection the laboratory observes itself.

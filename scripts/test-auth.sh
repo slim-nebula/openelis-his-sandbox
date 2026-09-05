@@ -367,16 +367,27 @@ for _ in $(seq 1 30); do
     [[ -n "$ATTRIB_REQ" ]] && break
     sleep 1
 done
-ATTRIB_USR=$(bridge_sql "SELECT content -> 'identifier' -> 0 ->> 'value'
+ATTRIB_HCP=$(bridge_sql "SELECT content -> 'identifier' -> 0 ->> 'value'
                            FROM bridge.fhir_resources
                           WHERE resource_type = 'Practitioner'
                             AND resource_id = '${ATTRIB_REQ#Practitioner/}'")
+ATTRIB_NAME=$(bridge_rows "SELECT content -> 'name' -> 0 ->> 'family'
+                             FROM bridge.fhir_resources
+                            WHERE resource_type = 'Practitioner'
+                              AND resource_id = '${ATTRIB_REQ#Practitioner/}'" | xargs)
 
-# usr_id 33, not the "Dr. Somebody Else" the request body asked for. This is the
-# check that would catch the body being trusted again anywhere between the API
-# and the laboratory's screen.
-check "…and the laboratory is told the token's clinician, not the body's" \
-    "[[ '$ATTRIB_USR' == 33 ]]"
+# The clinical identity belonging to usr_id 33 — 9033, mint-token.sh's stand-in
+# for the org-setup lookup (db/his/015). Asserted alongside the name because the
+# two fail differently: a wrong id means the wrong key travelled, a wrong name
+# means the request body was believed.
+check "…and the laboratory is told the token holder's clinical identity" \
+    "[[ '$ATTRIB_HCP' == 9033 ]]"
+
+# "Dr. Somebody Else" is what the request body asked for a few checks above. If
+# it ever reaches here, the body has been trusted somewhere between the API and
+# the laboratory's screen.
+check "…and never the clinician the request body named" \
+    "[[ '$ATTRIB_NAME' == 'Test' && '$ATTRIB_NAME' != 'Else' ]]"
 
 # ---------------------------------------------------------------------------
 section "6 · The bridge is a service, not a person"

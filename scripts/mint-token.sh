@@ -25,6 +25,11 @@
 #   scripts/mint-token.sh --user 7 --name dr.reed --groups lab-orders,lab-ops
 #   scripts/mint-token.sh --ttl 60 --quiet                 # 60s token, token only
 #   eval "$(scripts/mint-token.sh --export)"               # sets HIS_TOKEN
+#
+#   # A clinician with a specific provider identity (hcp.id + licence)
+#   scripts/mint-token.sh --user 7 --provider-id 4412 --license ML-4412
+#   # An account with no provider row: a receptionist, a ward clerk
+#   scripts/mint-token.sh --user 8 --name front.desk --no-provider
 # =============================================================================
 set -euo pipefail
 
@@ -40,6 +45,26 @@ fi
 USER_ID=1
 USER_NAME=sandbox.user
 FULL_NAME="Sandbox User"
+
+# The signed-in user's CLINICAL identity, which is not their account.
+#
+# In the estate these live in two different services. IAM owns usr_id — the
+# account. HIS-org-setup-service owns mlh_his_hcp_health_care_provider, whose
+# `id` is the clinician a laboratory holds accountable for a test, and whose
+# usr_id column is NULLABLE: a visiting consultant or a referring physician
+# exists as a provider with no login at all.
+#
+# A real deployment resolves one from the other. The sandbox has no provider
+# table to resolve against — building one would be modelling YOUR system inside
+# a sandbox meant to demonstrate an integration — so the claim carries it
+# directly, standing in for that lookup.
+#
+# Defaulted to something that is obviously NOT the usr_id, because the whole
+# point is that they are different numbers for different things and a default
+# that made them look alike would teach the wrong lesson.
+HCP_ID=""
+HCP_LICENSE=""
+NO_PROVIDER=false
 # Defaults to whatever the clinical API requires, so a token from `make token`
 # can actually order a test. Override with --groups.
 #
@@ -59,6 +84,13 @@ while [[ $# -gt 0 ]]; do
         --name)       USER_NAME="$2"; shift 2 ;;
         --full-name)  FULL_NAME="$2"; shift 2 ;;
         --groups)     USER_GROUPS="$2"; shift 2 ;;
+        # mlh_his_hcp_health_care_provider.id and .license_number.
+        --provider-id) HCP_ID="$2"; shift 2 ;;
+        --license)     HCP_LICENSE="$2"; shift 2 ;;
+        # A user with an account and no provider row — a receptionist, a ward
+        # clerk. Their orders reach the laboratory with no clinician named,
+        # rather than with the account substituted for one.
+        --no-provider) NO_PROVIDER=true; shift ;;
         --ttl)        TTL="$2"; shift 2 ;;
         --quiet)      QUIET=true; shift ;;
         --export)     EXPORT=true; QUIET=true; shift ;;
@@ -91,6 +123,17 @@ if ! [[ "$USER_ID" =~ ^[0-9]+$ ]]; then
     exit 2
 fi
 
+# 9000 + usr_id, so the two identities are never the same number in a sandbox
+# session. That matters: the change this stands in for is precisely that the
+# laboratory must be told the CLINICIAN and not the ACCOUNT, and a default where
+# both read "42" would make the distinction invisible in every example.
+if [[ "$NO_PROVIDER" == true ]]; then
+    HCP_ID=""; HCP_LICENSE=""
+else
+    [[ -n "$HCP_ID" ]]      || HCP_ID=$(( 9000 + USER_ID ))
+    [[ -n "$HCP_LICENSE" ]] || HCP_LICENSE="ML-${HCP_ID}"
+fi
+
 if ! docker ps --format '{{.Names}}' | grep -qx his-api; then
     echo "his-api is not running — start the sandbox with 'make up' first." >&2
     exit 1
@@ -105,6 +148,8 @@ TOKEN=$(docker exec -i \
     -e MINT_USER_NAME="$USER_NAME" \
     -e MINT_FULL_NAME="$FULL_NAME" \
     -e MINT_GROUPS="$USER_GROUPS" \
+    -e MINT_HCP_ID="$HCP_ID" \
+    -e MINT_HCP_LICENSE="$HCP_LICENSE" \
     -e MINT_TTL="$TTL" \
     his-api node -e '
 const jwt = require("jsonwebtoken");
@@ -115,12 +160,20 @@ const payload = {
   usr_id: Number(process.env.MINT_USER_ID),
   usr_name: process.env.MINT_USER_NAME,
   usr_full_name: process.env.MINT_FULL_NAME,
-  is_hcp_usr: true,
+  is_hcp_usr: Boolean(process.env.MINT_HCP_ID),
   is_employee_usr: true,
   group_names: groups,
   group_ids: groups.map((_, i) => i + 1),
   business_unit_ids: [1],
 };
+// Omitted entirely rather than sent as null when the user is not a clinician.
+// An absent claim says "this account has no provider row"; a null one says
+// "there is a provider whose id is nothing", and the second would key a
+// nameless Practitioner into the laboratory records.
+if (process.env.MINT_HCP_ID) {
+  payload.hcp_id = Number(process.env.MINT_HCP_ID);
+  payload.hcp_license = process.env.MINT_HCP_LICENSE;
+}
 process.stdout.write(jwt.sign(payload, secret, { expiresIn: Number(process.env.MINT_TTL) }));
 ')
 

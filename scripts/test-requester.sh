@@ -46,6 +46,15 @@ TEST_CODE=$(any_active_test_code)
 BASE_ID=$(( 70000 + RANDOM % 20000 ))
 
 # ---------------------------------------------------------------------------
+# The provider id for a given usr_id, mirroring mint-token.sh's stand-in for the
+# lookup a real deployment does against mlh_his_hcp_health_care_provider.
+#
+# Deliberately never equal to the usr_id. The account and the clinician are
+# different things — that is the whole of db/his/015 — and a fixture where both
+# read the same number could not tell the two apart, so it would pass whichever
+# one the bridge sent.
+hcp_of() { echo $(( 9000 + $1 )); }
+
 # Places an order as a named clinician and echoes the order number.
 #
 # A separate token per clinician, because ordering_provider is written from the
@@ -207,7 +216,7 @@ check "ServiceRequest.requester names a Practitioner" \
     "[[ '$LIVE_REQ' == Practitioner/* ]]"
 
 # LabOrderSearchProvider.addRequester calls UUID.fromString() on this id with no
-# guard. A raw usr_id like '$BASE_ID' would throw inside the accessioning wizard
+# guard. A raw provider id like '$(hcp_of "$BASE_ID")' would throw inside the wizard
 # — a 500 on the laboratory's screen, not a blank field.
 check "The Practitioner id is a UUID, which the wizard requires" \
     "[[ '${LIVE_REQ#Practitioner/}' =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]"
@@ -216,8 +225,20 @@ LIVE_USR=$(bridge_sql "SELECT content -> 'identifier' -> 0 ->> 'value'
                          FROM bridge.fhir_resources
                         WHERE resource_type = 'Practitioner'
                           AND resource_id = '${LIVE_REQ#Practitioner/}'")
-check "The Practitioner carries the usr_id, so the laboratory can reconcile on it" \
-    "[[ '$LIVE_USR' == '$BASE_ID' ]]"
+# The CLINICAL identity, not the account. LIVE_USR reading back as $BASE_ID
+# would mean the bridge had gone back to keying on the login, which is the
+# regression db/his/015 exists to prevent.
+check "The Practitioner carries the clinician's own id, not the account's" \
+    "[[ '$LIVE_USR' == '$(hcp_of "$BASE_ID")' && '$LIVE_USR' != '$BASE_ID' ]]"
+
+LIVE_LICENCE=$(bridge_sql "SELECT content -> 'identifier' -> 1 ->> 'value'
+                             FROM bridge.fhir_resources
+                            WHERE resource_type = 'Practitioner'
+                              AND resource_id = '${LIVE_REQ#Practitioner/}'")
+# What a human in the laboratory reconciles on. hcp_id means nothing outside the
+# HIS; a licence number is what a technician and a regulator both recognise.
+check "…and their licence number as a second identifier" \
+    "[[ '$LIVE_LICENCE' == 'ML-$(hcp_of "$BASE_ID")' ]]"
 
 LIVE_NAME=$(bridge_rows "SELECT (content -> 'name' -> 0 ->> 'family') || '|' ||
                                 (content -> 'name' -> 0 -> 'given' ->> 0)
@@ -325,29 +346,56 @@ check "The name it kept is one the HIS actually sent" \
     "[[ '$HELD_NAME' == 'Diallo' || '$HELD_NAME' == 'Diallo-Sow' ]]"
 
 # ---------------------------------------------------------------------------
-section "6 · An order with no identified clinician"
+section "6 · A signed-in user who is not a clinician"
 
-# Rows predating db/his/008 carry a NULL ordering_provider_id: they were placed
-# before the API could know who was calling. An order with no verified orderer
-# must not acquire one in transit, and must still reach the laboratory — a
-# missing name is a gap in the record, not a reason to withhold a test from a
-# patient.
+# A receptionist, a ward clerk, a records officer: an ACCOUNT with no provider
+# row. mlh_his_hcp_health_care_provider.usr_id is nullable in both directions —
+# a provider may have no login, and a login may have no provider — so this is an
+# ordinary state of the real system, not a corrupted fixture.
 #
-# Reproduced through the inpatient path because that is the only one that holds
-# an order between writing the row and dispatching it, which is the window where
-# the columns can be cleared without racing the outbox.
-LEGACY=$(order_as "$((BASE_ID + 3))" "Ghost Clinician" ',"patientClass":"INPATIENT"')
-his_sql "UPDATE his.lab_orders
-            SET ordering_provider = '', ordering_provider_id = NULL
-          WHERE order_number = '$LEGACY'" >/dev/null
-
-LEGACY_TOKEN=$("$ROOT/scripts/mint-token.sh" --quiet --user "$((BASE_ID + 3))" \
-    --name "clinician.$((BASE_ID + 3))" --full-name "Ghost Clinician" \
+# It is also how orders predating db/his/015 behave, since they carry no
+# clinical identity either. One case, both situations.
+#
+# What must happen: the order still reaches the laboratory, because a missing
+# name is a gap in the record and not a reason to withhold a test from a
+# patient; and no clinician is invented for it — least of all the account, which
+# would put a login on a laboratory report as though it were a person.
+#
+# Placed through the inpatient path so the dispatch is a separate, observable
+# step rather than a race with the assertions.
+CLERK_ID=$(( BASE_ID + 3 ))
+CLERK_TOKEN=$("$ROOT/scripts/mint-token.sh" --quiet --user "$CLERK_ID" \
+    --name "front.desk.$CLERK_ID" --full-name "Fatima Reception" --no-provider \
     ${LAB_ORDER_GROUP:+--groups "$LAB_ORDER_GROUP"} 2>/dev/null)
-curl -sf -H "Authorization: Bearer $LEGACY_TOKEN" -X POST \
-    "${API}/lab-orders/${LEGACY}/collection" -H 'Content-Type: application/json' \
+
+CLERK_ORDER=$(curl -sf -H "Authorization: Bearer $CLERK_TOKEN" -X POST "${API}/lab-orders" \
+    -H 'Content-Type: application/json' \
+    -d "{\"patientId\":\"$PATIENT\",\"testCode\":\"$TEST_CODE\",
+         \"facilityCode\":\"FAC-001\",\"patientClass\":\"INPATIENT\"}" \
+    | json_field "['orderNumber']")
+
+if [[ -n "$CLERK_ORDER" ]]; then
+    ok "A non-clinician can still place an order ($CLERK_ORDER)"
+else
+    bad "A non-clinician can still place an order" "no order number returned"
+fi
+
+# The account IS recorded — the audit trail must always answer "who did this",
+# and it is the laboratory's records that must not name them as the clinician.
+check "The account is recorded in the HIS for the audit trail" \
+    "[[ \$(his_sql \"SELECT ordering_provider_id FROM his.lab_orders
+                      WHERE order_number='$CLERK_ORDER'\") == '$CLERK_ID' ]]"
+
+check "…but no clinical identity was recorded, because there is none" \
+    "[[ -z \$(his_sql \"SELECT coalesce(ordering_provider_hcp_id,'')
+                         FROM his.lab_orders WHERE order_number='$CLERK_ORDER'\") ]]"
+
+curl -sf -H "Authorization: Bearer $CLERK_TOKEN" -X POST \
+    "${API}/lab-orders/${CLERK_ORDER}/collection" -H 'Content-Type: application/json' \
     -d "{\"collectedAt\":\"$(date -u -v-1H '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
         || date -u -d '1 hour ago' '+%Y-%m-%dT%H:%M:%SZ')\"}" -o /dev/null
+
+LEGACY="$CLERK_ORDER"
 
 # Waiting first is not optional here. "No requester was published" and "nothing
 # has been published yet" look identical, so without this the check passes for
@@ -376,8 +424,12 @@ LEGACY_WIZ=$(wizard_xml "$LEGACY")
 check_contains "The wizard still renders, with the requester simply empty" \
     "echo '$LEGACY_WIZ'" "<message>valid</message>"
 
-check "No name was fabricated for it" \
-    "[[ '$LEGACY_WIZ' != *'<lastName>Ghost'* ]]"
+# The clerk's own name must not appear as the ordering clinician. They placed
+# the order and are named in the HIS audit trail for it; they are not who the
+# laboratory telephones about a critical value, and a laboratory record saying
+# otherwise would be a false clinical attribution.
+check "The account holder was not passed off as the clinician" \
+    "[[ '$LEGACY_WIZ' != *'<lastName>Reception'* ]]"
 
 # ---------------------------------------------------------------------------
 section "7 · Names a real HIS will actually hold"

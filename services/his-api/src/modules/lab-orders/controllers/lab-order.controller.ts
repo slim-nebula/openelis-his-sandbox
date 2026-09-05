@@ -18,9 +18,18 @@ export class LabOrderController {
     //
     // usr_full_name is what a laboratory report prints; usr_id is what
     // identifies the person. The name can be spelled three ways, the id cannot.
+    //
+    // hcp_id is a different identity, not a better spelling of usr_id: the
+    // account that signed in versus the clinician who is accountable for the
+    // test. Both are taken from the same verified token, so ordering on behalf
+    // of another clinician remains impossible — the token decides which account
+    // acted, and the provider identity is simply the correct name for the person
+    // behind it. See db/his/015_provider_identity.sql.
     const clinician = {
       id: req.user!.usr_id,
       name: req.user!.usr_full_name || req.user!.usr_name,
+      hcpId: req.user!.hcp_id,
+      license: req.user!.hcp_license,
     };
 
     // Nothing here talks to the broker. The order row, its audit row and the

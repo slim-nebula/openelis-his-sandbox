@@ -71,6 +71,12 @@ export class LabOrderService {
       orderingProvider: String(row.ordering_provider),
       orderingProviderId: row.ordering_provider_id === null || row.ordering_provider_id === undefined
         ? null : String(row.ordering_provider_id),
+      orderingProviderHcpId:
+        row.ordering_provider_hcp_id === null || row.ordering_provider_hcp_id === undefined
+          ? null : String(row.ordering_provider_hcp_id),
+      orderingProviderLicense:
+        row.ordering_provider_license === null || row.ordering_provider_license === undefined
+          ? null : String(row.ordering_provider_license),
       facilityCode: String(row.facility_code),
       priority: String(row.priority),
       patientClass: String(row.patient_class ?? 'OUTPATIENT'),
