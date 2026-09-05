@@ -17,6 +17,29 @@ if [[ ! -f .env ]]; then
     exit 1
 fi
 
+# --- Unquoted values containing spaces --------------------------------------
+# Checked BEFORE sourcing, because sourcing is what breaks: the shell takes the
+# first word of an unquoted value and tries to RUN the rest, so `set -e` kills
+# this script with "words: command not found" and no indication of which
+# setting or why.
+#
+# docker compose and the shell disagree about these, and the disagreement is
+# silent. Compose takes everything after the `=`; the shell takes one word. So
+# OE_LAB_NAME=Sandbox Hospital Lab reaches the bridge intact and reaches a
+# script's environment as an empty string.
+#
+# `make` hides it further: the Makefile includes and exports .env itself,
+# compose-style, so anything run through a make target sees the right value and
+# only a direct `bash scripts/...` sees the broken one — which means the bug
+# appears when someone debugs by hand, the worst time to meet it.
+UNQUOTED=$(grep -nE '^[A-Z_][A-Z0-9_]*=[^"'"'"']*[[:space:]]' .env || true)
+if [[ -n "$UNQUOTED" ]]; then
+    echo "error: .env has value(s) with spaces that are not quoted:" >&2
+    sed 's/^/    /' <<< "$UNQUOTED" >&2
+    echo "       Wrap the value in double quotes." >&2
+    exit 1
+fi
+
 set -a
 # shellcheck disable=SC1091
 source .env
