@@ -286,6 +286,92 @@ what makes that safe.
 The bridge consumes from there. That is the entire coupling between your HIS and
 the integration — one topic.
 
+### Step 4a — If your workflow sits between the order and the publish
+
+**Read this if the order does not go to Kafka the moment the doctor places it.**
+
+In this sandbox those are the same instant, because there is one screen and no
+workflow. A real HIS has one: insurance verification, fulfilment, approval. The
+order is written when the doctor decides, and published only once all of that
+clears — which may be ninety seconds later for a fully insured patient, or three
+days later for one waiting on an approval, or never, if the order expires and a
+supervisor re-creates it.
+
+**Publish once, at the end.** What goes on `lab.order.created` is the order that
+has been through the whole workflow and come out approved — not a doctor's
+keystroke, and not one event per workflow transition. Read the topic name as
+*"this order is ready for the laboratory"*. Everything before that is yours: an
+order awaiting insurance has no business in a laboratory's queue, and an expired
+one that nobody approved must never arrive there at all.
+
+**That variability is the whole danger.** The rule:
+
+> Once the order row exists, the ordering clinician is read **from the order
+> row**. Never from the session of whoever advances the workflow.
+
+The failing version is one plausible line in whichever service finally publishes:
+
+```ts
+// WRONG — this is whoever clicked "approved"
+ordering_provider_hcp_id: req.user.hcp_id
+```
+
+It will pass every test you write. For an insured patient the doctor places the
+order and the approval clears in a minute, often in the same session, so the
+clinician looks correct. The bug only appears when the two are different people —
+which is precisely the delayed, re-created, insurance-held order, the one that
+has already waited three days and is least likely to be looked at closely. The
+laboratory is then told a receptionist ordered a potassium, and if it comes back
+critical they telephone the front desk.
+
+The contract, stated once:
+
+| Step | Clinician | Actor |
+|---|---|---|
+| Doctor places the order | from the **verified token**, written once | the doctor |
+| Insurance / fulfilment / approval | **read from the order row** | recorded in the audit trail |
+| Expiry and re-creation | **inherited from the order being replaced** | the supervisor, in the audit trail |
+| Publish to Kafka | **read from the order row** | the relay, which has no user |
+
+The actor of each step belongs in the audit trail. It never belongs on the
+order. A supervisor re-creating an expired order is performing a clerical act on
+a clinical decision someone else already made and recorded — which is why this
+does not conflict with the rule that a caller may never name a clinician. They
+name an **order**; the clinician comes with it.
+
+**The doctor's token will not survive the wait, and must not need to.** It
+expires on its 24-hour TTL; the estate keeps one session per user, so the doctor
+signing in on a second device ends the first; and they may have logged out or
+gone off shift. There is nothing to re-authenticate against at dispatch — which
+is exactly why `req.user` is tempting there, and exactly why it is wrong.
+
+Authentication asks *"are you who you claim, right now?"* and lasts as long as a
+session. Attribution asks *"who decided this, then?"* and lasts as long as the
+record. The clinician on an order is attribution: verified once, when the doctor
+was present, and a recorded fact from that moment on. Nothing downstream needs
+the doctor's session, because nothing downstream is claiming to be the doctor.
+
+Two things this rules out, both of which get invented by someone trying to make
+the identity "survive": **storing the doctor's token to replay later** — a bearer
+credential valid across your whole estate, sitting in a workflow table for three
+days — and **a service impersonating the doctor** to publish on their behalf. The
+relay that publishes has no user at all, and that is correct.
+
+**How to test it**, since a same-session run cannot fail: place an order as a
+doctor, advance and publish it as a *different* user, and assert the published
+`Practitioner` is still the doctor's.
+
+Two notes on the re-creation itself:
+
+- **Mint a new order number.** OpenELIS keys `electronic_order.external_id` on
+  it, and the bridge's resource ids are deterministic on the order id — re-using
+  a number is read as an update to the existing order, not a new one.
+- **Do it before dispatch and the laboratory never needs to know.** Nothing was
+  published, so there is nothing there to duplicate or withdraw. This matters
+  because you *cannot* withdraw one afterwards: OpenELIS's cancellation path is
+  unreachable over FHIR
+  ([defect 06](upstream-issues/06-fhir-cannot-cancel-an-order.md)).
+
 ## Step 5 — What the bridge sends onward
 
 You do not need to build this; it is what happens next, and knowing it makes the

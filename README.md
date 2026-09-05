@@ -104,9 +104,10 @@ docs/               see the table above
 
 The stack runs **stock upstream images** by default, pinned to a named release
 (`OE_VERSION`), never `:develop`. We carry exactly **one** patch, for a defect
-nothing outside OpenELIS can fix; the other four defects we found are handled
-entirely on our side — one of them, the ordering clinician, by nothing more than
-the resource *type* of a configuration value. The rules, the patch, and the two
+nothing outside OpenELIS can fix; the other five defects we found are handled
+entirely on our side, worked around, or simply lived with — one of them, the
+ordering clinician, turned out to need nothing more than the resource *type* of a
+configuration value. The rules, the patch, and the two
 candidates we rejected are in
 [openelis-patches/README.md](openelis-patches/README.md); the reports themselves
 are in [docs/upstream-issues/](docs/upstream-issues/).

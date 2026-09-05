@@ -612,6 +612,10 @@ model mlh_his_hcp_health_care_provider {
 - **`mlh_his_sys_patient_locations.ih_hcp_hcp_id` already identifies the
   attending doctor by `hcp.id`.** Sending the account would leave the
   laboratory's records unable to line up with your own.
+- **An account is a session; a provider is a person.** Accounts get disabled,
+  recreated and reassigned; the clinician who ordered a test in March is still
+  that clinician in December. See the carry-through rule below — by the time a
+  delayed order is published, the account may not exist any more.
 
 The token still decides *who*: `verified token → usr_id → provider row →
 hcp.id`. Nothing is read from a request body, so ordering on behalf of another
@@ -621,6 +625,114 @@ questions and both get asked.
 
 **Where the sandbox does it:** `db/his/015_provider_identity.sql`,
 `OrderMapper.BuildOrderingClinician`, proved by `make requester` §2 and §6.
+
+## The clinician is captured once and carried — never re-read at dispatch
+
+**This is the one on this page most likely to be got wrong, and it cannot fail in
+the sandbox, so nothing here will catch it for you.**
+
+The sandbox has one screen: the doctor orders, and the order goes to Kafka in the
+same request. Your HIS has a workflow between those two points — insurance
+verification, fulfilment, approval. The order row is written when the doctor
+decides. It is *published* only when all of that clears.
+
+One publish, at the end. What goes on `lab.order.created` is the order that came
+out of the workflow approved — not a doctor's keystroke, and not one event per
+transition. The topic name reads as *"ready for the laboratory"*, which is worth
+saying aloud because `created` suggests otherwise and someone will eventually
+wire it to the create handler. An order awaiting insurance does not belong in a
+laboratory's queue, and an expired one nobody approved must never arrive at all.
+
+How long that takes is not fixed:
+
+| Patient | Order written → published |
+|---|---|
+| fully insured, clean approval | a minute or two |
+| approval pending | hours, or two to three days |
+| expired, re-created by a supervisor once approval lands | days, and by a **different person** |
+
+The rule:
+
+> Once the order row exists, the ordering clinician is read **from the order
+> row**. Never from the session of whoever advances the workflow.
+
+The failing version is one reasonable-looking line in whichever service publishes:
+
+```ts
+// WRONG — this is whoever clicked "approved", not who ordered the test
+ordering_provider_hcp_id: req.user.hcp_id
+```
+
+**It will pass every test written against it.** For the insured patient the
+doctor orders and the approval clears within minutes, frequently in the same
+session, so the clinician on the published order looks right. The bug surfaces
+only when the two are different people — the delayed, insurance-held, supervisor
+re-created order. That order has already waited three days, is the least likely
+to be inspected, and is the one where the laboratory most needs a real doctor to
+telephone. A critical potassium gets phoned to the front desk.
+
+The variability is what makes it dangerous. A workflow that always took three
+days would have been noticed; one that is usually instant hides it.
+
+| Step | Clinician on the order | Actor |
+|---|---|---|
+| Doctor places it | from the **verified token**, written once | the doctor |
+| Insurance / fulfilment / approval | **read from the order row** | audit trail |
+| Expiry and re-creation | **inherited from the order replaced** | supervisor, audit trail |
+| Publish to Kafka | **read from the order row** | the relay — it has no user |
+
+The actor of each step goes in the audit trail. It never goes on the order.
+
+This does not conflict with taking identity from the token. A supervisor
+re-creating an expired order is doing a clerical act on a clinical decision
+someone else already made and recorded; they name an **order**, not a clinician,
+and the clinician travels with it. What must never happen is a screen that lets
+anyone *choose* a doctor's name.
+
+**Write the test that can fail:** create as a doctor, advance and publish as a
+different user, assert the published clinician is still the doctor. A
+same-session test proves nothing here.
+
+### The doctor's token will not survive the workflow, and must not need to
+
+Worth stating because it is the reason the rule is not merely a preference.
+
+By the time an insurance-held order is published, the token that authorised it is
+gone — three separate ways, any one of which is enough:
+
+- **It expired.** IAM issues a 24-hour TTL. A three-day approval outlives it.
+- **It was replaced.** The estate stores one `token` field per user at
+  `user:{usr_id}`, so the doctor signing in on a second device ends the first
+  session. A ward round is enough.
+- **They logged out**, went off shift, or left the organisation.
+
+So there is nothing to re-authenticate against at dispatch. That is not a gap —
+it is the correct behaviour of a session, and it makes the distinction explicit:
+
+| | Question | Lifetime |
+|---|---|---|
+| **Authentication** | "are you who you claim, *right now*?" | the session |
+| **Attribution** | "who decided this, *then*?" | the clinical record, permanently |
+
+The clinician on an order is **attribution**. It was verified once, when the
+doctor was present and their token was live, and from that moment it is a
+recorded fact — not a credential to be re-checked. Nothing downstream needs the
+doctor's session, because nothing downstream is claiming to be the doctor.
+
+Two anti-patterns this rules out, and both get invented by someone trying to make
+the identity "survive":
+
+- **Storing the doctor's token to replay at dispatch.** A bearer credential
+  persisted for days, valid for every service in the estate (HS256 with no
+  `aud` — finding 10), sitting in a workflow table. Do not.
+- **A service impersonating the doctor** to publish on their behalf. Same
+  problem with extra steps.
+
+The relay that publishes to Kafka **has no user at all**, and that is correct. It
+is a machine moving a committed row; the identity it carries came from the row,
+not from a caller. This is also why the failing line is so tempting: at dispatch
+there is no doctor to read, so `req.user` is the only identity in scope — and it
+belongs to whoever is advancing the workflow.
 
 ## Send `license_number` too
 
