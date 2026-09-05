@@ -309,6 +309,29 @@ one that nobody approved must never arrive there at all.
 > Once the order row exists, the ordering clinician is read **from the order
 > row**. Never from the session of whoever advances the workflow.
 
+**One rule, three cases.** The gap is not always the same length or shape:
+
+| | What happens | Read from the row | Read from the session |
+|---|---|---|---|
+| **A · auto-approved** | insured for everything, ~10 seconds | the doctor ✅ | the doctor ✅ — *or `undefined` if a background job* |
+| **B · approved by a person** | same order row, staff clear the insurance | the doctor ✅ | **the approver** ❌ |
+| **C · expired, re-created** | new order, clinician copied from the old one | the doctor ✅ | **the supervisor** ❌ |
+
+Case **A is what makes this hard to catch** — reading the session gives the right
+answer, so testing an insured patient shows the doctor's name and the code looks
+correct. It is coincidentally right, and stops being right for B and C.
+
+B and C are different actions: **approval must not write the clinician columns at
+all** (it changes a status; there is nothing to carry, it is the same row), while
+**re-creation copies them** from the order being replaced, under a new order
+number.
+
+**Whichever service publishes to Kafka owns this rule** — not necessarily the one
+that created the order. The publishing service is the one with an authenticated
+approver in scope, which is exactly why it is the one that will reach for
+`req.user`. In the creating service the signed-in user genuinely is the doctor,
+so nothing goes wrong there.
+
 The failing version is one plausible line in whichever service finally publishes:
 
 ```ts

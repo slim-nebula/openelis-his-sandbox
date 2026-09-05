@@ -643,18 +643,81 @@ saying aloud because `created` suggests otherwise and someone will eventually
 wire it to the create handler. An order awaiting insurance does not belong in a
 laboratory's queue, and an expired one nobody approved must never arrive at all.
 
-How long that takes is not fixed:
+### The three cases, and why one rule covers all of them
 
-| Patient | Order written → published |
-|---|---|
-| fully insured, clean approval | a minute or two |
-| approval pending | hours, or two to three days |
-| expired, re-created by a supervisor once approval lands | days, and by a **different person** |
+The gap between "written" and "published" is not a fixed length, and not always
+the same shape:
+
+| | What happens | Gap | Who publishes |
+|---|---|---|---|
+| **A · Auto-approved** | patient insured for everything, approval is automatic | ~10 seconds | a background job, or the doctor's own request |
+| **B · Approved by a person** | insurance checked and cleared by staff. **Same order row** — nothing is re-created | minutes to days | the approver |
+| **C · Expired, re-created** | approval arrives after the order lapsed; a supervisor re-creates it | days | the supervisor |
+
+**One rule handles all three, because it never asks how long it took or who
+approved.** Decide the clinician once, at the doctor's moment; everything after
+reads it. What differs between the cases is only *which* mistake is available:
+
+| | Read from the order row | Read from the session |
+|---|---|---|
+| **A** | Dr Touré ✅ | Dr Touré ✅ — *or `undefined`, if it is a background job with no session* |
+| **B** | Dr Touré ✅ | **the approver** ❌ |
+| **C** | Dr Touré ✅ | **the supervisor** ❌ |
+
+Case **A is why this is hard to catch**: reading the session gives the right
+answer, so a developer testing an insured patient sees the doctor's name and
+concludes the code is correct. It is not correct — it is coincidentally right,
+and it stops being right for cases B and C.
+
+Two shadings worth naming, because B and C are *different actions*:
+
+- **B — approval must not write the clinician columns at all.** It updates a
+  status. An `UPDATE ... SET ordering_provider_hcp_id = <approver>` is the bug in
+  its most direct form; there is nothing to "carry" here because it is the same
+  row.
+- **C — re-creation copies them** from the order being replaced, along with a
+  new order number. The supervisor names an *order*, never a clinician.
+
+And a detail on A that helps rather than hurts: **an automatic approval usually
+has no user session at all.** A background job has no `req.user`, so the wrong
+line yields `undefined` and fails loudly instead of silently naming the wrong
+person. If your auto-approval path runs outside a request context, it is
+structurally unable to make this mistake — which is worth knowing when deciding
+where to put the publish.
 
 The rule:
 
 > Once the order row exists, the ordering clinician is read **from the order
 > row**. Never from the session of whoever advances the workflow.
+
+### Which service this belongs to
+
+Not necessarily the one that created the order. In this sandbox both jobs live in
+`his-api`, because it is one service; in your estate they are likely two:
+
+```
+order creation service          ← identity ENTERS here, from the token, once
+        │
+        │  the order row, with the clinician on it
+        ▼
+fulfilment / approval service   ← THE RULE LIVES HERE
+        │                         it has req.user in scope and does not need it
+        │  publishes to lab.order.created
+        ▼
+bridge                          ← decides nothing; carries what the row says
+        ▼
+OpenELIS                        ← prints what it is given; has no opinion
+```
+
+**The rule belongs to whichever service publishes to Kafka.** That is the one
+with an authenticated approver in scope, which is exactly why it is the one that
+will reach for `req.user`. The creating service is not where this goes wrong —
+there, the signed-in user genuinely *is* the doctor.
+
+Neither the bridge nor OpenELIS needs any change for any of this. They are
+downstream of the decision, and they believe what they are told.
+
+### The failing line, and the correct one
 
 The failing version is one reasonable-looking line in whichever service publishes:
 
@@ -737,6 +800,64 @@ is a rule that gets broken quietly, and a test that cannot fail reports safety i
 has not established. That exercise also caught a flaw in the test itself: the
 "…and NOT the nurse" check was passing vacuously when nothing was published at
 all, and now requires a clinician to be present before checking which one it is.
+
+### One order, start to finish
+
+The rule stated as a story, because that is the form people remember.
+
+**Monday 09:14 — Dr Touré orders.** He is signed in. His token says:
+
+```json
+{ "usr_id": 4021, "usr_full_name": "Ibrahim Toure",
+  "hcp_id": 812, "hcp_license": "ML-812" }
+```
+
+He orders a potassium for Aminata Diallo. **This is the only moment anyone's
+identity is checked.** The order row is written:
+
+| Column | Value | |
+|---|---|---|
+| `ordering_provider` | Ibrahim Toure | printed on the report |
+| `ordering_provider_id` | **4021** | his login — audit trail |
+| `ordering_provider_hcp_id` | **812** | him, the clinician |
+| `ordering_provider_license` | ML-812 | what the laboratory recognises |
+
+Nothing goes to Kafka. It is waiting on insurance.
+
+**Monday evening → Wednesday.** Dr Touré finishes his shift. Next morning he
+signs in on the ward tablet, which **ends his Monday session**; by Tuesday night
+that token had expired anyway. None of this matters. His name is on the order
+like ink on paper.
+
+**Wednesday 11:02 — approval lands.** Two ways it can go, and both end the same:
+
+- *Case B* — the order is still live. Fatima at reception approves it. The status
+  changes; **the clinician columns are not touched.**
+- *Case C* — the order lapsed. Fatima re-creates it: a new order number, and
+  `ordering_provider_hcp_id` **copied from the order it replaces**. The audit
+  trail records *"re-created by Fatima Sow (usr_id 5570)"*.
+
+Fatima's token has **no `hcp_id`** — she has an account, not a provider row. She
+is not a clinician and never becomes one.
+
+**Wednesday 11:02 — it dispatches.** The publishing code has two ID-shaped things
+in front of it:
+
+```ts
+req.user.hcp_id                   // undefined — Fatima is not a clinician
+order.ordering_provider_hcp_id    // 812 — Dr Touré
+```
+
+It reads the row. The laboratory is told: **Ibrahim Touré, hcp_id 812, ML-812**.
+
+**Thursday 15:40 — why it mattered.** The potassium comes back at **6.8**.
+Critical. The laboratory picks up the phone, and calls **Dr Touré**.
+
+**The version that goes wrong** differs by one line at dispatch. On Wednesday the
+laboratory is told the requester is nothing at all, because Fatima has no
+`hcp_id`. On Thursday there is a potassium of 6.8 and **nobody to call**. Had
+Fatima been a nurse — someone who *does* have a provider row — they would have
+telephoned her instead, about a patient she has never assessed.
 
 ### The doctor's token will not survive the workflow, and must not need to
 

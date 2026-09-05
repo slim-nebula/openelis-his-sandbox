@@ -55,8 +55,22 @@ if [[ -z "$OUT_NUMBER" ]]; then
 fi
 ok "Outpatient order created ($OUT_NUMBER)"
 
-check "It is CREATED, not held" \
-    "[[ \$(his_sql \"SELECT order_status FROM his.lab_orders WHERE order_number='$OUT_NUMBER'\") == CREATED ]]"
+# Asserted as "not held", not as "== CREATED".
+#
+# CREATED is the status an outpatient order is BORN with, and it does not stay
+# there: the relay picks the order up, the bridge publishes it, and
+# lab.order.sent moves it to SENT_TO_LIS — sometimes before this line runs. That
+# made this check fail intermittently while nothing was wrong, which is worse
+# than useless, because a suite that cries wolf gets ignored on the day it is
+# right.
+#
+# The property being tested is the fork in §2: an outpatient order is NOT parked
+# waiting for a ward to draw the specimen. Any status other than
+# AWAITING_COLLECTION satisfies that, and progressing past CREATED is the
+# integration working rather than a defect.
+OUT_STATUS=$(his_sql "SELECT order_status FROM his.lab_orders WHERE order_number='$OUT_NUMBER'")
+check "It is not held for a bedside draw (status $OUT_STATUS)" \
+    "[[ -n '$OUT_STATUS' && '$OUT_STATUS' != AWAITING_COLLECTION ]]"
 
 # The outbox row IS the dispatch. Its presence is what separates the two
 # workflows, so assert on it rather than on a status alone.
