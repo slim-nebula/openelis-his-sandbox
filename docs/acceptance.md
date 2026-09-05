@@ -168,6 +168,17 @@ an oversight:
 - **The databases are containers.** On a laptop with only Docker Desktop, the
   "external database server" boundary is enforced by project and network
   separation rather than by separate hosts.
+- **The laboratory accession number has never been captured.** `labAccession` is
+  joined, exposed and displayed, but `his.lab_orders` has never held one —
+  because nothing has ever been accessioned here (`clinlims.sample`,
+  `sample_item` and `analysis` are all empty). The bridge reads it from
+  `requisition.system = …/samp_labNo` on OpenELIS's own per-analysis
+  ServiceRequest, which exists only after a lab user accessions a sample. The
+  column shows an em dash, which is indistinguishable from the capture being
+  broken. **One real accessioning settles it** — and the same act would also
+  prove the outpatient collection-time read-back.
+- **Patient names containing digits are rejected by OpenELIS** and the order
+  then retries forever without ever failing. See the runbook.
 - **An inpatient order can wait forever.** `AWAITING_COLLECTION` has no timeout,
   deliberately: expiring a real pending order because a nurse was busy would be
   worse than leaving it visible. It is the ward's worklist, and a real estate

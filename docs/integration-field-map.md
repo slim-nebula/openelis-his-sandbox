@@ -205,6 +205,7 @@ Not sending the clinician retired an upstream defect outright — see §4.
 | `interpretationCode` | the LIS — the HL7 code (`AA`/`HH`/`LL` = critical) behind the label, so severity never depends on the laboratory's wording |
 | `collectedAt`, `collectionSource` | the ward's own record first, the LIS's second — whoever observed the draw. **Never** `Observation.effective`, which OpenELIS sets to the analysis RELEASE date |
 | `previousValue`, `previousReleasedAt` | recovered from the `lab_order_events` audit trail on a correction; ISO 15189 7.4.1.8 |
+| `labAccession` | joined from `lab_orders` — the LABORATORY's number for this work, and the only one the person answering their telephone can look up. Null until a lab user accessions the sample. **Unexercised**: nothing has been accessioned in this sandbox, so the capture path has never run |
 | `openelisResultRef` | mandatory back-reference to the record OpenELIS owns |
 
 A corrected result reaching the HIS is not the end of the obligation — the

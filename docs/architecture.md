@@ -162,6 +162,24 @@ normally, with the collection time riding along on the Specimen. Outpatient
 orders skip the hold entirely — the laboratory draws those and reports the time
 back. See [data-flow.md §7](data-flow.md#7-who-observes-the-draw).
 
+### What the test frontend shows, and why it is arranged that way
+
+Three things in the demo UI are deliberate rather than cosmetic, because each
+teaches something a real HIS has to get right:
+
+**The visit sits beside the PATIENT, not on the order form.** A doctor is inside
+an encounter and places several orders within it; a box on the form would invite
+retyping it per test and teach the opposite of the one-visit-many-orders model.
+**New visit** mints a fresh encounter — the patient came back another day.
+
+**The ordering provider is displayed, never editable.** It comes from the
+verified token. A prefilled name field once meant an order could be attributed
+to a colleague by nobody doing anything at all.
+
+**Two identifiers sit side by side on a result.** `orderNumber` for this system,
+`labAccession` for the laboratory's — because they are quoted to different
+people, and only the second is useful to whoever answers the laboratory's phone.
+
 ---
 
 ## 6. What the doctor can order, and why

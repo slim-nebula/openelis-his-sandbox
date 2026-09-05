@@ -252,6 +252,44 @@ was the blood drawn and nobody recorded it? — not a system one. There is
 deliberately **no automatic timeout**: expiring a real pending order because a
 nurse was busy would be worse than leaving it visible.
 
+### One order is stuck at `SENT_TO_LIS` and the others are fine — check the patient's NAME
+
+**OpenELIS rejects patient names containing digits**, and the failure is silent
+from our side. Found the hard way: a test fixture named `Probe233437` produced
+
+```
+Validation failed for classes [org.openelisglobal.person.valueholder.Person]
+'invalid name format, possibly illegal character', propertyPath=lastName
+```
+
+and then, every 30 seconds, forever:
+
+```
+FhirApiWorkFlowServiceImpl, beginTaskImportOrderPath,
+Error: could not process Task with identifier : …/Task/<uuid>
+```
+
+The Task is never acknowledged, so it stays `requested` and the next poll picks
+it up again — the retry loop from
+[defect 01](upstream-issues/01-task-poll-not-idempotent.md). **Nothing reaches
+the HIS.** The order sits at `SENT_TO_LIS` indefinitely with no rejection, no
+dead letter and no failure status, because from our side the Task was published
+successfully and simply never came back.
+
+```bash
+docker logs openelis-webapp --since 30m 2>&1 | grep -i "invalid name format"
+```
+
+A hit means a patient name in that order contains a character OpenELIS's
+`Person` validator refuses — a digit is the one confirmed here. The fix is in
+the patient record, not the integration: correct the name in the HIS and place
+a new order. The stuck Task will keep retrying until OpenELIS is restarted or
+the resource is removed.
+
+Worth designing around in a real HIS: placeholder names for unidentified
+patients (`Unknown 47`, `Baby of Ward 3`), house numbers accidentally typed into
+a name field, and some transliterations will all trip this.
+
 ### An order is stuck at `SENT_TO_LIS`
 
 The bridge has published the Task but OpenELIS has not imported it.

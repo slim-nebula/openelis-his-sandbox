@@ -276,6 +276,13 @@ specimens share a `testName` — "HIV VIRAL LOAD" for both plasma and dried bloo
 spot — and are different examinations with different methods and reference
 ranges. Show it, or your clinicians cannot tell the two apart.
 
+**Show `labAccession` next to `orderNumber`.** They are the two numbers a person
+quotes, and they are quoted to different people: `orderNumber` identifies the
+order in *your* system, `labAccession` identifies it in the *laboratory's*. When
+a ward telephones the lab about a result, only the second one can be looked up
+by whoever answers. It is null until a lab user accessions the sample, because
+no accession number exists before the laboratory has taken the specimen in.
+
 ```json
 {
   "orderNumber":         "LAB-20260825-59088EB0",
@@ -292,6 +299,7 @@ ranges. Show it, or your clinicians cannot tell the two apart.
   "previousReleasedAt":  "2026-08-14T09:15:00Z",
   "collectedAt":         "2026-08-14T06:15:00Z",
   "collectionSource":    "ward",
+  "labAccession":        "DEV0126000000000004",
   "openelisResultRef":   "…"
 }
 ```
