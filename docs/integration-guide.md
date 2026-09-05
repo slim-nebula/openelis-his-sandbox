@@ -159,7 +159,7 @@ POST /lab-orders
 {
   "patientId":    "<uuid>",          required
   "testCode":     "10351-5|Plasma",  required — from the catalogue row
-  "facilityCode": "FAC-001",         required
+  "facilityCode": "FAC-001",         required — a site from GET /facilities
   "priority":     "routine",         optional: routine | asap | stat
   "visitNumber":  "V-2026-0042",     optional, but send it — see step 6
   "patientClass": "OUTPATIENT"       optional, defaults to OUTPATIENT — see 3b
@@ -177,6 +177,35 @@ full contract is in
 
 **The ordering doctor is taken from the verified token, never from the body.**
 Ordering on behalf of another clinician is not supported, deliberately.
+
+### Step 3a — Where the order came from
+
+`facilityCode` must name a site from `GET /facilities`; an unknown one is
+refused with 400.
+
+This is the laboratory's **Referring Site** — who sent the sample, where the
+report goes back, and who they telephone about a problem. Their accessioning
+wizard **requires** it, so a technician types it by hand on every order until we
+supply it.
+
+**`his.facilities` is a sandbox stand-in. Do not build this table.** The
+referring site already exists somewhere in your estate, and copying it would
+create a second place for it to drift:
+
+| Your situation | Where the referring site comes from |
+|---|---|
+| `modules/visits` records **where the patient is** — ward, unit, clinic on the encounter | the **visit**. A patient moves between wards; the order should say where they were when it was placed |
+| You only know the **hospital** | `business_unit_id` from the IAM token — already on every request, already maintained |
+
+Either way the bridge needs the same thing: **a stable code per site** that the
+laboratory can mirror onto an OpenELIS `Organization`.
+
+> **Not yet carried to the laboratory.** `facilityCode` reaches `his.lab_orders`
+> and the bridge, and `OrderMapper` does not reference it — verified on the wire,
+> it appears in none of the five resources we publish. Sending it means putting
+> the matching `Organization` on `Task.restriction.recipient[0]`, which requires
+> the laboratory to create one per site with `organization.code` set to your
+> facility code. Until then the Referring Site is typed at accessioning.
 
 ### Step 3b — Patient class decides the collection workflow
 

@@ -15,7 +15,7 @@ import patientInternalRoutes from '@modules/patients/routes/internal.routes.js';
 import labOrderRoutes from '@modules/lab-orders/routes/lab-order.routes.js';
 import labOrderInternalRoutes from '@modules/lab-orders/routes/internal.routes.js';
 import internalResultRoutes from '@modules/lab-orders/routes/internal-results.routes.js';
-import visitRoutes from '@modules/lab-orders/routes/visit.routes.js';
+import visitRoutes, { facilityRouter } from '@modules/lab-orders/routes/visit.routes.js';
 import {
   catalogueRouter,
   catalogueAdminRouter,
@@ -99,6 +99,7 @@ app.use('/patients', asUser, patientRoutes);
 app.use('/lab-orders', asUser, labOrderRoutes);
 app.use('/visits', asUser, visitRoutes);
 app.use('/test-catalogue', asUser, catalogueRouter);
+app.use('/facilities', asUser, facilityRouter);
 
 // The catalogue refresh keeps its shared operator token rather than a user
 // token. It is run by a script and by the deployment, neither of which is a

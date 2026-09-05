@@ -357,6 +357,12 @@ async function refreshPatientData() {
           (o) => `<tr>
             <td class="mono">${o.orderNumber}</td>
             <td class="mono visit-cell${o.visitNumber === currentVisit ? ' current' : ''}">${o.visitNumber ?? '—'}</td>
+            <td class="specimen">${
+              // The name, resolved from the picker list rather than stored on
+              // the order. This is the laboratory's "Referring Site": who sent
+              // the sample, and who they telephone about a problem.
+              facilityName(o.facilityCode)
+            }</td>
             <td>${o.testName}</td>
             <td>${statusBadge(o.orderStatus)}${progressNote(o)}</td>
             <td>${fmtDate(o.createdAt)}</td>
@@ -364,7 +370,7 @@ async function refreshPatientData() {
           </tr>`
         )
         .join('')
-    : '<tr><td colspan="6" class="empty">No orders yet.</td></tr>';
+    : '<tr><td colspan="7" class="empty">No orders yet.</td></tr>';
 
   const resultsBody = document.querySelector('#results tbody');
   resultsBody.innerHTML = results.length
@@ -435,6 +441,27 @@ let activeOption = -1;
 
 async function loadCatalogue() {
   catalogue = await api('/test-catalogue');
+}
+
+// The sites a doctor may order from. Loaded once and kept, because the same
+// list answers two questions: what to offer in the picker, and what a facility
+// code on an existing order is CALLED — "FAC-002" means nothing to a reader.
+//
+// Resolving the name here rather than joining it onto every order keeps one
+// copy of the mapping. A name stored beside each order would be a second place
+// for it to drift the first time a site is renamed.
+let facilities = [];
+
+const facilityName = (code) =>
+  facilities.find((f) => f.facilityCode === code)?.facilityName ?? code;
+
+async function loadFacilities() {
+  facilities = await api('/facilities');
+  const select = document.getElementById('facility-select');
+  if (!select) return;
+  select.innerHTML = facilities
+    .map((f) => `<option value="${f.facilityCode}">${f.facilityName} · ${f.facilityType.toLowerCase()}</option>`)
+    .join('');
 }
 
 const comboInput = () => document.getElementById('test-search');
@@ -640,6 +667,7 @@ document.getElementById('signin-btn').addEventListener('click', async () => {
 
   try {
     await loadCatalogue();
+    await loadFacilities();
     await loadPatients();
     toast('Signed in');
   } catch (err) {
@@ -662,6 +690,7 @@ document.getElementById('signin-btn').addEventListener('click', async () => {
 
   try {
     await loadCatalogue();
+    await loadFacilities();
     await loadPatients();
   } catch (err) {
     toast(`Startup failed: ${err.message}`, true);

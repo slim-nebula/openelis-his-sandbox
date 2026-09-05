@@ -202,4 +202,34 @@ check_contains "The API exposes collectedAt, present or null" \
 check_contains "…and says which system observed the draw" \
     "echo '$RESULTS'" 'collectionSource'
 
+
+# ---------------------------------------------------------------------------
+section "7 · Where the order came from"
+
+# facility_code used to be free text with a default nobody changed, and it
+# reached nothing — verified on the wire, FAC-001 appeared in none of the five
+# resources we publish. It is acquiring a consumer: the accessioning wizard
+# REQUIRES a Referring Site, and a technician types it on every order because we
+# send nothing.
+check_contains "The site register lists facilities with a type" \
+    "api_curl -sf ${API}/facilities" 'facilityType'
+
+# The type is the part a laboratory acts on: a ward, a clinic and an emergency
+# department are different origins with different turnaround expectations.
+check_contains "…including a ward, which is a different origin from a clinic" \
+    "api_curl -sf ${API}/facilities" 'WARD'
+
+# Validated on the way IN rather than by a foreign key: orders placed before
+# his.facilities existed carry codes with no row there, and a constraint would
+# reject them retrospectively or demand invented backfill.
+check "An order from an unknown facility is refused" \
+    "[[ \$(api_curl -s -o /dev/null -w '%{http_code}' -X POST '${API}/lab-orders' \
+        -H 'Content-Type: application/json' \
+        -d '{\"patientId\":\"$PATIENT\",\"testCode\":\"$TEST_CODE\",\"facilityCode\":\"FAC-DOES-NOT-EXIST\"}') == 400 ]]"
+
+check "An order from a known facility is accepted" \
+    "[[ \$(api_curl -s -o /dev/null -w '%{http_code}' -X POST '${API}/lab-orders' \
+        -H 'Content-Type: application/json' \
+        -d '{\"patientId\":\"$PATIENT\",\"testCode\":\"$TEST_CODE\",\"facilityCode\":\"FAC-003\"}') == 201 ]]"
+
 summary

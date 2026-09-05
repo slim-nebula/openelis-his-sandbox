@@ -7,6 +7,7 @@ import { DomainError } from '@core/exceptions/http.exceptions.js';
 import { toIso } from '@shared/utils/serialization.utils.js';
 import type {
   ICreateLabOrderInput,
+  IFacility,
   ILabOrder,
   IOrderingClinician,
   IReleasedResultMessage,
@@ -212,6 +213,25 @@ const queueDispatch = async (
 
 export class LabOrderModel {
   /**
+   * The sites a doctor may order from.
+   *
+   * A sandbox stand-in — see 014_facilities.sql. In a real HIS this comes off
+   * the visit (where the patient is) or from business_unit_id on the token,
+   * not from a table like this.
+   */
+  async listFacilities(): Promise<IFacility[]> {
+    const rows = await query<Row>(
+      `SELECT facility_code, facility_name, facility_type
+         FROM his.facilities WHERE is_active ORDER BY facility_name`,
+    );
+    return rows.map((row) => ({
+      facilityCode: String(row.facility_code),
+      facilityName: String(row.facility_name),
+      facilityType: String(row.facility_type),
+    }));
+  }
+
+  /**
    * Creates the order, its audit row, and the lab.order.created event in ONE
    * transaction.
    *
@@ -243,6 +263,27 @@ export class LabOrderModel {
       );
       if ((patient.rows[0] as Row).present !== true) {
         throw new DomainError(`Unknown patient '${input.patientId}'.`);
+      }
+
+      // Validated on the way IN, not enforced by a foreign key.
+      //
+      // Orders placed before his.facilities existed carry codes with no row
+      // there, and a constraint would either reject them retrospectively or
+      // demand invented backfill. Checking here stops new bad data without
+      // rewriting history.
+      //
+      // Worth checking at all because this field is about to acquire a
+      // consumer: it is the laboratory's Referring Site, and a code that
+      // resolves to nothing means a technician types it by hand.
+      const facility = await client.query(
+        'SELECT exists(SELECT 1 FROM his.facilities WHERE facility_code = $1 AND is_active) AS present',
+        [input.facilityCode],
+      );
+      if ((facility.rows[0] as Row).present !== true) {
+        throw new DomainError(
+          `Unknown or inactive facility '${input.facilityCode}'. `
+          + 'Order from a site listed by GET /facilities.',
+        );
       }
 
       const orderId = randomUUID();

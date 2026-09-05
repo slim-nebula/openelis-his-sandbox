@@ -5,6 +5,7 @@ import type { LabOrderModel } from '../models/lab-order.model.js';
 import type {
   IBridgeOrderPayload,
   ICreateLabOrderInput,
+  IFacility,
   ILabOrder,
   IOrderingClinician,
   IReleasedResultMessage,
@@ -78,6 +79,11 @@ export class LabOrderService {
       patient,
 
     };
+  }
+
+  /** The sites a doctor may order from. Sandbox stand-in; see 014_facilities.sql. */
+  listFacilities(): Promise<IFacility[]> {
+    return this.orders.listFacilities();
   }
 
   /**

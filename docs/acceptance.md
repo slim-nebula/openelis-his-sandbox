@@ -18,7 +18,7 @@ is added, and a number in a document that nobody updates is worse than no number
 — run the suite and read the total it prints.
 
 Run against the real stack: **OpenELIS Global 2 3.2.2.0**, against its own
-external database. Most recent full unattended run: **216 passed, 0 failed**.
+external database. Most recent full unattended run: **220 passed, 0 failed**.
 The patched build was verified at 195, suite for suite, before the results
 display work added a check.
 

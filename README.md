@@ -80,7 +80,7 @@ make progress        laboratory progress within an order
 ```
 
 The first six run unattended and are the ones to trust before a change:
-**216 checks, currently 0 failures.** `make e2e` deliberately pauses for a human
+**220 checks, currently 0 failures.** `make e2e` deliberately pauses for a human
 to release a result in the OpenELIS UI, because that step is a real laboratory
 action and pretending otherwise would prove nothing.
 

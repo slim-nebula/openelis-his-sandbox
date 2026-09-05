@@ -66,6 +66,24 @@ export interface ICreateLabOrderInput {
   patientClass?: string | undefined;
 }
 
+/**
+ * A site a doctor may order from — clinic, ward, emergency department.
+ *
+ * This is what the laboratory calls the **Referring Site**: who sent the sample,
+ * where the report goes back, and who they telephone about a problem. Their
+ * accessioning wizard requires it, and today a technician types it on every
+ * order because we send nothing.
+ *
+ * Sandbox stand-in. In a real HIS it comes off the visit or from
+ * business_unit_id — see 014_facilities.sql.
+ */
+export interface IFacility {
+  facilityCode: string;
+  facilityName: string;
+  /** CLINIC | WARD | EMERGENCY | OUTPATIENT — the part a laboratory acts on. */
+  facilityType: string;
+}
+
 /** Recording a bedside draw. See 013_specimen_collection.sql. */
 export interface IRecordCollectionInput {
   /** ISO-8601. Must not be in the future; a draw is a thing that has happened. */

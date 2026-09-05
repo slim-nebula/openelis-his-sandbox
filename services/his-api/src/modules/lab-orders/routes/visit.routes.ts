@@ -18,6 +18,20 @@ import LabOrdersContainer from '../containers/lab-orders.container.js';
 const router = Router();
 const controller = LabOrdersContainer.labOrderController;
 
+/**
+ * The sites a doctor may order from — the picker behind the order form.
+ *
+ * Mounted here rather than in its own module because it is order context, and
+ * because it is a sandbox stand-in that a real HIS will not carry: the referring
+ * site comes off the visit, or from business_unit_id on the token. See
+ * 014_facilities.sql.
+ *
+ * Not audited as patient access: a list of wards and clinics is reference data,
+ * not clinical.
+ */
+export const facilityRouter = Router();
+facilityRouter.get('/', asyncRoute(controller.listFacilities));
+
 router.get(
   '/:visitNumber/results',
   auditAccess('visit.results.read', 'R', (req) =>

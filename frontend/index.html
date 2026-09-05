@@ -99,7 +99,13 @@
         <label>Ordering provider
           <output id="order-provider" class="readonly">not signed in</output>
         </label>
-        <label>Facility code <input name="facilityCode" value="FAC-001" required /></label>
+        <!-- A picker, not a text box. A doctor never types a facility code —
+             they are IN a place and their HIS knows which. Free text invited
+             FAC-01, fac-001 and typos that match nothing, which matters now
+             that this field is the laboratory's Referring Site. -->
+        <label>Ordering from
+          <select name="facilityCode" id="facility-select" required></select>
+        </label>
         <label>Priority
           <select name="priority">
             <option value="routine">Routine</option>
@@ -133,7 +139,7 @@
       <h3>Lab orders</h3>
       <table id="orders">
         <thead>
-          <tr><th>Order number</th><th>Visit</th><th>Test</th><th>Status</th><th>Created</th><th>Specimen collection</th></tr>
+          <tr><th>Order number</th><th>Visit</th><th>Ordered from</th><th>Test</th><th>Status</th><th>Created</th><th>Specimen collection</th></tr>
         </thead>
         <tbody></tbody>
       </table>

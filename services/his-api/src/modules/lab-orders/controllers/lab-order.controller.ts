@@ -49,6 +49,10 @@ export class LabOrderController {
     res.json(order);
   };
 
+  listFacilities = async (_req: Request, res: Response): Promise<void> => {
+    res.json(await this.orders.listFacilities());
+  };
+
   getById = async (req: Request, res: Response): Promise<void> => {
     res.json(await this.orders.getWithResults(req.params.id as string));
   };
