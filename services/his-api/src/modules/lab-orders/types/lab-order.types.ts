@@ -147,6 +147,16 @@ export interface IResultSummary {
   collectedAt: string | null;
   /** 'ward' | 'laboratory' | null — which system observed the draw. */
   collectionSource: string | null;
+  /**
+   * The laboratory's own number for this work — what a ward is asked for on the
+   * telephone. `orderNumber` identifies the order in OUR system; this identifies
+   * it in THEIRS, and only one of those is useful to the person who answers.
+   *
+   * Null until a lab user accessions the sample: no accession number exists
+   * before the laboratory has taken the specimen in. Joined from the order, so
+   * it cannot disagree with the order it belongs to.
+   */
+  labAccession: string | null;
   resultStatus: string;
   releasedAt: string | null;
   openelisResultRef: string;

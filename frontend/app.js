@@ -397,11 +397,19 @@ async function refreshPatientData() {
             <td>${fmtDate(r.releasedAt)}</td>
             <td class="mono visit-cell${r.visitNumber === currentVisit ? ' current' : ''}">${r.visitNumber ?? '—'}</td>
             <td class="mono">${r.orderNumber ?? '—'}</td>
+            <td class="mono accession">${
+              // Next to the order number because they are the two numbers a
+              // person quotes — but they are quoted to different people. Ours
+              // identifies the order in this system; this one identifies it in
+              // the LABORATORY's, and it is the only one the technician who
+              // answers the phone can look up.
+              r.labAccession ?? '—'
+            }</td>
             <td class="mono">${r.openelisResultRef}</td>
           </tr>`
         )
         .join('')
-    : '<tr><td colspan="11" class="empty">Nothing released yet. Validate and release the order in OpenELIS.</td></tr>';
+    : '<tr><td colspan="12" class="empty">Nothing released yet. Validate and release the order in OpenELIS.</td></tr>';
 }
 
 // Orders move through the LIS asynchronously, so the view refreshes itself

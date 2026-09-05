@@ -40,6 +40,16 @@ const RESULT_SELECT = `SELECT r.result_id, r.order_id, r.patient_id, r.test_code
                               r.interpretation_code,
                               r.result_status, r.released_at, r.openelis_result_ref, r.received_at,
                               o.visit_number, o.order_number,
+                              -- The laboratory's OWN number for this work. Joined from
+                              -- the order rather than stored on the result: it is a
+                              -- property of the order, and a result that disagreed with
+                              -- its own order about the accession would be worse than
+                              -- one that has to be joined.
+                              --
+                              -- Null until a lab user accessions the sample; there is no
+                              -- accession number before that, because the laboratory has
+                              -- not taken the specimen in yet.
+                              o.lab_accession,
                               -- Whoever observed the draw is the source. The ward's own
                               -- record comes first: we do not depend on a round trip for a
                               -- fact we already hold. The laboratory's is the fallback, and
@@ -135,6 +145,8 @@ const toResult = (row: Row): IResultSummary => ({
   collectedAt: toIso(row.collected_at),
   collectionSource: row.collection_source === null || row.collection_source === undefined
     ? null : String(row.collection_source),
+  labAccession: row.lab_accession === null || row.lab_accession === undefined
+    ? null : String(row.lab_accession),
   resultStatus: String(row.result_status),
   releasedAt: toIso(row.released_at),
   openelisResultRef: String(row.openelis_result_ref),
