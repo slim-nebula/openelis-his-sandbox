@@ -39,6 +39,7 @@ endif
 
 .PHONY: help secrets config data-up app-up up down clean logs ps \
         smoke e2e results rejection corrections catalogue-test negative auth capture token \
+        requester \
         certs trust-bridge progress \
         sync-catalogue catalogue export-status prune migrate psql-his psql-oe topics urls
 
@@ -130,6 +131,9 @@ corrections: ## Corrections and retractions of an already-released result
 
 collection: ## Specimen collection - the outpatient and inpatient workflows
 	@bash scripts/test-collection.sh
+
+requester: ## The ordering clinician, from the doctor's screen to the laboratory's
+	@bash scripts/test-requester.sh
 
 catalogue-test: ## Catalogue discovery - filters, guards and the HIS mirror
 	@bash scripts/test-catalogue-sync.sh

@@ -19,8 +19,33 @@ public sealed class BridgeOptions
     /// <summary>
     /// Value stamped on Task.owner. OpenELIS searches for exactly this string,
     /// so it must equal org.openelisglobal.remote.source.identifier.
+    ///
+    /// The RESOURCE TYPE is part of the contract, not decoration. It must be
+    /// Organization: LabOrderSearchProvider attributes the order to the owner
+    /// whenever the reference contains "Practitioner", which hides the real
+    /// ordering clinician behind the routing identity. See OrderMapper.
+    ///
+    /// Changing this strands orders already published under the old value —
+    /// they keep the owner they were written with and no poll will ask for them
+    /// again. Drain before switching, or republish.
     /// </summary>
-    public string LabOwnerReference { get; init; } = "Practitioner/openelis-sandbox-lab";
+    public string LabOwnerReference { get; init; } = "Organization/openelis-sandbox-lab";
+
+    /// <summary>
+    /// What the receiving laboratory is called.
+    ///
+    /// A laboratory is normally a department INSIDE a hospital or clinic, not a
+    /// separate business — so this is the hospital's own name, as the hospital
+    /// writes it: "Stanford Lab", not a product name.
+    ///
+    /// The AUTHORITATIVE name is the one in OpenELIS's own `organization` table,
+    /// which the laboratory maintains and which its screens read. This is our
+    /// copy of it, and OpenELIS never dereferences the owner, so getting it
+    /// wrong misleads whoever reads our records rather than corrupting theirs.
+    /// Keep them the same anyway: two names for one laboratory is exactly the
+    /// drift this integration exists to avoid.
+    /// </summary>
+    public string LabOwnerName { get; init; } = "Laboratory";
 
     public int MaxRetries { get; init; } = 5;
     public int RetryBaseDelaySeconds { get; init; } = 2;
@@ -133,7 +158,8 @@ public sealed class BridgeOptions
         TopicResultReleased = Env("TOPIC_RESULT_RELEASED", "lab.result.released"),
         TopicResultFailed = Env("TOPIC_RESULT_FAILED", "lab.result.failed"),
         TopicOrderProgress = Env("TOPIC_ORDER_PROGRESS", "lab.order.progress"),
-        LabOwnerReference = Env("OE_REMOTE_SOURCE_IDENTIFIER", "Practitioner/openelis-sandbox-lab"),
+        LabOwnerReference = Env("OE_REMOTE_SOURCE_IDENTIFIER", "Organization/openelis-sandbox-lab"),
+        LabOwnerName = Env("OE_LAB_NAME", "Laboratory"),
         MaxRetries = int.Parse(Env("BRIDGE_MAX_RETRIES", "5")),
         RetryBaseDelaySeconds = int.Parse(Env("BRIDGE_RETRY_BASE_DELAY_SECONDS", "2")),
         CorrelationRetryMinutes = int.Parse(Env("BRIDGE_RESULT_CORRELATION_RETRY_MINUTES", "15")),
@@ -209,9 +235,15 @@ public sealed record HisOrder(
     string? SpecimenSnomed,
     string? ResultUnit,
     string OrderStatus,
-    // No ordering clinician. The HIS records who placed every order and keeps
-    // it; the laboratory is not told, because it does not act on it. his-api may
-    // still send the fields — System.Text.Json ignores what this record omits.
+    // Who placed the order, from the verified token — never the request body
+    // (db/his/008). The display name goes on the laboratory's report; the id is
+    // what the FHIR Practitioner identity is derived from, so that one clinician
+    // stays one clinician however their name is spelled.
+    //
+    // Both nullable: rows predating db/his/008 have no identified orderer, and
+    // the bridge sends no requester at all rather than invent one.
+    string? OrderingProvider,
+    string? OrderingProviderId,
     string FacilityCode,
     string Priority,
     // OUTPATIENT or INPATIENT. Only the inpatient path carries a collection

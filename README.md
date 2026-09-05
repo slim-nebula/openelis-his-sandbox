@@ -71,6 +71,7 @@ make smoke           platform and wiring
 make auth            tokens, revocation, degraded mode, the audit trail
 make catalogue-test  the test menu, and the specimen abbreviations
 make collection      the outpatient and inpatient collection workflows
+make requester       the ordering clinician reaching the laboratory's screen
 make negative        outages: broker, Redis, API, OpenELIS
 make rejection       refusal, drift, and a withdrawn specimen
 make e2e             an order into OpenELIS   (pauses for the manual lab step)
@@ -79,8 +80,8 @@ make corrections     corrections and retractions of a released result
 make progress        laboratory progress within an order
 ```
 
-The first six run unattended and are the ones to trust before a change:
-**220 checks, currently 0 failures.** `make e2e` deliberately pauses for a human
+The first seven run unattended and are the ones to trust before a change:
+**250 checks, currently 0 failures.** `make e2e` deliberately pauses for a human
 to release a result in the OpenELIS UI, because that step is a real laboratory
 action and pretending otherwise would prove nothing.
 
@@ -103,8 +104,11 @@ docs/               see the table above
 
 The stack runs **stock upstream images** by default, pinned to a named release
 (`OE_VERSION`), never `:develop`. We carry exactly **one** patch, for a defect
-nothing outside OpenELIS can fix; three other defects we found are handled
-entirely on our side. The rules, the patch, and the two candidates we rejected
-are in [openelis-patches/README.md](openelis-patches/README.md).
+nothing outside OpenELIS can fix; the other four defects we found are handled
+entirely on our side — one of them, the ordering clinician, by nothing more than
+the resource *type* of a configuration value. The rules, the patch, and the two
+candidates we rejected are in
+[openelis-patches/README.md](openelis-patches/README.md); the reports themselves
+are in [docs/upstream-issues/](docs/upstream-issues/).
 
 `docker ps` always shows which build is running.

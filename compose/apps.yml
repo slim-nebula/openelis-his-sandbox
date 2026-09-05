@@ -121,6 +121,9 @@ services:
       # Must equal org.openelisglobal.remote.source.identifier in
       # openelis/generated/common.properties, or OpenELIS's poll matches nothing.
       OE_REMOTE_SOURCE_IDENTIFIER: ${OE_REMOTE_SOURCE_IDENTIFIER}
+      # What that laboratory is called. Should match the name on its row in
+      # OpenELIS's own organization table, which is the authoritative one.
+      OE_LAB_NAME: ${OE_LAB_NAME}
       BRIDGE_MAX_RETRIES: ${BRIDGE_MAX_RETRIES}
       BRIDGE_RETRY_BASE_DELAY_SECONDS: ${BRIDGE_RETRY_BASE_DELAY_SECONDS}
       BRIDGE_RESULT_CORRELATION_RETRY_MINUTES: ${BRIDGE_RESULT_CORRELATION_RETRY_MINUTES}

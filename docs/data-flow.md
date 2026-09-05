@@ -55,7 +55,7 @@ sequenceDiagram
     Note over BR, API: Direct on the sandbox network.<br/>Kong does not route /internal/*
     API->>HDB: SELECT order + catalogue + patient
     API-->>BR: order payload incl. LOINC + specimen type
-    BR->>BR: Map to Patient, Practitioner (lab only),<br/>Specimen, ServiceRequest, Task
+    BR->>BR: Map to Patient, Organization (the lab),<br/>Practitioner (ordering clinician),<br/>Specimen, ServiceRequest, Task
     Note right of BR: Resource ids are UUIDv5 of the order id,<br/>so a replay updates instead of duplicating
     BR->>BDB: upsert fhir_resources<br/>+ order_tracking task_status=requested
     BR->>K: publish lab.order.sent SENT_TO_LIS
@@ -66,12 +66,12 @@ sequenceDiagram
     rect rgb(252, 245, 230)
     Note over OE, ODB: C · OpenELIS pulls the order — it is never pushed
     loop every OE_REMOTE_POLL_FREQUENCY (30s)
-        OE->>BR: GET /fhir/Task?status=requested&owner=Practitioner/{uuid}
+        OE->>BR: GET /fhir/Task?status=requested&owner=Organization/{uuid}
     end
     BR-->>OE: searchset Bundle, 1 match
     OE->>BR: GET /fhir/ServiceRequest/{id} — from Task.basedOn
     OE->>BR: GET /fhir/Patient/{id} — from Task.for
-    OE->>BR: GET /fhir/Practitioner/{id} — from Task.owner (the laboratory)
+    OE->>BR: GET /fhir/Practitioner/{id} — from ServiceRequest.requester<br/>(the ordering clinician — the owner is never dereferenced)
     OE->>BR: GET /fhir/Specimen/{id} — from ServiceRequest.specimen
     OE->>OE: TaskInterpreter matches<br/>ServiceRequest.code LOINC coding
     OE->>ODB: SELECT test WHERE loinc = code
@@ -342,7 +342,7 @@ flowchart LR
 
     subgraph BRG["bridge — published"]
         SR1["ServiceRequest/{orderId}<br/>identifier = order_number"]
-        TSK["Task/{uuidv5}<br/>owner = Practitioner/{lab uuid}"]
+        TSK["Task/{uuidv5}<br/>owner = Organization/{lab uuid}"]
     end
 
     subgraph OES["OpenELIS — its own copies"]

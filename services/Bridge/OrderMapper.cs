@@ -11,12 +11,14 @@ namespace Bridge;
 /// when it polls. The shape is dictated by OpenELIS's importer:
 ///
 ///   Task.status   = requested       (the poll filters on this)
-///   Task.owner    = the configured lab identity (the poll filters on this too)
+///   Task.owner    = the configured lab identity, as an ORGANIZATION (the poll
+///                 filters on this too; the type is load-bearing — see below)
 ///   Task.for      -> Patient
 ///   Task.basedOn  -> ServiceRequest
 ///   ServiceRequest.code carries a http://loinc.org coding, which is the ONLY
 ///                 thing OpenELIS matches a test on
 ///   ServiceRequest.identifier[0].value becomes the LIS-side external order id
+///   ServiceRequest.requester -> Practitioner, the ordering clinician
 ///
 /// Every resource id is a UUID because OpenELIS calls UUID.fromString() on the
 /// Practitioner (and stores the others as uuid columns).
@@ -38,7 +40,13 @@ public static class OrderMapper
     /// it — which is the drift signal the integration is built around, and not
     /// the bridge's call to make.
     /// </param>
-    public static MappedOrder Map(HisOrder order, string labOwnerReference, string? specimenAbbreviation)
+    /// <param name="labOwnerName">
+    /// What the receiving laboratory is called — normally the hospital's own
+    /// name, because the laboratory is a department inside it. See
+    /// Options.LabOwnerName.
+    /// </param>
+    public static MappedOrder Map(HisOrder order, string labOwnerReference, string labOwnerName,
+        string? specimenAbbreviation)
     {
 
         var patientId = order.Patient.PatientId.ToString();
@@ -59,7 +67,7 @@ public static class OrderMapper
         var serviceRequestId = order.OrderNumber;
         var specimenId = DeterministicGuid($"specimen|{order.OrderId}").ToString();
         var taskId = DeterministicGuid($"task|{order.OrderId}").ToString();
-        var labPractitionerId = labOwnerReference.Split('/')[^1];
+        var labOwnerId = labOwnerReference.Split('/')[^1];
 
         var patient = new Patient
         {
@@ -91,29 +99,54 @@ public static class OrderMapper
                     order.Patient.Phone)
             ];
 
-        // The ordering clinician is NOT published.
+        // The ordering clinician. Who is accountable for the order, and who a
+        // critical value is telephoned to — CLIA 42 CFR 493.1291(a) and
+        // ISO 15189:2022 7.4.1.6.c both put the name on the LABORATORY's report,
+        // so it is not enough for the HIS alone to know it.
         //
-        // The HIS records who ordered every test — lab_orders.ordering_provider
-        // and ordering_provider_id, taken from the verified token — and that is
-        // where accountability lives. It simply does not travel to the
-        // laboratory, because the laboratory does not act on it: the analysis is
-        // driven by the test and the specimen, and a critical value is phoned
-        // back to the HIS, which knows the doctor.
+        // Reaching the accessioner's screen depends entirely on the resource
+        // TYPE of the owner below. LabOrderSearchProvider looks for the
+        // requester in two places, in order:
         //
-        // Not sending it also removes any dependence on upstream defect 2, where
-        // OpenELIS reads the requester from Task.owner — the routing address —
-        // and so can never show the ordering doctor anyway.
+        //   1. task.owner       — but ONLY if the reference contains
+        //                         "Practitioner"
+        //   2. serviceRequest.requester, and only when 1 found nothing
+        //
+        // With a Practitioner-typed owner, step 1 always matches the routing
+        // identity and step 2 is never reached: every order in the laboratory
+        // is attributed to "OpenELIS Laboratory". An Organization-typed owner
+        // fails the string test in step 1, which is what lets step 2 run and
+        // the real clinician appear. Nothing is patched — this is the upstream
+        // code path working as written, and it is why the owner is an
+        // Organization and not a Practitioner.
+        var orderingClinician = BuildOrderingClinician(order);
 
         // Represents the receiving laboratory, and this one DOES have to exist:
         // Task.owner is how OpenELIS finds orders addressed to it
         // (Task.OWNER.hasAnyOfIds(remoteStoreIdentifier)), so it is a routing
-        // address, not a person.
-        var labPractitioner = new Practitioner
+        // address, not a person — which is the substantive reason to type it as
+        // an Organization quite apart from the requester it unblocks.
+        //
+        // FhirConfig.getRemoteStoreIdentifier() passes the value through
+        // verbatim unless it is the literal "Practitioner/*", and the importer
+        // never dereferences the owner, so no lookup depends on the type. The
+        // uuid must be a real row in OpenELIS's own `organization` table
+        // (organization.fhir_uuid), so that the one place OpenELIS DOES emit
+        // this reference — FhirReferralServiceImpl putting it on
+        // Task.restriction.recipient for an outbound referral — names something
+        // that exists.
+        //
+        // The NAME comes from configuration because it is different at every
+        // site: a laboratory is normally a department inside a hospital, so it
+        // is called after the hospital. OpenELIS holds the authoritative copy in
+        // that same organization row; this one is ours, and the two are meant to
+        // agree.
+        var labOwner = new Organization
         {
-            Id = labPractitionerId,
+            Id = labOwnerId,
             Active = true,
-            Identifier = [new Identifier($"{OeSystem}/lab", "openelis-sandbox")],
-            Name = [new HumanName { Family = "Laboratory", Given = ["OpenELIS"] }]
+            Identifier = [new Identifier($"{OeSystem}/lab", labOwnerId)],
+            Name = labOwnerName
         };
 
         var specimen = new Specimen
@@ -171,7 +204,13 @@ public static class OrderMapper
             },
             Subject = new ResourceReference($"Patient/{patientId}"),
             Specimen = [new ResourceReference($"Specimen/{specimenId}")],
-            AuthoredOn = order.CreatedAt.ToString("o")
+            AuthoredOn = order.CreatedAt.ToString("o"),
+            // Null when the HIS did not record an identified clinician. Absent
+            // is the honest statement there; a reference to a Practitioner we
+            // invented would read as a verified attribution.
+            Requester = orderingClinician is null
+                ? null
+                : new ResourceReference($"Practitioner/{orderingClinician.Id}")
         };
 
         var task = new FhirTask
@@ -188,7 +227,77 @@ public static class OrderMapper
             Description = $"{order.TestName} ({order.TestCode}) — order {order.OrderNumber}"
         };
 
-        return new MappedOrder(task, serviceRequest, patient, specimen, labPractitioner);
+        return new MappedOrder(task, serviceRequest, patient, specimen, labOwner, orderingClinician);
+    }
+
+    /// <summary>
+    /// The doctor who placed the order, as a Practitioner OpenELIS can resolve.
+    ///
+    /// Keyed on lab_orders.ordering_provider_id — the usr_id from the verified
+    /// token — and never on the name. A name-derived identity makes "Dr Konate",
+    /// "Dr Konaté" and "dr konate" three different clinicians in the
+    /// laboratory's own provider records, which is the defect db/his/008 exists
+    /// to close; deriving the FHIR id from the name here would reopen it one
+    /// layer further out.
+    ///
+    /// The id MUST be a uuid. LabOrderSearchProvider.addRequester calls
+    /// UUID.fromString() on it unguarded, so a raw usr_id like "42" throws
+    /// IllegalArgumentException inside the accessioning wizard - a 500 on the
+    /// laboratory's screen, not a missing field. DeterministicGuid gives the
+    /// same uuid for the same clinician on every order, which is also what lets
+    /// OpenELIS match an existing local Practitioner instead of accumulating a
+    /// duplicate per order.
+    ///
+    /// Returns null when the HIS has no identified clinician: historical rows
+    /// predating db/his/008 carry a NULL ordering_provider_id, and an order with
+    /// no verified orderer must not acquire one in transit.
+    /// </summary>
+    private static Practitioner? BuildOrderingClinician(HisOrder order)
+    {
+        if (string.IsNullOrWhiteSpace(order.OrderingProviderId)) return null;
+        if (string.IsNullOrWhiteSpace(order.OrderingProvider)) return null;
+
+        var (given, family) = SplitName(order.OrderingProvider);
+        var name = new HumanName { Family = family };
+        if (given is not null) name.Given = [given];
+
+        return new Practitioner
+        {
+            Id = DeterministicGuid($"practitioner|{order.OrderingProviderId}").ToString(),
+            Active = true,
+            // The stable key, carried so the laboratory can reconcile against
+            // the HIS by something better than a spelling.
+            Identifier = [new Identifier($"{OeSystem}/provider_id", order.OrderingProviderId)],
+            Name = [name]
+        };
+    }
+
+    /// <summary>
+    /// Splits a display name into given and family for a system that reads them
+    /// separately (getGivenAsSingleString / getFamily).
+    ///
+    /// Last whitespace-separated token is the family name, the rest is given.
+    /// Crude, and deliberately so: the HIS stores one display string, and any
+    /// cleverer rule would be a guess about naming conventions this sandbox has
+    /// no business making. A single-token name becomes the family name alone,
+    /// because that is the field OpenELIS requires and shows.
+    ///
+    /// NOT sanitised. OpenELIS validates provider names against the site's
+    /// configured lastNameCharset - by default letters, space, apostrophe, dot
+    /// and hyphen, with NO DIGITS - and rejects anything else when the
+    /// accessioner saves. Stripping characters here to slip past that would
+    /// alter a clinician's identity in a clinical record to avoid an error
+    /// message; the laboratory refusing a malformed name is the correct
+    /// outcome, and the fix belongs in the HIS that holds it.
+    /// </summary>
+    private static (string? Given, string Family) SplitName(string displayName)
+    {
+        var parts = displayName.Split(' ', StringSplitOptions.RemoveEmptyEntries
+                                          | StringSplitOptions.TrimEntries);
+
+        return parts.Length <= 1
+            ? (null, parts.Length == 1 ? parts[0] : displayName.Trim())
+            : (string.Join(' ', parts[..^1]), parts[^1]);
     }
 
     /// <summary>
@@ -288,8 +397,15 @@ public sealed record MappedOrder(
     ServiceRequest ServiceRequest,
     Patient Patient,
     Specimen Specimen,
-    Practitioner LabOwner)
+    Organization LabOwner,
+    Practitioner? OrderingClinician)
 {
-    public IReadOnlyList<Resource> All =>
-        [Patient, LabOwner, Specimen, ServiceRequest, Task];
+    /// <summary>
+    /// Publication order matters: OpenELIS dereferences ServiceRequest.requester
+    /// while importing, so the Practitioner has to be readable before the
+    /// ServiceRequest that points at it is visible to a poll.
+    /// </summary>
+    public IReadOnlyList<Resource> All => OrderingClinician is null
+        ? [Patient, LabOwner, Specimen, ServiceRequest, Task]
+        : [Patient, LabOwner, OrderingClinician, Specimen, ServiceRequest, Task];
 }

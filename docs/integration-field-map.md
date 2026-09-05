@@ -105,9 +105,10 @@ authority; the message is a convenience.
 
 ### Why it is built this way
 
-Two identifiers were already proven not to survive: the encounter is **dropped
-on import**, and the requester is transmitted correctly and then **lost at the
-point of use** (§4). Both failures are silent.
+The encounter is **dropped on import** and does not survive, silently. The
+requester used to be listed here as the second casualty; it is not one — it is
+transmitted correctly and now arrives, once the laboratory's own address is
+typed as an `Organization` (§4). The encounter has no such workaround.
 
 The consequence is worth being concrete about, because the failure it prevents
 does not look like a failure. One patient, one day, two visits — an emergency
@@ -170,6 +171,24 @@ carries now.
 | **Specimen** | `test_catalogue.specimen_type` | `Specimen.type` | yes — and load-bearing, see §3 |
 | Priority | `lab_orders.priority` | `ServiceRequest.priority` | yes |
 | Collection time | `lab_orders.collected_at` | `Specimen.collection.collectedDateTime` | yes — **inpatient orders only**; read on import by `LabOrderSearchProvider.addCollection` and pre-filled onto the accessioner's screen |
+| **Ordering clinician** | `lab_orders.ordering_provider` + `ordering_provider_id` | `ServiceRequest.requester` → `Practitioner` | yes — but **only** because the laboratory's own address is typed `Organization`; see §4, defect 3 |
+| Laboratory (routing address) | `OE_REMOTE_SOURCE_IDENTIFIER` | `Task.owner` → `Organization` | n/a — this is the address OpenELIS polls on, not data about the patient |
+
+The clinician's `Practitioner` id is a **UUID derived from `ordering_provider_id`**,
+never from the name. Two constraints force this. `LabOrderSearchProvider:403`
+calls `UUID.fromString()` on the id with no guard, so a raw `usr_id` throws
+inside the accessioning wizard — a 500 on the technician's screen, not a blank
+field. And a name-derived identity would make "Dr Konate", "Dr Konaté" and "dr
+konate" three clinicians in the laboratory's own provider records, which is
+exactly the defect `db/his/008` closed inside the HIS.
+
+The display name is split on whitespace, last token to `family` and the rest to
+`given`, because OpenELIS reads the two separately. It is **not** sanitised:
+OpenELIS validates provider names against the site's `lastNameCharset` (by
+default letters, space, apostrophe, dot and hyphen — **no digits**) and refuses a
+malformed one when the accessioner saves. Stripping characters here to slip past
+that would alter a clinician's identity in a clinical record to avoid an error
+message.
 
 `Specimen.receivedTime` is deliberately **not** sent. It used to carry the order
 creation time, which told the laboratory it had received a specimen before
@@ -187,11 +206,12 @@ specific range. `make e2e` asserts both survive the trip.
 | Field | Why not |
 |---|---|
 | **Patient file number (MRN)** | The HIS resolves the folder number from `patient_id` in its own records, so sending it would put a second copy of one fact into another system with somewhere new to drift. **Correction:** this row also used to claim OpenELIS discards it. That is false — the earlier attempt carried it on a type coding with no `system`, and OpenELIS matches identifiers by system. Sent as `…/pat_subjectNumber` it lands as the `SUBJECT` identity and displays as "Unique Health ID number"; verified end to end, then deliberately not adopted. |
-| **Ordering clinician** | The laboratory does not act on it: the analysis is driven by the test and the specimen, and a critical value is phoned back to the HIS, which knows the doctor. Attribution stays complete in the HIS — `lab_orders.ordering_provider_id` from the verified token, plus `his.audit_events`. |
+| ~~**Ordering clinician**~~ | **Now sent — this row was wrong on the facts and wrong on the principle.** It argued the laboratory does not act on the name. It does: CLIA 42 CFR 493.1291(a) and ISO 15189:2022 7.4.1.6.c both put the ordering clinician on the *laboratory's* report, and the laboratory is who telephones a critical value. The reason it was not sent was that it appeared not to work — see §4 — and the diagnosis was incomplete. It travels on `ServiceRequest.requester`, keyed on `ordering_provider_id`. |
 | **Visit / encounter** | Never has to survive a round trip. A returning result is matched to its ORDER first, and the order remembers the visit. OpenELIS would drop it anyway — encounter handling is commented out at `FhirApiWorkFlowServiceImpl.java:577`. |
 | Requesting organisation, location | **Correction — this IS a gap, and the note here was wrong.** It read "not needed once the requester is not shown", which was true of the requester and false of the organisation. The accessioning wizard **requires** a Referring Site, so a technician types it on every order. Closing it means `Task.restriction.recipient[0]` → an OpenELIS `Organization` matched on `organization.code`, which the laboratory must create first. `location` stays out: it is optional, and `addLocation` dereferences without a null check, so an unresolvable reference throws and the import then retries forever. |
 
-Not sending the clinician retired an upstream defect outright — see §4.
+The clinician **is** sent, and reaches the accessioning screen. What made that
+possible was configuration rather than a patch — see §4, defect 3.
 
 ### C. What a returning result carries
 
@@ -309,8 +329,31 @@ it is how OpenELIS finds orders addressed to it
 (`Task.OWNER.hasAnyOfIds(remoteStoreIdentifier)`) — and `LabOrderSearchProvider`
 reads the requester from that same field FIRST, so the fallback to
 `ServiceRequest.requester` is unreachable and the name fields are never set.
-The same field cannot be both the address and the sender. **Unchanged in 3.2.2.0,
-and no longer applies to us:** we do not send an ordering clinician at all.
+The same field cannot be both the address and the sender. **Unchanged in 3.2.2.0.**
+
+**We work around it in configuration, with no patch.** The guard at
+`LabOrderSearchProvider:233` is `task.getOwner().getReference().contains("Practitioner")`
+— a test on the resource *type*, not on whether the owner is a person. Typing the
+laboratory's address as an `Organization` fails that test, the fallback to
+`ServiceRequest.requester` runs as written, and the ordering clinician appears.
+`FhirConfig.getRemoteStoreIdentifier()` passes any value through verbatim unless
+it is the literal `Practitioner/*`, and no import path dereferences the owner, so
+nothing else depends on the type. An Organization is also the more accurate
+statement: the owner is a laboratory, not a doctor.
+
+> **The type of `OE_REMOTE_SOURCE_IDENTIFIER` is load-bearing.** It is the
+> routing key. Get it wrong and no order reaches the laboratory at all — this is
+> not a field that degrades. Changing it also strands orders already published
+> under the old value: they keep the owner they were written with and no poll
+> will ask for them again. Drain or republish before switching.
+
+**Defect 3b — a clinician's name is frozen at first sight.** Once OpenELIS has
+imported a `Practitioner`, `getProviderWithSameIdentifier` finds it by identifier
+on every later order and reuses it **as it is**; the incoming name is discarded
+and no second version is written. A name corrected in the HIS — a misspelling, a
+married name — never reaches the laboratory's report. Keying on the name instead
+is not the answer: that makes every spelling a new clinician, which is the defect
+`db/his/008` closed. `make requester` asserts this so it stays a known fact.
 
 **Defect 4 — an unresolvable sample type binds the wrong test, silently.**
 `addToTestOrPanel` ends `if (test == null) test = alltests.get(0);`. A specimen

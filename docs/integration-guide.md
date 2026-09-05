@@ -192,10 +192,22 @@ supply it.
 referring site already exists somewhere in your estate, and copying it would
 create a second place for it to drift:
 
-| Your situation | Where the referring site comes from |
-|---|---|
-| `modules/visits` records **where the patient is** — ward, unit, clinic on the encounter | the **visit**. A patient moves between wards; the order should say where they were when it was placed |
-| You only know the **hospital** | `business_unit_id` from the IAM token — already on every request, already maintained |
+In the estate's org-setup service it already exists, in more than one shape.
+`mlh_his_org_setup_branches` and `mlh_his_org_setup_wards` both carry exactly
+what is needed — a `code`, a `name`, an `is_active` flag — and each is the right
+answer for a different order:
+
+| The order was placed… | Referring site | Why |
+|---|---|---|
+| in a clinic or outpatient department | `mlh_his_org_setup_branches.code` | the site is where the patient attended |
+| at an inpatient bedside | `mlh_his_org_setup_wards.code` | a patient moves between wards, and the report has to reach the one they were on when it was ordered — `mlh_his_sys_patient_locations` knows which |
+| and you only know the department | `mlh_his_org_setup_business_units.code` | `mlh_his_iam_usr_vs_bunits` already ties the signed-in user to it, so nobody has to be asked |
+
+`his.facilities` flattens all three into one list of codes. That is fine for a
+sandbox and wrong for the estate: branches, wards and business units are
+maintained separately and mean different things. **Send the code from whichever
+of the three the order actually came from** — the laboratory only needs it to be
+stable and unique, not to know which table it came from.
 
 Either way the bridge needs the same thing: **a stable code per site** that the
 laboratory can mirror onto an OpenELIS `Organization`.
@@ -277,17 +289,74 @@ the integration — one topic.
 ## Step 5 — What the bridge sends onward
 
 You do not need to build this; it is what happens next, and knowing it makes the
-failures legible. Five FHIR resources: `Patient`, `Specimen`, `ServiceRequest`,
-`Task`, and a `Practitioner` representing the laboratory.
+failures legible. Up to six FHIR resources: `Patient`, `Specimen`,
+`ServiceRequest`, `Task`, an `Organization` representing the laboratory, and a
+`Practitioner` for the ordering clinician.
 
 From the patient record it carries **name, sex, date of birth, national id and
 phone**. Sex and date of birth are not optional in practice — OpenELIS selects
 reference ranges with them, so a wrong date of birth produces a wrong
 interpretation, not a cosmetic error.
 
-Deliberately **not** sent: the file number/MRN, the ordering clinician, the
-requesting organisation, and the visit number. Full reasoning in
+**The ordering clinician** goes on `ServiceRequest.requester` and appears on the
+laboratory's accessioning screen. Two things about it will matter when you wire
+your own HIS:
+
+- The `Practitioner` id is a **UUID derived from your stable user id**, never
+  from the name. OpenELIS parses that id as a UUID with no guard, so a raw
+  numeric id crashes the accessioning wizard; and a name-derived identity makes
+  every spelling of one doctor a separate clinician in the laboratory's records.
+- **The laboratory keeps the first name it sees.** OpenELIS copies the
+  `Practitioner` on first import and never refreshes it, so a name corrected in
+  your HIS will not reach the laboratory. Get the display name right at the
+  source; there is no second chance from this side.
+
+In the estate both come from `mlh_his_hcp_health_care_provider`: `usr_id` is the
+stable key the `Practitioner` uuid is derived from, and `name` is the display
+name. `name` is a single column rather than given/family, which is why the bridge
+splits on whitespace — last token to `family`, the rest to `given` — and why
+`hcp.name` should be written the way the laboratory should print it.
+
+`license_number` on that same row is worth sending as a **second identifier**
+once you wire your own HIS. A laboratory recognises a licence number; `usr_id`
+means nothing outside your estate, and a laboratory reconciling its provider
+records by hand will look for the licence.
+
+Deliberately **not** sent: the file number/MRN, the requesting organisation, and
+the visit number. Full reasoning in
 [integration-field-map.md](integration-field-map.md).
+
+> **`OE_REMOTE_SOURCE_IDENTIFIER` must be typed `Organization/…`, not
+> `Practitioner/…`.** It is the address OpenELIS polls on, and OpenELIS also
+> treats a Practitioner-typed owner as the answer to "who ordered this" — which
+> hides the real clinician behind the integration's own identity. Getting the
+> *value* wrong is worse than getting the type wrong: no order reaches the
+> laboratory at all.
+
+### Naming the laboratory
+
+A laboratory is normally a **department inside a hospital**, not a separate
+business, so it is called after the hospital: "Stanford Lab", not a product name.
+Two values, and they are meant to agree:
+
+| | Set where | Source in the estate |
+|---|---|---|
+| `OE_LAB_NAME` | `.env` — our copy | `mlh_org_stup_healthcare_organization.organization_name` |
+| the `organization` row | OpenELIS → *Administration → Organization Management* | the same |
+
+The OpenELIS row is the **authoritative** one: it is what the laboratory's own
+screens and reports read, and `OE_REMOTE_SOURCE_IDENTIFIER` is that row's
+`fhir_uuid`. Ours is a copy carried on the orders we publish. Nothing enforces
+that they match, because the laboratory owns its own records — but two names for
+one laboratory is the drift this integration exists to prevent.
+
+> **`organization_name_ar` cannot be used here.** OpenELIS validates names
+> against a configurable character set whose default is Latin only
+> (`site_information.lastNameCharset`), and refuses anything outside it. The same
+> applies to `first_name_ar` / `last_name_ar` on patients and `name_ar` on
+> providers. **Send the Latin names.** A site that enters Arabic into the Latin
+> columns will see orders refused at accessioning, with the failure surfacing in
+> the laboratory rather than in your HIS.
 
 ## Step 6 — Receive results
 

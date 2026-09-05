@@ -84,7 +84,11 @@ docker exec bridge curl -s -H "Authorization: Bearer $BRIDGE_ADMIN_TOKEN" \
   http://localhost:8080/ops/orders
 docker exec bridge curl -s -H "Authorization: Bearer $BRIDGE_ADMIN_TOKEN" \
   http://localhost:8080/ops/dead-letters
-docker exec bridge curl -s 'http://localhost:8080/fhir/Task?status=requested&owner=Practitioner/0e11c5a0-0000-4000-a000-000000000001'
+# The order poll, exactly as OpenELIS issues it. Take the owner from .env rather
+# than typing one: a value that does not match byte for byte returns an empty
+# bundle, which looks identical to "no orders waiting".
+docker exec bridge curl -s \
+  "http://localhost:8080/fhir/Task?status=requested&owner=$OE_REMOTE_SOURCE_IDENTIFIER"
 ```
 
 ---
@@ -304,6 +308,30 @@ docker logs openelis-webapp 2>&1 | grep -iE "task|remote" | tail -40
   `make logs S=bridge` and the consumer group lag.
 - Task present but OpenELIS logs nothing → OpenELIS cannot reach the bridge.
   Verify: `docker exec openelis-webapp curl -sf http://bridge:8080/fhir/metadata`
+- **Task present, OpenELIS reachable, and the poll returns `0 match(es)`** →
+  the two sides disagree about the laboratory's address. This is silent on both
+  sides: the bridge answers correctly, OpenELIS asks correctly, and the answer
+  is legitimately empty.
+
+  ```bash
+  # What OpenELIS is asking for — the RUNNING value, which a container started
+  # before the last `make config` will not have.
+  docker exec openelis-webapp grep remote.source.identifier /run/secrets/common.properties
+  # What the bridge is stamping, and on how many undelivered orders.
+  docker exec bridge curl -s "http://127.0.0.1:8080/fhir/Task?status=requested" \
+    | grep -o '"reference":"[^"]*"' | sort | uniq -c
+  ```
+
+  If they differ, the usual cause is a changed `OE_REMOTE_SOURCE_IDENTIFIER`
+  with undelivered orders left behind. Move them onto the current address —
+  bridge-side resources only, nothing inside OpenELIS changes:
+
+  ```sql
+  -- make psql-his, on the bridge database
+  UPDATE bridge.fhir_resources
+     SET content = jsonb_set(content, '{owner,reference}', '"Organization/<current-uuid>"')
+   WHERE resource_type = 'Task' AND content ->> 'status' = 'requested';
+  ```
 - OpenELIS logs `could not process Task import workflow` → look at the
   exception; usually a resource it tried to dereference was missing.
 
@@ -655,7 +683,7 @@ docker compose -p his-lab-data --env-file .env -f compose/data.yml restart his-d
 | Change | Files to edit together |
 |---|---|
 | Add a test | Enable it in OpenELIS (*Administration → Test Management*), give it one LOINC and one specimen, then `make sync-catalogue`. Nothing in this repo lists tests any more. |
-| Change the polled identity | `.env` → `OE_REMOTE_SOURCE_IDENTIFIER`, then `make config` and restart both `bridge` and `openelis-webapp` |
+| Change the polled identity | `.env` → `OE_REMOTE_SOURCE_IDENTIFIER`, then `make config` and restart both `bridge` and `openelis-webapp`. **Drain first**: orders already published keep the owner they were written with, so any Task still `requested` under the old value becomes invisible to the poll — the laboratory simply never receives them, with nothing logged on either side. §5 has the query and the fix. Keep the type `Organization/…`: a `Practitioner/…` owner also becomes the ordering clinician on the accessioning screen, hiding the real one. |
 | Change poll or push cadence | `.env` → `OE_REMOTE_POLL_FREQUENCY`, `OE_SUBSCRIBER_BACKUP_INTERVAL`, then `make config` and restart `openelis-webapp` |
 | Add an API route | a router under `services/his-api/src/modules/<domain>/routes/`, mounted in `src/app.ts` **and** added to `gateway/kong/kong.yml`. Decide which door it is behind while writing it: user token, service key, or operator token |
 | Add a configuration setting | `.env.example` **and** `.env` **and** the service's `environment:` block in `compose/`. Missing the third is silent: the service falls back to its compiled-in default and the setting appears to be ignored. |

@@ -282,7 +282,8 @@ public sealed class OrderConsumer(
                 order.OrderNumber, order.LoincCode, order.SpecimenType);
         }
 
-        var mapped = OrderMapper.Map(order, options.LabOwnerReference, offering?.SpecimenAbbreviation);
+        var mapped = OrderMapper.Map(order, options.LabOwnerReference, options.LabOwnerName,
+            offering?.SpecimenAbbreviation);
 
         await store.SaveOrderAsync(new TrackedOrder(
             order.OrderId, order.OrderNumber, order.Patient.PatientId, order.TestCode, order.LoincCode,

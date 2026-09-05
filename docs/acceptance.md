@@ -7,6 +7,7 @@ make smoke       platform and wiring
 make auth        tokens, revocation, degraded mode, the audit trail
 make catalogue-test  the test menu, and the specimen abbreviations
 make collection  the outpatient and inpatient collection workflows
+make requester   the ordering clinician reaching the laboratory's screen
 make negative    outages: broker, Redis, API, OpenELIS
 make rejection   refusal, drift, and a withdrawn specimen
 make e2e         order flow into OpenELIS  (pauses for the manual lab step)
@@ -18,7 +19,7 @@ is added, and a number in a document that nobody updates is worse than no number
 — run the suite and read the total it prints.
 
 Run against the real stack: **OpenELIS Global 2 3.2.2.0**, against its own
-external database. Most recent full unattended run: **220 passed, 0 failed**.
+external database. Most recent full unattended run: **250 passed, 0 failed**.
 The patched build was verified at 195, suite for suite, before the results
 display work added a check.
 
@@ -55,6 +56,30 @@ The outpatient **read-back** is not covered end to end: it needs a lab user to
 accession a real sample and type a collection date, which is the manual step in
 `make e2e`. The projection of a laboratory-reported collection time is exercised
 through the same FHIR push the laboratory uses.
+
+## Beyond the brief — the ordering clinician
+
+Also not an acceptance criterion. CLIA 42 CFR 493.1291(a) and ISO 15189:2022
+7.4.1.6.c put the ordering clinician on the **laboratory's** report, so it is not
+enough that the HIS knows: the laboratory is who telephones a critical value.
+Every order used to be attributed to "OpenELIS Laboratory" — the integration's
+own routing identity.
+
+| Behaviour | Verified by |
+|---|---|
+| The laboratory's address is an `Organization`, and the running webapp polls for exactly what the bridge stamps | `make requester` §1 |
+| No **undelivered** order is stranded under a different owner — the silent failure mode of changing that value | `make requester` §1 |
+| `ServiceRequest.requester` carries a `Practitioner` whose id is a **UUID**, which `LabOrderSearchProvider` parses unguarded | `make requester` §2 |
+| The doctor's name appears on the accessioning screen, read from the wizard's own endpoint | `make requester` §3 |
+| One clinician stays one `Practitioner` across orders and across spellings; two clinicians sharing a name stay two | `make requester` §4 |
+| **Known upstream:** shown two names for one clinician, OpenELIS stores one and never updates it | `make requester` §5 |
+| An order with no identified clinician still reaches the laboratory, with no name fabricated and no crash in the wizard | `make requester` §6 |
+| Mononyms, compound names and accented names map correctly; a name the laboratory will refuse is passed through rather than quietly rewritten | `make requester` §7 |
+
+§3 is the only check that reads the laboratory's actual screen rather than the
+wire — it calls `ajaxQueryXML`, the endpoint the accessioning wizard's own
+JavaScript calls. Everything else could pass with the field still invisible to a
+technician.
 
 ## Non-functional requirements
 

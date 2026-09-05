@@ -95,6 +95,30 @@ The laboratory cannot see who ordered a test from the screen where it accessions
 that test. For an integrating system, the ordering clinician's identity is
 transmitted correctly and then discarded at the point of use, with no diagnostic.
 
+## A workaround exists, and it reveals a second problem
+
+The guard is a test on the resource **type**, not on whether the owner is a
+person:
+
+```java
+task.getOwner().getReference().contains(ResourceType.Practitioner.toString())
+```
+
+Publishing `Task.owner` as an `Organization` therefore fails it, the
+`ServiceRequest.requester` branch runs, and the ordering clinician appears. We
+have run this against 3.2.2.0 and the clinician now reaches the accessioning
+screen with no patch. `FhirConfig.getRemoteStoreIdentifier()` passes the
+configured value through verbatim unless it is the literal `Practitioner/*`, and
+no import path dereferences the owner, so nothing else depends on the type.
+
+That this works is useful. That it is *required* is the second problem: the
+resource type of `org.openelisglobal.remote.source.identifier` silently decides
+whether the ordering clinician is visible, and nothing documents it. An operator
+who sets a Practitioner-typed identifier — which reads as the natural choice, and
+is what the property's own examples suggest — gets a working integration in which
+every order is attributed to the receiving laboratory. There is no warning and no
+log line.
+
 ## Suggested direction
 
 Prefer `ServiceRequest.requester` over `Task.owner` when resolving the requester,

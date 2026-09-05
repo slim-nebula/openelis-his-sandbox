@@ -340,24 +340,43 @@ check "The audit trail and the order name the same person" \
           WHERE o.order_number='$ATTRIB_ORDER' AND e.event_type='ORDER_CREATED'
             AND e.detail LIKE '%usr_id 33%'\") == 1 ]]"
 
-# The clinician does not travel, and that is now asserted rather than assumed.
+# The clinician the laboratory is told about is the one the TOKEN named.
 #
-# This block used to check the opposite: that two spellings of one name produced
-# ONE laboratory Practitioner, and that bridge.practitioner_identities recorded
-# which clinician it was. Both were correct while we published the ordering
-# doctor. We no longer do — the laboratory is not told who ordered, because it
-# does not act on it — so the identity table is gone (bridge/007) and there is
-# no Practitioner to collide.
+# This block has now been written three ways, and the history is the point. It
+# first checked that two spellings of one name produced one laboratory
+# Practitioner. It was then rewritten to assert the clinician did not travel at
+# all — correct for a while, but resting on a diagnosis that turned out to be
+# incomplete. The clinician does travel now (see the field map, §4 defect 3).
 #
-# What replaces them is the guarantee that matters: attribution stays complete
-# INSIDE the HIS, and nothing about the clinician leaves it.
+# What survives every rewrite is the guarantee this suite exists for: the
+# identity is the verified one. A request body cannot name an ordering doctor —
+# that is refused a few checks above — so what reaches the laboratory can only
+# be who was signed in.
 check "The order records the clinician from the token" \
     "[[ \$(his_sql \"SELECT ordering_provider_id FROM his.lab_orders
                      WHERE order_number='$ATTRIB_ORDER'\") == 33 ]]"
 
-check "…and the clinician is NOT published to the laboratory" \
-    "[[ -z \"\$(docker exec bridge curl -s http://127.0.0.1:8080/fhir/ServiceRequest/$ATTRIB_ORDER \
-        | python3 -c \"import sys,json;print(json.load(sys.stdin).get('requester',{}).get('reference',''))\" 2>/dev/null)\" ]]"
+# The POST returns on commit; the bridge publishes afterwards, off the outbox.
+# Without this wait an empty read looks like "nothing was published" and the
+# check below would pass or fail on timing rather than on attribution.
+for _ in $(seq 1 30); do
+    ATTRIB_REQ=$(bridge_sql "SELECT content -> 'requester' ->> 'reference'
+                               FROM bridge.fhir_resources
+                              WHERE resource_type = 'ServiceRequest'
+                                AND resource_id = '$ATTRIB_ORDER'")
+    [[ -n "$ATTRIB_REQ" ]] && break
+    sleep 1
+done
+ATTRIB_USR=$(bridge_sql "SELECT content -> 'identifier' -> 0 ->> 'value'
+                           FROM bridge.fhir_resources
+                          WHERE resource_type = 'Practitioner'
+                            AND resource_id = '${ATTRIB_REQ#Practitioner/}'")
+
+# usr_id 33, not the "Dr. Somebody Else" the request body asked for. This is the
+# check that would catch the body being trusted again anywhere between the API
+# and the laboratory's screen.
+check "…and the laboratory is told the token's clinician, not the body's" \
+    "[[ '$ATTRIB_USR' == 33 ]]"
 
 # ---------------------------------------------------------------------------
 section "6 · The bridge is a service, not a person"
