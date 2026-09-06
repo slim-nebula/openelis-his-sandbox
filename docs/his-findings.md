@@ -918,24 +918,38 @@ Worth deciding on your side: if non-clinicians cannot place orders at all in
 your HIS, refuse at the API instead of degrading. The sandbox degrades because it
 cannot know your policy.
 
-## The Latin name columns are load-bearing for the laboratory
+## Names the laboratory will refuse
 
-OpenELIS validates names against a configurable character set. The default, and
-what our instance runs, is Latin only:
+OpenELIS validates every name it stores against a configurable character set. The
+default, and what our instance runs:
 
 ```
 site_information.lastNameCharset = .'a-zàâçéèêëîïôûùüÿñæœ -
 ```
 
-No Arabic. No digits. That applies to `patients.first_name` / `last_name` and to
-`hcp.name` — so `first_name_ar`, `last_name_ar` and `name_ar` cannot be what
-travels.
+Letters including the accented Latin range, space, apostrophe, dot, hyphen.
+**No digits.** It applies to `patients.first_name` / `last_name` and to
+`hcp.name`.
 
-Your schema has this right: the Latin columns are `NOT NULL` and the `_ar` ones
-optional, so a usable name always exists. But nothing at the database level stops
-a site typing Arabic into a Latin column, and when that happens **the order is
-refused inside the laboratory**, at accessioning, in front of a technician who
-cannot fix it. Your HIS reports success. Worth a validation at entry.
+For Latin names this is a non-issue — Konaté, N'Diaye, Diallo-Sow all pass. The
+live risk is narrow and worth knowing rather than guarding:
+
+- **A digit in a name field.** Usually a data-entry accident or a test record
+  that reached production. We hit it building this sandbox: a patient called
+  `Probe233437` made the import throw, and because a failed import is never
+  acknowledged the same order was retried every 30 seconds indefinitely — one of
+  those passes created a duplicate patient record. So the cost is not a rejected
+  order, it is a retry loop in someone else's system.
+- **Characters outside that range**, if a site is ever added whose names need
+  them. `name_ar` and `first_name_ar` are in that category and cannot be what
+  travels; send the Latin columns, which your schema already makes `NOT NULL`.
+  Not a concern while the estate is Latin-only.
+
+The charset is per-site and readable at runtime — OpenELIS publishes the compiled
+regexes as `FIRST_NAME_REGEX` and `LAST_NAME_REGEX` on
+`GET /rest/configuration-properties`, the same endpoint the catalogue sync
+already calls. If a name ever does need rejecting before dispatch, discover the
+rule from the laboratory rather than hardcoding a copy that will drift.
 
 ## One name, one chance
 

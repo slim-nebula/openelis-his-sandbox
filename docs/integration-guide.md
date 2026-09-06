@@ -563,13 +563,21 @@ screens and reports read, and `OE_REMOTE_SOURCE_IDENTIFIER` is that row's
 that they match, because the laboratory owns its own records — but two names for
 one laboratory is the drift this integration exists to prevent.
 
-> **`organization_name_ar` cannot be used here.** OpenELIS validates names
-> against a configurable character set whose default is Latin only
-> (`site_information.lastNameCharset`), and refuses anything outside it. The same
-> applies to `first_name_ar` / `last_name_ar` on patients and `name_ar` on
-> providers. **Send the Latin names.** A site that enters Arabic into the Latin
-> columns will see orders refused at accessioning, with the failure surfacing in
-> the laboratory rather than in your HIS.
+> **Names go in Latin script, and carry no digits.** OpenELIS validates every
+> name it stores against a per-site character set — `site_information.firstNameCharset`
+> and `lastNameCharset`, defaulting to letters including the accented Latin
+> range, plus space, apostrophe, dot and hyphen. Konaté, N'Diaye and Diallo-Sow
+> all pass; a digit does not, and a name in another script does not.
+>
+> This bites harder than a rejection. A name the laboratory refuses makes the
+> import throw, a failed import is never acknowledged, and the order is retried
+> every 30 seconds indefinitely — we hit this with a patient called `Probe233437`
+> and one of the retries created a duplicate patient record. Validate names on
+> the way in, at your own edge.
+>
+> The rules are readable at runtime: `FIRST_NAME_REGEX` and `LAST_NAME_REGEX` on
+> `GET /rest/configuration-properties`. Discover them rather than hardcoding a
+> copy, since the laboratory can change its own charset.
 
 ## Step 6 — Receive results
 
