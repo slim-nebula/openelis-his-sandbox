@@ -1,5 +1,18 @@
 # Audit report and improvement plan
 
+> **Status: all phases implemented, 2026-09-09.** Commits `2290704` (panels),
+> `865ca41` (monitoring), `1bebeff` (patient freeze / issue 07), `520f051` +
+> `e9a66a5` (reconciliation ledger). Full sweep: **355 checks, 0 failures**
+> across twelve suites. Phase E (unit tests, ATNA groundwork) was left
+> deliberately — it is optional in the plan below and nothing depends on it.
+>
+> Three things were found during implementation that were not in the audit:
+> a silent data-loss hazard from **digits in patient names** (field map §5), a
+> **fan-out bug in the ledger's own arithmetic** caught only because its test
+> asserted against the database rather than against itself, and a Prometheus
+> **single-file bind mount serving a truncated rule file** — six of seven rules
+> loaded, all six healthy. Each is written up where it belongs.
+
 *Written 2026-09-09 by an independent review session (Fable) for the implementing
 session (Opus). The entire estate was re-read from scratch — every bridge source
 file, the his-api modules, both database schemas, the compose files, Kong, the
