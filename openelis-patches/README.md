@@ -159,6 +159,18 @@ Suite-for-suite against stock: smoke 53/0, auth 52/0, catalogue-test 22/0,
 negative 50/0, rejection 18/0. The negative suite restarts the webapp mid-run,
 so the patched image is also known to survive a restart and resume importing.
 
+> **This validation record is now incomplete, and deliberately left saying so.**
+> It was taken at 195 checks. The suite has since grown to **355** — `panel`,
+> `monitoring` and `patient-refresh` did not exist when the patched build was
+> validated, and `negative` gained the ledger checks. Nothing suggests the patch
+> affects any of them; the point is that nobody has *shown* it does not.
+>
+> Under ISO 15189 7.6.3(a) the validation is only as current as the suite it was
+> run against. **Re-run the full sweep against the patched image before relying
+> on this record**, and replace the numbers above with what you get. Editing the
+> total to 355 without re-running would be the worst of both — a record that
+> looks current and is not.
+
 **What this does and does not prove.** It establishes that the patched build is
 behaviourally identical to stock — that the patch broke nothing — which is the
 ISO 15189 clause 7.6.3(a) requirement for a change to be validated before use.

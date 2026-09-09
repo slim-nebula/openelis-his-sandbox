@@ -693,6 +693,9 @@ In `make negative`:
   uncorrelated one — proved by ageing rows on both sides of the guard, because
   a sweep run against fresh data deletes nothing and passes whatever it is
   asserted against, including a sweep that is broken
+- the order ledger is refused without a token, and its window is clamped at both
+  ends. What it reports is which patients' orders did not complete, which does
+  not become public because it is a `GET`
 - the sweep reports the windows *this deployment configured*, which catches a
   variable added to `.env` and never wired through compose
 

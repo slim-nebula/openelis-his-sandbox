@@ -29,12 +29,44 @@ writing the same log envelope. Nothing about it is Node-specific.
 | Hook | Path / target | Matches |
 |---|---|---|
 | Health | `GET /health` | `{service, instance, status, timestamp, uptime}` |
-| Metrics | `GET /metrics` | `http_requests_total`, `http_request_duration_seconds` |
+| Metrics | `GET /metrics` | `http_requests_total`, `http_request_duration_seconds` — **now actually scraped**, see below |
 | Discovery | Consul `agent/service/register` | tags `hospital`, `microservice`, `load-balanced`, `version-x`; 10s/3s check; 30s critical deregistration |
 | Logs | Kafka `logs` topic | `{service, level, message, timestamp}` |
 
 `/healthz` is gone. It was a Kubernetes-ism that nothing in this estate uses,
 and having two health paths is how one of them ends up stale.
+
+### Metrics that nobody scrapes are a file the process writes to itself
+
+Both services exposed `/metrics` in Prometheus format from the beginning, and for
+a long time nothing read it. That is worth naming as its own failure: the
+instrumentation existed, the contract was satisfied, and every failure mode the
+metrics described stayed exactly as invisible as before they were added.
+
+There is now a Prometheus container on the sandbox network scraping the bridge,
+his-api and Kong, with alert rules in
+[`monitoring/alerts.yml`](../monitoring/alerts.yml). Two conventions came out of
+building it that apply to any service in the estate:
+
+**Expose the ages, not just the counts.** Request counters answer "is the process
+serving". They cannot answer "has anything been stuck since Tuesday" — a queue
+with one poisoned item and a queue that is empty produce identical request
+metrics. Every alert worth having in this integration reads a gauge measuring how
+*old* something is.
+
+**A gauge that has never been refreshed must be absent, not zero.** prometheus-net
+and prom-client both register a gauge at `0`. If the code that populates it never
+runs, the scrape publishes zeros — and for an age or a backlog, zero is the
+healthiest possible reading. Unpublish the gauge until its first successful
+refresh, so a broken collector breaks the alert expression instead of silently
+satisfying it. This is not hypothetical: it happened here, and four gauges
+reported perfect health while the refresh threw on every pass.
+
+`kafka_consumer_running` is the other one worth copying estate-wide. A service can
+be up, healthy and passing its Consul check while its consumer never joined its
+group — which happened on the first clean run of this stack, and would have meant
+no laboratory result was ever stored again, with nothing anywhere saying so. A
+consumer that never joined has no lag, so a lag alert cannot see it.
 
 ---
 

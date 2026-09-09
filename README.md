@@ -67,23 +67,42 @@ Then open the frontend at **http://localhost:8090** and the OpenELIS UI at
 ## Tests
 
 ```bash
-make smoke           platform and wiring
-make auth            tokens, revocation, degraded mode, the audit trail
-make catalogue-test  the test menu, and the specimen abbreviations
-make collection      the outpatient and inpatient collection workflows
-make requester       the ordering clinician reaching the laboratory's screen
-make negative        outages: broker, Redis, API, OpenELIS
-make rejection       refusal, drift, and a withdrawn specimen
-make e2e             an order into OpenELIS   (pauses for the manual lab step)
-make results         the result return path
-make corrections     corrections and retractions of a released result
-make progress        laboratory progress within an order
+make smoke            platform and wiring
+make auth             tokens, revocation, degraded mode, the audit trail
+make catalogue-test   the test menu, and the specimen abbreviations
+make collection       the outpatient and inpatient collection workflows
+make requester        the ordering clinician reaching the laboratory's screen
+make panel            a report with several analytes — the whole panel, not its first
+make monitoring       the gauges, the alert rules, and whether they can fire
+make patient-refresh  does a corrected patient name reach the laboratory? (it does not)
+make negative         outages: broker, Redis, API, OpenELIS
+make rejection        refusal, drift, and a withdrawn specimen
+make results          the result return path
+make corrections      corrections and retractions of a released result
+make e2e              an order into OpenELIS   (pauses for the manual lab step)
+make progress         laboratory progress within an order
 ```
 
-The first seven run unattended and are the ones to trust before a change:
-**260 checks, currently 0 failures.** `make e2e` deliberately pauses for a human
+The first twelve run unattended and are the ones to trust before a change:
+**355 checks, currently 0 failures.** `make e2e` deliberately pauses for a human
 to release a result in the OpenELIS UI, because that step is a real laboratory
 action and pretending otherwise would prove nothing.
+
+Two of these assert things you might not expect a test to assert.
+`make patient-refresh` asserts that a corrected patient name **does not** reach
+the laboratory — it is a tripwire on a known upstream defect, written to go red
+the day a release fixes it. `make monitoring` checks that every metric named by
+an alert still resolves to a real series, because Prometheus reports a rule
+pointing at a nonexistent metric as perfectly healthy.
+
+## Operations
+
+```bash
+make alerts          what is firing right now
+make reconcile       the order ledger — taken on vs resulted, day by day
+make dead-letters    failures that need a human
+make export-status   is OpenELIS still pushing results to us?
+```
 
 ## Layout
 
@@ -91,6 +110,7 @@ action and pretending otherwise would prove nothing.
 compose/            data.yml (external DBs) · platform.yml · apps.yml · openelis.yml
 db/                 HIS and bridge schemas, applied on first database start
 gateway/            Kong declarative routes · edge nginx config
+monitoring/         Prometheus scrape config · the alert rules
 services/his-api    Patient + Lab Order service (Node 20 / TypeScript)
 services/Bridge     Kafka consumer + FHIR R4 server + correlator (.NET 10)
 frontend/           the doctor's test client
@@ -104,10 +124,19 @@ docs/               see the table above
 
 The stack runs **stock upstream images** by default, pinned to a named release
 (`OE_VERSION`), never `:develop`. We carry exactly **one** patch, for a defect
-nothing outside OpenELIS can fix; the other five defects we found are handled
+nothing outside OpenELIS can fix; the other six defects we found are handled
 entirely on our side, worked around, or simply lived with — one of them, the
 ordering clinician, turned out to need nothing more than the resource *type* of a
-configuration value. The rules, the patch, and the two
+configuration value.
+
+Two are lived with rather than worked around, and both are the same bug in
+different resources: once OpenELIS has imported a **Practitioner** or a
+**Patient**, it never refreshes them. A name corrected in the HIS never reaches
+the laboratory, and re-sending is precisely what does not work. That matters most
+for the patient, where it means the two systems disagree about whose specimen is
+on the bench — see [07](docs/upstream-issues/07-patient-name-never-refreshed.md).
+
+The rules, the patch, and the two
 candidates we rejected are in
 [openelis-patches/README.md](openelis-patches/README.md); the reports themselves
 are in [docs/upstream-issues/](docs/upstream-issues/).

@@ -260,7 +260,7 @@ possible was configuration rather than a patch — see §4, defect 3.
 | `interpretationCode` | the LIS — the HL7 code (`AA`/`HH`/`LL` = critical) behind the label, so severity never depends on the laboratory's wording |
 | `collectedAt`, `collectionSource` | the ward's own record first, the LIS's second — whoever observed the draw. **Never** `Observation.effective`, which OpenELIS sets to the analysis RELEASE date |
 | `previousValue`, `previousReleasedAt` | recovered from the `lab_order_events` audit trail on a correction; ISO 15189 7.4.1.8 |
-| `labAccession` | joined from `lab_orders` — the LABORATORY's number for this work, and the only one the person answering their telephone can look up. Null until a lab user accessions the sample. **Unexercised**: nothing has been accessioned in this sandbox, so the capture path has never run |
+| `labAccession` | joined from `lab_orders` — the LABORATORY's number for this work, and the only one the person answering their telephone can look up. Null until a lab user accessions the sample. **Proven**: order `LAB-20260905-77836BBC` was accessioned by hand in OpenELIS as `DEV01260000000000014`, and the number reached the HIS through the ordinary progress path |
 | `openelisResultRef` | mandatory back-reference to the record OpenELIS owns |
 | `components[]` | **one entry per analyte** — see below. A single-analyte result has exactly one; a panel has one per component |
 

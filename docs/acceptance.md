@@ -3,25 +3,28 @@
 Every criterion in the brief, mapped to the automated check that proves it.
 
 ```bash
-make smoke       platform and wiring
-make auth        tokens, revocation, degraded mode, the audit trail
-make catalogue-test  the test menu, and the specimen abbreviations
-make collection  the outpatient and inpatient collection workflows
-make requester   the ordering clinician reaching the laboratory's screen
-make negative    outages: broker, Redis, API, OpenELIS
-make rejection   refusal, drift, and a withdrawn specimen
-make e2e         order flow into OpenELIS  (pauses for the manual lab step)
-make results     the return path
+make smoke            platform and wiring
+make auth             tokens, revocation, degraded mode, the audit trail
+make catalogue-test   the test menu, and the specimen abbreviations
+make collection       the outpatient and inpatient collection workflows
+make requester        the ordering clinician reaching the laboratory's screen
+make panel            a report with several analytes
+make monitoring       the gauges, the alert rules, and whether they can fire
+make patient-refresh  whether a corrected patient name reaches the laboratory
+make negative         outages: broker, Redis, API, OpenELIS
+make rejection        refusal, drift, and a withdrawn specimen
+make results          the return path
+make corrections      corrections and retractions
+make e2e              order flow into OpenELIS  (pauses for the manual lab step)
 ```
 
-Check counts are deliberately **not** listed here. They change every time a test
-is added, and a number in a document that nobody updates is worse than no number
-— run the suite and read the total it prints.
+Check counts are deliberately **not** listed per suite. They change every time a
+test is added, and a number in a document that nobody updates is worse than no
+number — run the suite and read the total it prints.
 
 Run against the real stack: **OpenELIS Global 2 3.2.2.0**, against its own
-external database. Most recent full unattended run: **260 passed, 0 failed**.
-The patched build was verified at 195, suite for suite, before the results
-display work added a check.
+external database. Most recent full unattended run: **355 passed, 0 failed**
+across twelve suites.
 
 | # | Criterion | Verified by | Check |
 |---|---|---|---|
@@ -91,6 +94,62 @@ went red, which is the only way to know a guard is a guard.
 wire — it calls `ajaxQueryXML`, the endpoint the accessioning wizard's own
 JavaScript calls. Everything else could pass with the field still invisible to a
 technician.
+
+---
+
+## Beyond the brief — a report with several analytes
+
+A `DiagnosticReport` may reference several `Observation`s: eight for a full blood
+count, four for an electrolyte panel. Every test on this sandbox's menu measures
+a single analyte, which is why the list was once read as though it held one
+element — the correlator forwarded the first and dropped the rest, silently.
+
+| Behaviour | Verified by |
+|---|---|
+| Every analyte reaches the HIS, with its **own** value, unit and reference range | `make panel` §2 |
+| A critical analyte keeps its own `HH` code inside an otherwise normal panel | `make panel` §2 |
+| The flat report-level fields still answer for a consumer that predates panels | `make panel` §3 |
+| The API exposes the components, in the order the laboratory released them | `make panel` §4 |
+| Redelivery does not accumulate duplicates | `make panel` §5 |
+| A correction **replaces** the analyte set rather than merging into it, so a withdrawn analyte disappears | `make panel` §6 |
+| Components hang off the surviving result row, not an orphan left by the upsert | `make panel` §6 |
+| A retraction clears every analyte as well as the value | `make panel` §7 |
+| **An incomplete panel waits rather than arriving truncated** — the forward is claimed once per version, so publishing early would be final | `make panel` §8 |
+| A single-analyte result is unchanged: one component, equal to the flat fields | `make panel` §9 |
+
+**Mutation-tested**: the first-observation-only behaviour was restored
+deliberately and §2 went red.
+
+## Beyond the brief — the system says when it is broken
+
+Every alert here covers a **silent** failure: one where nothing errors, no rate
+moves, and the first person to notice is a clinician asking where a result went.
+
+| Behaviour | Verified by |
+|---|---|
+| Prometheus is scraping the bridge, his-api and Kong | `make monitoring` §1 |
+| The four integration gauges are **published**, not sitting at a reassuring default | `make monitoring` §2 |
+| Each gauge agrees with the database it claims to describe | `make monitoring` §3 |
+| Every alert rule parses and evaluates | `make monitoring` §4 |
+| **Every metric named by an alert resolves to a real series** — a rule pointing at a renamed gauge is reported `healthy` and can never fire | `make monitoring` §5 |
+| The alert pipeline reaches `pending`/`firing` end to end | `make monitoring` §6 |
+| The order ledger's totals match `order_tracking` exactly | `make negative` |
+| The ledger's window is clamped at both ends, and refuses an anonymous caller | `make negative` |
+
+**Mutation-tested**: a gauge referenced by an alert was renamed. Prometheus
+continued to report the rule as healthy; §5 caught it.
+
+## Beyond the brief — a known upstream limitation, held under test
+
+| Behaviour | Verified by |
+|---|---|
+| The bridge publishes a corrected patient name | `make patient-refresh` §3 |
+| **OpenELIS keeps the name it first imported and writes no new version** | `make patient-refresh` §4 |
+
+This suite asserts the *documented* behaviour, not the desirable one, so it goes
+**red** the day a release fixes it. A test that asserted the staleness as though
+it were correct would be one nobody could act on. Filed as
+[upstream issue 07](upstream-issues/07-patient-name-never-refreshed.md).
 
 ## Non-functional requirements
 

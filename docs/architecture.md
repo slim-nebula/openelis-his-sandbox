@@ -23,7 +23,7 @@ OpenELIS lives in one place: the bridge.
 
 ## 2. Containers
 
-Fourteen containers in three groups. **Stock** means an unmodified upstream image;
+Fifteen containers in three groups. **Stock** means an unmodified upstream image;
 **ours** means built from this repository.
 
 ### The HIS sandbox — stands in for your real HIS
@@ -37,6 +37,7 @@ Fourteen containers in three groups. **Stock** means an unmodified upstream imag
 | `his-kafka` | `apache/kafka:4.3.1` | stock | the event backbone |
 | `his-redis` | `redis:7-alpine` | stock | user sessions |
 | `his-consul` | `hashicorp/consul:1.20` | stock | service registry and health |
+| `his-prometheus` | `prom/prometheus:v3.1.0` | stock | scrapes the bridge, his-api and Kong; evaluates the alert rules |
 
 ### The bridge — the integration itself
 
@@ -103,6 +104,7 @@ Six places. Three are databases, three are not, and only some survive a restart.
 | Kafka | order events **in flight** | yes — but see below |
 | Redis | user sessions | **no** — a restart is a system-wide logout, by design |
 | Consul | service registry, health | no — rebuilt on start |
+| Prometheus | scraped metrics, 2-day window | yes — volume, but deliberately short: it is for "what happened in the last day", not a record |
 
 **Two servers, three databases.** `his_sandbox` and `bridge_sandbox` share the
 `his-db-external` server — a sandbox convenience to save a container. They are
@@ -180,6 +182,12 @@ to a colleague by nobody doing anything at all.
 `labAccession` for the laboratory's — because they are quoted to different
 people, and only the second is useful to whoever answers the laboratory's phone.
 
+**A panel's analytes are rows beneath their report, not a second table.** One
+report can carry eight results — a full blood count is one order and eight
+numbers — and each keeps its own reference range and its own severity, because a
+panel that is normal in seven analytes and critical in the eighth is a report
+whose entire meaning lives in the eighth.
+
 ---
 
 ## 6. What the doctor can order, and why
@@ -223,6 +231,7 @@ startup, which is why `make trust-bridge` restarts it.
 | new to this | this file, then [data-flow.md](data-flow.md) |
 | wiring the real HIS | [integration-guide.md](integration-guide.md) |
 | deciding what to send | [integration-field-map.md](integration-field-map.md) |
-| running or fixing it | [runbook.md](runbook.md) |
+| running or fixing it | [runbook.md](runbook.md) — start with its alerts section |
 | assessing risk | [security.md](security.md) |
+| judging whether it is any good | [AUDIT.md](../AUDIT.md) — independent review and what it changed |
 | changing OpenELIS itself | [openelis-patches/README.md](../openelis-patches/README.md) |

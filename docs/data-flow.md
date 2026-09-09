@@ -316,7 +316,11 @@ flowchart TD
     M -- not yet --> N[Left unprocessed<br/>retried every 10s]
     N --> M
     N -- 15 min --> DL3[[dead_letters<br/>+ lab.result.failed]]:::bad
-    M -- yes --> O{Already forwarded?}
+    M -- yes --> OBS{All Observations arrived?}
+    OBS -- not yet --> WAIT[Left unprocessed<br/>a partial panel is never published]:::ok
+    WAIT --> OBS
+    OBS -- 15 min --> PART[Forward what arrived<br/>+ warn + dead letter]:::bad
+    OBS -- yes --> O{Already forwarded?}
     O -- yes --> SKIP2[Skipped, idempotent]:::ok
     O -- no --> P[lab.result.released<br/>→ HIS projection]:::ok
 
@@ -325,7 +329,15 @@ flowchart TD
 ```
 
 Every arrow above is exercised by `make negative`, except the two dead-letter
-timeouts, which are time-based.
+timeouts, which are time-based. The Observation branch is `make panel` §8.
+
+**Why the report waits for its own analytes.** OpenELIS pushes a report's
+`Observation`s in separate deliveries, so a panel routinely arrives before its
+components. The forward is claimed once per (report, version), so publishing
+early would be *final* — the analytes still in flight would arrive to find the
+version already forwarded and be dropped for ever. Waiting costs one sweep;
+claiming early costs the result. That is why resolution is checked **before** the
+claim rather than after.
 
 ---
 
@@ -349,7 +361,7 @@ flowchart LR
         SRC["ServiceRequest/{orderId}<br/>same id, plus identifier<br/>system = http://bridge:8080/fhir"]
         SR2["ServiceRequest/{analysisId}<br/>basedOn → ServiceRequest/{orderId}"]
         DR["DiagnosticReport/{id}<br/>basedOn → ServiceRequest/{analysisId}"]
-        OBS["Observation/{id}<br/>valueQuantity, interpretation"]
+        OBS["Observation/{id} × N<br/>one per ANALYTE<br/>valueQuantity, interpretation"]
     end
 
     ORD --> SR1
@@ -357,7 +369,7 @@ flowchart LR
     TSK -.->|"imported"| SRC
     SRC --> SR2
     SR2 --> DR
-    DR -->|result| OBS
+    DR -->|"result[] — every analyte"| OBS
 
     DR -.->|"correlation walk"| SR2
     SR2 -.->|"basedOn"| SRC
@@ -383,6 +395,40 @@ captured from OpenELIS rather than simulated, arrived as
 `DiagnosticReport.basedOn → ServiceRequest/f71f7cc1… → ServiceRequest/LAB-…`.
 A correlator that only looked one level deep — the obvious implementation —
 would have passed every simulated test and failed on every real result.
+
+### 5a. One report, several analytes
+
+`DiagnosticReport.result` is a **list**. A full blood count is one report and
+eight `Observation`s; an electrolyte panel is one report and four. Every test on
+this sandbox's menu happens to measure a single analyte, which is exactly why the
+list was once read as though it held one element — the correlator forwarded
+`result[0]` and dropped the rest, and nothing failed, because there is no count
+anywhere to disagree with.
+
+What travels now:
+
+```
+lab.result.released
+├─ resultValue, resultUnit, referenceRange, interpretation…   the FIRST analyte
+│                                                             (a compatibility view —
+│                                                              still populated, not deprecated)
+└─ observations[]                                             EVERY analyte, in released order
+   ├─ { position, code, name, value, unit, referenceRange,
+   │     interpretation, interpretationCode }
+   └─ …
+```
+
+It lands in `his.lab_results_summary` (one row, the report) plus
+`his.lab_result_components` (one row per analyte). The child rows are **replaced
+wholesale** on every upsert, because a corrected report is a new statement about
+every analyte in it — merging would leave an analyte the laboratory withdrew
+still on screen, sourced from a report that no longer contains it. A retraction
+clears them entirely.
+
+Severity lives on the component, not the report:
+`db/his/016_result_components.sql` explains why, and the short version is that a
+panel normal in six analytes and critically high in the seventh is a report whose
+whole meaning is the seventh.
 
 ## 6. Where the test menu comes from
 

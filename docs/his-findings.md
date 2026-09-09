@@ -33,6 +33,17 @@ the natural choice is the wrong one. Part 3 is what the sandbox took *from* you.
 Items 5, 6 and 7 interact and are the ones to take first — see **Sequencing** at
 the end.
 
+**Two more things your HIS must handle**, found while testing against a real
+OpenELIS. Neither is a defect in your code, and both will cost you real orders if
+nobody knows about them:
+
+| Finding | Consequence | Effort |
+|---|---|---|
+| **Patient names must not contain digits** — the laboratory's `lastNameCharset` excludes them | An order for a patient called `Doe 2` stays `SENT_TO_LIS` for ever: no rejection, no dead letter, nothing to look at | Small — validate at registration |
+| **A corrected patient name never reaches the laboratory** | The two systems permanently disagree about whose specimen is on the bench | Cannot be fixed in code — needs a workflow |
+
+Both are covered in **Part 3** below.
+
 ---
 
 # Part 1 — Defects
@@ -1001,3 +1012,90 @@ Not by severity — by dependency, and by what makes the next step safe.
 
 Items 1–3 are roughly an afternoon between them and remove the two ways an order
 is currently lost silently.
+
+---
+
+# Part 3 — Two things the laboratory imposes on your HIS
+
+Neither of these is a defect in your code. Both were found by running real orders
+against a real OpenELIS, and both are the kind of thing that is obvious in
+hindsight and expensive to discover in production.
+
+## A patient name containing a digit loses the order, silently
+
+OpenELIS validates incoming names against a configured character set. The default
+is:
+
+```
+.'a-zàâçéèêëîïôûùüÿñæœ -
+```
+
+Letters, space, apostrophe, dot, hyphen. **No digits.** A patient whose surname
+contains one fails validation on import, and the order simply stays at
+`SENT_TO_LIS`. There is no rejection, no dead letter, and nothing in the HIS to
+look at — the order is accepted by everything and worked by nobody.
+
+We hit this by accident: a test script made patient names unique by appending a
+unix timestamp, and its order vanished into the laboratory with no explanation
+until we checked the character set.
+
+**Why this will happen to you.** Registration desks produce names with digits
+more often than anyone expects:
+
+- **Disambiguation conventions** — `Doe 2`, `Traore 3` when two patients share a
+  name and the clerk needs to tell them apart.
+- **Placeholder records** — `UNKNOWN-4`, `Baby of Diallo 2`, trauma admissions
+  registered before an identity is known.
+- **Merged or duplicate records** carrying a suffix from the merge.
+- **Identifiers that have leaked into a name field**, which happens in every
+  system that has been running long enough.
+
+**What to do.** Do not hardcode the character set — read it. OpenELIS exposes it
+at runtime:
+
+```
+GET /rest/configuration-properties
+→ FIRST_NAME_REGEX, LAST_NAME_REGEX
+```
+
+Validate against the laboratory's actual rule **at registration**, where a human
+is present and can fix it. Discovering it at the laboratory means discovering it
+where nobody can.
+
+Note the asymmetry: this is the laboratory's rule, not yours, and it applies to
+every patient you might ever send. It is worth treating as a registration
+constraint in the HIS rather than as an integration concern, because by the time
+it is an integration concern the order is already lost.
+
+## A corrected patient name never reaches the laboratory
+
+Once OpenELIS has imported a patient, it never updates its copy. Every later
+order finds the stored patient by identifier and reuses it as it is; the incoming
+demographics are discarded, and no new version is written.
+
+So a name corrected in your HIS — a transliteration fixed, a married name, a
+transposition caught at the desk — stays wrong in the laboratory for ever. The
+specimen label and the report both carry the name OpenELIS first saw.
+
+Verified end to end, not inferred: the bridge published the corrected surname,
+the second order imported successfully, and OpenELIS still held the original with
+one version in its FHIR store. Full write-up in
+[upstream-issues/07](upstream-issues/07-patient-name-never-refreshed.md).
+
+**There is no workaround inside the integration.** Re-sending is precisely what
+does not work — that is the bug.
+
+**What your HIS should do about it.** Two things, and the first matters more:
+
+1. **Do not let a user believe the correction propagated.** When someone edits a
+   patient who has laboratory orders, tell them the laboratory holds a separate
+   copy that this will not change. Silence here is what turns a known limitation
+   into a misidentification incident.
+2. **Give them the out-of-band path.** Whoever makes the correction needs to know
+   who to tell in the laboratory, and that this is a real step rather than
+   paperwork. In practice: the laboratory edits the patient in OpenELIS itself.
+
+The same defect affects the ordering **clinician's** name
+([05](upstream-issues/05-practitioner-name-never-refreshed.md)). That one is a
+reconciliation nuisance. The patient one is a patient-identification risk, which
+is why it is worth a workflow rather than a note.

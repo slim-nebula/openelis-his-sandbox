@@ -806,17 +806,30 @@ everything.
 Run the suites against your stack. They are the specification in executable form:
 
 ```
-make smoke           platform and wiring
-make catalogue-test  the menu, and the specimen abbreviations
-make e2e             a real order into OpenELIS  (pauses for the lab step)
-make results         the return path
-make rejection       refusal and drift
-make negative        outages: broker, Redis, API, OpenELIS
-make auth            tokens, revocation, degraded mode, audit
+make smoke            platform and wiring
+make catalogue-test   the menu, and the specimen abbreviations
+make e2e              a real order into OpenELIS  (pauses for the lab step)
+make results          the return path
+make panel            a report with several analytes
+make rejection        refusal and drift
+make negative         outages: broker, Redis, API, OpenELIS
+make auth             tokens, revocation, degraded mode, audit
+make monitoring       the gauges and whether the alerts can fire
+make patient-refresh  a known upstream limitation, held under test
 ```
 
 If `catalogue-test` fails, stop. A catalogue problem produces **silently wrong
 test binding**, which is worse than an outage because nothing looks broken.
+
+If `panel` fails, stop before offering any multi-analyte test. The failure mode
+is a report arriving with one number where the laboratory released eight, and
+nothing anywhere says so.
+
+`patient-refresh` is the odd one: it **passes** by confirming that a corrected
+patient name does *not* reach the laboratory. It is a tripwire on
+[upstream issue 07](upstream-issues/07-patient-name-never-refreshed.md), written
+to go red when a future OpenELIS release fixes the freeze. If it fails on your
+stack, read it as good news and check whether the workaround is still needed.
 
 ---
 
@@ -854,11 +867,26 @@ atomic claim, so two instances will not deliver the same order twice.
 databases need scheduled backups and — the part people skip — a **restore
 rehearsed on a schedule**. An untested backup is a belief, not a control.
 
-**Watch it, and wake someone.** `/metrics` is exposed and the audit tables exist,
-but nothing ships them anywhere and nothing pages anyone. At minimum, alert on:
-orders stuck undelivered, the dead-letter queue growing, the catalogue sync
-failing, and OpenELIS not polling. That last one is quiet by nature — the
-integration looks healthy while nothing moves.
+**Wake someone.** Half of this is now done: a Prometheus container scrapes the
+bridge, his-api and Kong, and seven rules in
+[`monitoring/alerts.yml`](../monitoring/alerts.yml) cover the four quiet failures
+— orders stuck undelivered, dead letters growing, the catalogue sync ageing, and
+OpenELIS not polling — plus service-down and the result consumer. `make alerts`
+shows what is firing and `make reconcile` gives the daily ledger.
+
+**What is missing is the routing.** There is no Alertmanager, so nothing pages
+anybody: an alert fires and waits for someone to look. That last step is
+deliberately left to you, because who is on call and how they are reached is your
+decision, and a sandbox that shipped one arbitrary answer would teach it as
+though it were the answer. Point Alertmanager at these rules and you are done.
+
+Two things learned building it, worth carrying over. A gauge that has never
+refreshed is **absent**, not zero — prometheus-net registers gauges at `0`, and a
+broken refresh loop published "nothing stuck, no dead letters, catalogue fresh"
+while never once querying the database. And a rule can be `health: ok` and
+**incapable of firing**, because Prometheus validates that an expression parses,
+not that the metric exists; rename a gauge and its alerts go silent for ever
+behind a green rules page. `make monitoring` guards both.
 
 **Use real certificates.** The mTLS between bridge and OpenELIS uses a CA we
 generate. That is genuine mutual authentication and worth keeping, but the
