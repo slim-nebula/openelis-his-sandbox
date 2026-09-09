@@ -39,7 +39,7 @@ endif
 
 .PHONY: help secrets config data-up app-up up down clean logs ps \
         smoke e2e results rejection corrections catalogue-test negative auth capture token \
-        requester panel monitoring \
+        requester panel monitoring patient-refresh \
         certs trust-bridge progress alerts dead-letters \
         sync-catalogue catalogue export-status prune migrate psql-his psql-oe topics urls
 
@@ -141,6 +141,9 @@ panel: ## A report with several analytes - the whole panel, not just its first
 
 monitoring: ## The collector, the gauges, and whether the alerts can actually fire
 	@bash scripts/test-monitoring.sh
+
+patient-refresh: ## Does a corrected patient name reach the laboratory? (upstream defect 07)
+	@bash scripts/test-patient-refresh.sh
 
 catalogue-test: ## Catalogue discovery - filters, guards and the HIS mirror
 	@bash scripts/test-catalogue-sync.sh

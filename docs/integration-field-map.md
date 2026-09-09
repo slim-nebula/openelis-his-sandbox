@@ -461,6 +461,58 @@ would use. **Unchanged in 3.2.2.0. We hit this**, and §3 is the fix.
 This is the most serious of the four: the other three fail visibly, this one
 produces a plausible order on the wrong bench.
 
+**Defect 5 — a PATIENT's demographics are frozen at first sight too, and this one
+is worse.** Exactly the same shape as defect 3b, in
+`getPatientWithSameServiceIdentifier`: once OpenELIS has imported a patient, every
+later order for that identifier reuses the stored copy and discards the incoming
+one. No comparison, no new version.
+
+A clinician's stale name is a reconciliation nuisance. A **patient's** stale name
+means the laboratory and the HIS disagree about whose specimen is on the bench —
+the misidentification failure ISO 15189:2022 §7.2/§7.3 treats as the most serious
+a laboratory can make. Names are corrected constantly at a registration desk: a
+transliteration, a married name, a transposition caught on the day.
+
+Verified end to end rather than inferred: the bridge published `Corrected…`, the
+second order imported successfully, and OpenELIS still held `Freezetest…` with
+`hfj_res_ver` showing one version. `make patient-refresh` holds it, and is
+written to go **red** if a future release fixes the freeze.
+
+**There is no workaround inside the integration.** Re-sending is precisely what
+does not work. A demographic correction has to reach the laboratory out of band,
+and a HIS built on this boundary should tell whoever makes the correction that it
+did not propagate rather than let them assume it did. Filed as
+[07](upstream-issues/07-patient-name-never-refreshed.md).
+
 **Not filed:** `?ID=` lost by the Enter Order button. One unreproduced occurrence
 against code with no async gap; filing it invites a "cannot reproduce" close that
 makes the other three easier to dismiss.
+
+## 5. Names must not contain digits
+
+Not a defect — configuration, and worth its own section because it costs an
+order and says nothing when it does.
+
+`site_information.lastNameCharset` defaults to `.'a-zàâçéèêëîïôûùüÿñæœ -`:
+letters, space, apostrophe, dot, hyphen. **No digits.** A patient whose surname
+contains one fails validation on import, and the order simply stays at
+`SENT_TO_LIS` — no rejection, no dead letter, nothing in the HIS to look at.
+
+This is easy to hit accidentally. It was hit while writing
+`scripts/test-patient-refresh.sh`, whose first version made names unique with a
+unix timestamp; the order vanished into the laboratory with no explanation until
+the charset was checked.
+
+It matters for real estates in two ways:
+
+- **Placeholder and merged-record conventions.** `Doe 2`, `UNKNOWN-4`,
+  `Baby of Smith 3` — anything a registration desk types to disambiguate two
+  people with one name — will not import.
+- **Identifiers leaking into name fields**, which happens more than anyone
+  admits in systems that have grown.
+
+The charset is exposed as `LAST_NAME_REGEX` / `FIRST_NAME_REGEX` on
+`GET /rest/configuration-properties`, so a HIS can read the laboratory's actual
+rule rather than assume this default. Validate against it **at registration**,
+where a human can fix it, rather than discovering it at the laboratory, where
+nobody can.
