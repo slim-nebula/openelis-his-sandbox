@@ -44,6 +44,9 @@ builder.Services.AddHostedService<ResultCorrelator>();
 builder.Services.AddHostedService<ProgressTracker>();
 builder.Services.AddHostedService<ExportMonitor>();
 builder.Services.AddHostedService<RetentionService>();
+// Publishes the four ages an alert can actually fire on. Every failure mode it
+// covers is silent in request metrics — see IntegrationGauges.
+builder.Services.AddHostedService<IntegrationGauges>();
 
 // Singleton: it holds one Redis multiplexer and one signing key, neither of
 // which is worth rebuilding per request.

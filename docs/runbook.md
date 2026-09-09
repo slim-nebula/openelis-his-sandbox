@@ -153,10 +153,16 @@ default 30s. The bridge cannot make that happen sooner.
 ### First five minutes of any incident
 
 ```bash
+make alerts                # what does the system already know is wrong?
 make ps                    # is it running, and is it healthy?
 make logs S=bridge         # what is it saying?
 make export-status         # is OpenELIS still pushing results to us? (checks now)
+make dead-letters          # what failed in a way that needs a human?
 ```
+
+`make alerts` goes first for a reason: the four gauges behind it are refreshed
+every thirty seconds and cover exactly the failures that do **not** show up in a
+log tail, because nothing errored.
 
 `/health` returns **503 when it cannot reach its database**, on purpose. A 503
 here is the service telling the truth — look at the database next, not at the
@@ -172,6 +178,48 @@ and the log records **who** ran the request.
 TOKEN=$(scripts/mint-token.sh --quiet --groups lab-orders,lab-ops)
 docker exec bridge curl -s -H "Authorization: Bearer $TOKEN" \
   http://localhost:8080/ops/export-status
+```
+
+### The alerts, and what to do about each
+
+Prometheus scrapes the bridge, his-api and Kong every fifteen seconds and
+evaluates [`monitoring/alerts.yml`](../monitoring/alerts.yml). There is no
+Alertmanager and no pager — routing is a decision about who is on call, which
+belongs to the hospital rather than to a sandbox. `make alerts` prints what is
+firing; `firing` means the condition has held for the rule's `for:` window,
+`pending` means it has just started.
+
+Every rule here covers a **silent** failure. That is the entry requirement: if
+it would already show as a 500 or a red container, it does not need an alert.
+
+| Alert | What it means | First move |
+|---|---|---|
+| `OrderUndelivered` | an order has waited >15 min for the laboratory to collect it | `make export-status`, then `docker logs openelis-webapp`. The order is published and nobody has come for it |
+| `LaboratoryStoppedPolling` | no poll for >5 min | OpenELIS is down, or the mTLS handshake is failing — §"The FHIR handshake is failing". Fires *before* `OrderUndelivered` because it does not need an order to exist |
+| `DeadLettersGrowing` | new failures in the last hour | `make dead-letters`, then §"Replaying a dead letter" |
+| `CatalogueStale` | the test menu is >45 days old | `make sync-catalogue` and **read the diff** |
+| `CatalogueNeverSynced` | no menu at all | `make sync-catalogue`. Until it runs, nothing is orderable |
+| `ServiceDown` | Prometheus cannot scrape a service | while this fires, every other alert on that service is **blind, not quiet** |
+| `ResultConsumerNotRunning` | his-api is up but not consuming | results are piling up on the topic and reaching no patient record. Restart his-api; the consumer retries on its own but a stuck one needs a push |
+
+Two properties of this setup are worth knowing before you trust it:
+
+**A gauge that has never refreshed is absent, not zero.** The bridge publishes
+nothing until its first successful database read. This is deliberate and was
+learned the hard way — an early version had a query that always threw, so all
+four gauges sat at their registered default of `0`, which reads as "nothing
+stuck, no dead letters, catalogue fresh". The most alarming possible state
+produced the most reassuring possible numbers. An absent metric breaks the alert
+expression instead of satisfying it, which is what you want.
+
+**A rule can be healthy and still never fire.** Prometheus reports a rule as
+`ok` if it *parses*, whether or not the metric it names exists — so renaming a
+gauge silences its alerts permanently behind a green rules page. `make monitoring`
+checks that every metric referenced by every alert still resolves to a real
+series, which is the only way to catch that.
+
+```bash
+make monitoring            # 16 checks: collector, gauges, rules, and the fire path
 ```
 
 ### Things not to do

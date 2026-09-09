@@ -39,8 +39,8 @@ endif
 
 .PHONY: help secrets config data-up app-up up down clean logs ps \
         smoke e2e results rejection corrections catalogue-test negative auth capture token \
-        requester panel \
-        certs trust-bridge progress \
+        requester panel monitoring \
+        certs trust-bridge progress alerts dead-letters \
         sync-catalogue catalogue export-status prune migrate psql-his psql-oe topics urls
 
 help:
@@ -111,6 +111,7 @@ urls: ## Print the entry points
 	@echo "  Kong admin             http://localhost:$(KONG_ADMIN_PORT)"
 	@echo "  OpenELIS UI            https://localhost:$(OE_UI_HTTPS_PORT)   (admin / $(OE_DEFAULT_PASSWORD))"
 	@echo "  Bridge FHIR endpoint   docker exec bridge curl -s http://localhost:8080/fhir/metadata"
+	@echo "  Prometheus             http://localhost:$(PROMETHEUS_PORT)   (make alerts)"
 	@echo "  HIS database           psql -h localhost -p $(HIS_DB_PUBLISHED_PORT) -U $(HIS_DB_USER) -d $(HIS_DB_NAME)"
 	@echo "  OpenELIS database      psql -h localhost -p $(OE_DB_PUBLISHED_PORT) -U $(OE_DB_USER) -d $(OE_DB_NAME)"
 
@@ -138,6 +139,9 @@ requester: ## The ordering clinician, from the doctor's screen to the laboratory
 panel: ## A report with several analytes - the whole panel, not just its first
 	@bash scripts/test-panel.sh
 
+monitoring: ## The collector, the gauges, and whether the alerts can actually fire
+	@bash scripts/test-monitoring.sh
+
 catalogue-test: ## Catalogue discovery - filters, guards and the HIS mirror
 	@bash scripts/test-catalogue-sync.sh
 
@@ -160,6 +164,21 @@ sync-catalogue: ## Refresh the test menu from OpenELIS (FORCE=true to override t
 	  | python3 -c "import sys,json; d=json.load(sys.stdin); \
 	  print('    offered', d['offered'], '| updated', d['upserted'], '| withdrawn', d['deactivated']) \
 	  if d['applied'] else print('    REFUSED:', d['reason'])"
+
+alerts: ## What is firing right now, and what is merely pending
+	@docker exec his-prometheus wget -qO- http://localhost:9090/api/v1/alerts \
+	  | python3 -c "import sys,json; \
+	  a=json.load(sys.stdin)['data']['alerts']; \
+	  print('    nothing firing') if not a else \
+	  [print(f\"    [{x['labels']['severity'].upper():<8}] {x['labels']['alertname']:<26} {x['state']:<8} {x['annotations']['summary']}\") for x in \
+	   sorted(a, key=lambda x: (x['state'] != 'firing', x['labels']['alertname']))]"
+
+dead-letters: ## Failures that need a human, newest first
+	@docker exec bridge curl -sS -H "Authorization: Bearer $(BRIDGE_ADMIN_TOKEN)" \
+	  http://localhost:8080/ops/dead-letters \
+	  | python3 -c "import sys,json; d=json.load(sys.stdin); \
+	  print('    none') if not d else \
+	  [print(f\"    {r['createdAt'][:19]}  {r['source']:<22} {r['reason'][:110]}\") for r in d]"
 
 export-status: ## Is OpenELIS still pushing results to us? (checks now)
 	@docker exec bridge curl -sS -X POST \

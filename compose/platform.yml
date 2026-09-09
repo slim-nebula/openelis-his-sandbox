@@ -185,6 +185,54 @@ services:
       timeout: 5s
       retries: 10
 
+  # --- Monitoring ---------------------------------------------------------------
+  # Both services have exposed /metrics from the start and nothing read them.
+  # Metrics nobody scrapes are a file the process writes to itself — the failure
+  # modes they describe stay exactly as invisible as they were before.
+  #
+  # On `sandbox` only. It scrapes the bridge's estate-facing port, not its
+  # mutually authenticated FHIR port, so it needs no certificate and gets no
+  # route to OpenELIS.
+  #
+  # Sized for the 8 GiB host this runs on beside a full OpenELIS: two days of
+  # retention and a hard memory limit. Long-term storage is a production
+  # question, answered with remote-write rather than a bigger local disk.
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: his-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/config/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=2d
+      - --storage.tsdb.retention.size=512MB
+      - --web.enable-lifecycle
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      # The DIRECTORY, not the two files inside it.
+      #
+      # Mounting single files here silently served a TRUNCATED alerts.yml: the
+      # container kept an inode from an earlier write, so Prometheus loaded six
+      # of the seven rules and reported all six healthy. A missing alert is the
+      # one failure this whole component exists to prevent, and it was
+      # introduced by the mount rather than by the rules.
+      #
+      # A directory mount tracks the directory, so a rewritten file is picked up
+      # whole — and a rule file added later needs no compose change.
+      - ../monitoring:/config:ro
+      - prometheus-data:/prometheus
+    networks: [sandbox]
+    mem_limit: 320m
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  prometheus-data:
+
 networks:
   sandbox:
     name: oe-sandbox-net

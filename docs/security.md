@@ -512,17 +512,44 @@ should present a rejection as *"this order did not complete and needs review"*
 rather than as a definite refusal. That wording costs nothing and is true in both
 cases.
 
-**Nothing watches, and nothing wakes anyone.** `/metrics` is exposed in
-Prometheus format and the audit tables are populated, but no collector scrapes
-them and no alert fires. Several of the failure modes in this document are
-**quiet by design** — an order sitting undelivered, OpenELIS stopping its poll, a
-catalogue sync failing and leaving yesterday's menu in place. Each looks exactly
-like a healthy idle system. Alerting is what converts them from silent to
-visible, and it does not exist yet.
+**~~Nothing watches, and nothing wakes anyone.~~ Half fixed: something watches
+now, nothing wakes anyone yet.** `/metrics` had been exposed in Prometheus
+format from the beginning and nothing read it — metrics nobody scrapes are a
+file the process writes to itself, and the failure modes they describe stayed
+exactly as invisible as before the instrumentation was added.
 
-At minimum, alert on: orders undelivered past a threshold, `dead_letters`
-growing, the last successful catalogue sync ageing, and OpenELIS not having
-polled recently.
+There is now a Prometheus container scraping the bridge, his-api and Kong, and
+seven rules in [`monitoring/alerts.yml`](../monitoring/alerts.yml) covering
+precisely the four quiet failures listed here before — orders undelivered,
+`dead_letters` growing, the catalogue sync ageing, OpenELIS not polling — plus
+service-down and the result consumer. The bridge grew four gauges to make them
+expressible, because none of it was measurable from request counts:
+`bridge_oldest_requested_task_age_seconds`, `bridge_dead_letters_total`,
+`bridge_catalogue_age_seconds`, `bridge_last_poll_age_seconds`.
+
+**What is still missing is the last hop: routing.** No Alertmanager, so nothing
+pages anybody — `make alerts` shows what is firing to whoever thinks to look.
+That is a deliberate stopping point rather than an oversight: who is on call and
+how they are reached is a hospital's decision, and a sandbox that shipped one
+arbitrary answer would teach it as though it were the answer.
+
+Three things this exercise established that are worth carrying into the real
+deployment:
+
+* **A gauge that has never been refreshed is not zero, it is absent.**
+  prometheus-net registers gauges at `0`. An early version of the refresh loop
+  threw on every pass, so all four sat at zero and read as "nothing stuck, no
+  dead letters, catalogue fresh" — the most alarming state publishing the most
+  reassuring numbers, with every alert satisfied by a component that had never
+  queried the database. They are unpublished until a refresh succeeds.
+* **A rule can be `health: ok` and incapable of firing.** Prometheus validates
+  that an expression parses, not that the metric exists. Rename a gauge and its
+  alerts go silent for ever behind a green rules page. `make monitoring` asserts
+  every metric named by every alert still resolves.
+* **Do not bind-mount single config files.** Mounting `alerts.yml` directly
+  served Prometheus a *truncated* copy: six of seven rules loaded, all six
+  healthy. A missing alert is the exact failure this component exists to
+  prevent, and the mount introduced it. Mount the directory.
 
 The remaining production gaps — high availability, real secrets, backups with a
 rehearsed restore, certificates from your own PKI — are collected in

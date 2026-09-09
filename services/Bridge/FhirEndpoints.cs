@@ -112,6 +112,12 @@ public static class FhirEndpoints
                 var owner = ctx.Request.Query["owner"].FirstOrDefault();
                 var id = ctx.Request.Query["_id"].FirstOrDefault();
 
+                // Stamped only for a real order poll, never for a lookup by id.
+                // A `_id` search is a human or a test suite reading one Task;
+                // counting it would let debugging silence the very alert that
+                // says the laboratory has stopped asking for work.
+                if (id is null) IntegrationGauges.RecordPoll();
+
                 var tasks = await store.SearchTasksAsync(status, owner, id, limit, ct);
                 var total = tasks.Count < limit
                     ? tasks.Count                                      // a short page is the whole set
