@@ -84,10 +84,14 @@ services:
       # technician who commissions an analyser presses this from the HIS admin
       # screen, so it has to reach the edge.
       #
-      # It is unauthenticated, like everything else in this sandbox, and unlike
-      # the rest it is a state-changing administrative action. It needs a real
-      # authorization check before this goes anywhere near production - it is on
-      # the list with the bridge's unauthenticated FHIR endpoint.
+      # Kong routes it; his-api guards it. It requires HIS_ADMIN_TOKEN as a
+      # bearer token, checked by requireAdminToken (core/middleware/admin.middleware.ts)
+      # with a fixed-time comparison, and an unset token refuses everything with
+      # 503 rather than opening the door. `make negative` asserts the refusal.
+      #
+      # The check lives in the service rather than here on purpose: a route can
+      # be reached by something other than Kong, and a control that only exists
+      # at the gateway is a control the sandbox network can walk around.
       - name: catalogue-refresh
         paths: ["/admin/catalogue/refresh"]
         methods: [POST]

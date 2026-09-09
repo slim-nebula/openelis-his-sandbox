@@ -238,6 +238,39 @@ tbody tr:last-child td { border-bottom: 0; }
 }
 .superseded strong { text-decoration: line-through; font-weight: 600; }
 
+/* A panel's analytes, beneath the report they belong to.
+
+   Indented and tinted so the hierarchy is visible without a second table: these
+   rows are PART OF the report above them, not siblings of it. The left border is
+   what carries that — it runs down the group and stops, so where the panel ends
+   is unambiguous even when two panels are adjacent.
+
+   Deliberately NOT dimmed. These are the actual results; the parent row is a
+   summary of them. Greying them out would invert the emphasis, and a critically
+   high analyte inside a panel must read as loudly here as it would on a row of
+   its own — which is why .interp keeps its full styling inside .component. */
+tr.component td {
+  background: #f7f9fc;
+  font-size: 12.5px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+tr.component td:first-child {
+  padding-left: 26px;
+  border-left: 3px solid #c8d6ea;
+}
+.analyte { color: var(--fg, #11213a); }
+.analyte-code { color: var(--muted); font-size: 11px; }
+
+/* On the parent row, so a reader can tell there is more underneath before they
+   scroll. Not a count of anything the laboratory said — a count of what we are
+   showing, which is why it sits with the test name and not with the value. */
+.panel-note {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
 /* Deliberately not styled as an input. The ordering clinician comes from the
    session and cannot be typed, so it must not look like something you can
    change — a disabled-looking text box invites someone to try. */

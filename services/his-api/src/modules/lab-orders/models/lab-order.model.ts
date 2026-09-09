@@ -11,6 +11,7 @@ import type {
   ILabOrder,
   IOrderingClinician,
   IReleasedResultMessage,
+  IResultComponent,
   IResultSummary,
 } from '../types/lab-order.types.js';
 
@@ -64,7 +65,14 @@ const RESULT_SELECT = `SELECT r.result_id, r.order_id, r.patient_id, r.test_code
                                   ELSE NULL
                               END AS collection_source,
                               c.specimen_type,
-                              prev.prev_value, prev.prev_released_at
+                              prev.prev_value, prev.prev_released_at,
+                              -- Every analyte in this report, in released order.
+                              -- Aggregated in the query rather than fetched per
+                              -- result: a patient's result list is one round
+                              -- trip however many panels it contains, and the
+                              -- N+1 that the obvious implementation produces
+                              -- would scale with the ward's workload.
+                              coalesce(comp.components, '[]'::json) AS components
                          FROM his.lab_results_summary r
                          JOIN his.lab_orders o ON o.order_id = r.order_id
                          -- The specimen is a property of the CATALOGUE ENTRY, not of the
@@ -89,7 +97,21 @@ const RESULT_SELECT = `SELECT r.result_id, r.order_id, r.patient_id, r.test_code
                                 AND e.payload->>'resultValue' IS DISTINCT FROM r.result_value
                               ORDER BY e.created_at DESC
                               LIMIT 1
-                         ) prev ON true`;
+                         ) prev ON true
+                         LEFT JOIN LATERAL (
+                             SELECT json_agg(json_build_object(
+                                        'analyteCode',        k.analyte_code,
+                                        'analyteName',        k.analyte_name,
+                                        'resultValue',        k.result_value,
+                                        'resultUnit',         k.result_unit,
+                                        'referenceRange',     k.reference_range,
+                                        'interpretation',     k.interpretation,
+                                        'interpretationCode', k.interpretation_code,
+                                        'position',           k.position)
+                                        ORDER BY k.position) AS components
+                               FROM his.lab_result_components k
+                              WHERE k.result_id = r.result_id
+                         ) comp ON true`;
 
 const toOrder = (row: Row): ILabOrder => ({
   orderId: String(row.order_id),
@@ -164,6 +186,9 @@ const toResult = (row: Row): IResultSummary => ({
   releasedAt: toIso(row.released_at),
   openelisResultRef: String(row.openelis_result_ref),
   receivedAt: toIso(row.received_at),
+  // Already JSON from the aggregate, and already ordered by position. Defaulted
+  // to [] rather than left undefined so a caller can iterate without a guard.
+  components: (row.components ?? []) as IResultComponent[],
 });
 
 const appendEvent = async (
@@ -652,6 +677,69 @@ export class LabOrderModel {
           message.labCollectedAt ?? null,
         ],
       );
+
+      // The analytes, replaced wholesale.
+      //
+      // A corrected report is a new statement about EVERY analyte in it, not a
+      // patch to some of them. Merging component by component would leave an
+      // analyte the laboratory withdrew still showing on the screen, sourced
+      // from a report that no longer contains it.
+      //
+      // The result_id is looked up rather than reused from the insert above:
+      // that statement is an upsert, so on a correction the surviving row keeps
+      // its ORIGINAL result_id and the uuid generated for this pass is
+      // discarded. Writing components against the discarded id would orphan
+      // them — the correction's analytes attached to nothing, the superseded
+      // ones still attached to the visible row.
+      const resultRow = await client.query(
+        'SELECT result_id FROM his.lab_results_summary WHERE openelis_result_ref = $1',
+        [message.openelisResultRef],
+      );
+      const resultId = String((resultRow.rows[0] as Row).result_id);
+
+      await client.query('DELETE FROM his.lab_result_components WHERE result_id = $1', [resultId]);
+
+      // Absent means "this producer does not send components" — an older bridge
+      // — and the flat fields are then the whole report, so one component is
+      // synthesised from them. Present-and-empty is a different statement: a
+      // retraction, which has no analytes and must end up with none.
+      const observations = message.observations ?? [
+        {
+          position: 0,
+          code: message.testCode ?? null,
+          name: message.testName ?? String(order.test_name),
+          value: message.resultValue ?? null,
+          unit: message.resultUnit ?? null,
+          referenceRange: message.referenceRange ?? null,
+          interpretation: message.interpretation ?? null,
+          interpretationCode: message.interpretationCode ?? null,
+        },
+      ];
+
+      for (const [index, observation] of observations.entries()) {
+        await client.query(
+          `INSERT INTO his.lab_result_components
+               (component_id, result_id, analyte_code, analyte_name, result_value,
+                result_unit, reference_range, interpretation, interpretation_code, position)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+          [
+            randomUUID(),
+            resultId,
+            observation.code ?? null,
+            // The name is what a clinician reads, so it cannot be null. The
+            // code identifies the analyte when the laboratory sent no display
+            // text; only if it sent neither do we say so plainly rather than
+            // showing a blank row.
+            observation.name ?? observation.code ?? 'Unnamed analyte',
+            observation.value ?? null,
+            observation.unit ?? null,
+            observation.referenceRange ?? null,
+            observation.interpretation ?? null,
+            observation.interpretationCode ?? null,
+            observation.position ?? index,
+          ],
+        );
+      }
 
       await client.query(
         `UPDATE his.lab_orders SET order_status = 'RESULT_AVAILABLE', updated_at = now()

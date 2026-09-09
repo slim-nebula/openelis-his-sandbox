@@ -262,6 +262,7 @@ possible was configuration rather than a patch — see §4, defect 3.
 | `previousValue`, `previousReleasedAt` | recovered from the `lab_order_events` audit trail on a correction; ISO 15189 7.4.1.8 |
 | `labAccession` | joined from `lab_orders` — the LABORATORY's number for this work, and the only one the person answering their telephone can look up. Null until a lab user accessions the sample. **Unexercised**: nothing has been accessioned in this sandbox, so the capture path has never run |
 | `openelisResultRef` | mandatory back-reference to the record OpenELIS owns |
+| `components[]` | **one entry per analyte** — see below. A single-analyte result has exactly one; a panel has one per component |
 
 A corrected result reaching the HIS is not the end of the obligation — the
 patient-safety evidence puts the failure at the last hop, getting a clinician who
@@ -270,6 +271,59 @@ has moved on to look again. See
 
 `GET /visits/{visitNumber}/results` answers the question a clinician opening an
 encounter actually asks.
+
+#### C1. A report with more than one analyte
+
+**Read `components`, not just `resultValue`.** This is the one part of the result
+contract where doing the obvious thing loses data.
+
+A `DiagnosticReport` may reference several `Observation`s — eight for a full
+blood count, four for an electrolyte panel. Until
+[`db/his/016_result_components.sql`](../db/his/016_result_components.sql) the
+bridge forwarded the **first** and dropped the rest, silently: the result looked
+complete, nothing errored, nothing was logged. Every test on the sandbox's menu
+happens to be single-analyte, which is why it never surfaced here — and why it
+had to be fixed before a laboratory offers its first panel, not after.
+
+Each component carries:
+
+| Field | Meaning |
+|---|---|
+| `analyteCode` | the analyte's own code — LOINC where the laboratory supplied one. Null if it sent no coding |
+| `analyteName` | what to show. Falls back to the code, then to `Unnamed analyte` — never blank, which is indistinguishable from a rendering fault |
+| `resultValue`, `resultUnit`, `referenceRange` | this analyte's own, not the report's |
+| `interpretation`, `interpretationCode` | **per analyte.** A panel can be normal in six components and critically high in the seventh, and that seventh is the entire clinical point of the report |
+| `position` | zero-based, in the order the laboratory released them. A haemogram read out of order is harder to read; for a differential count it is misleading |
+
+**The flat report-level fields are a compatibility view, not a duplicate.** They
+hold the first component's values, so a consumer written before panels existed
+still gets a sensible answer rather than a null. They are not deprecated and
+they are not going away — but for a panel they are one analyte out of several,
+so a HIS that files `resultValue` into the patient record and ignores
+`components` files one eighth of a blood count.
+
+Three behaviours worth knowing before you build against this:
+
+- **A correction replaces the whole component set.** A corrected report is a new
+  statement about every analyte in it, not a patch to some of them. Merging
+  component by component would leave an analyte the laboratory withdrew still
+  showing, sourced from a report that no longer contains it.
+- **A retraction clears them.** `entered-in-error` arrives with `components`
+  empty, for the same reason `resultValue` is nulled: the withdrawal is the whole
+  message, and leaving numbers underneath a row marked "withdrawn" is worse than
+  showing a stale value, because a reader can still act on them.
+- **An incomplete panel waits rather than arriving truncated.** OpenELIS pushes a
+  report's `Observation`s in separate deliveries, so a panel routinely arrives
+  before its components. The bridge holds a report whose `Observation`s have not
+  all landed and retries on the next sweep, because the forward is claimed once
+  per (report, version) — publishing early would be final, and the analytes still
+  in flight would be dropped for ever. Past `BRIDGE_RESULT_CORRELATION_RETRY_MINUTES`
+  it forwards what resolved, logs a warning and writes a dead letter: a result
+  that exists is worth more to a clinician than a complete one that never comes,
+  but the shortfall is recorded rather than hidden.
+
+`make panel` holds all of it under test, including the mutation that reintroduces
+the original defect.
 
 ### D. Still typed by hand in the laboratory
 

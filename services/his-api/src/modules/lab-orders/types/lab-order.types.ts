@@ -123,6 +123,36 @@ export interface IOrderingClinician {
   license?: string | undefined;
 }
 
+/**
+ * One analyte inside a released report.
+ *
+ * A full blood count is one report and eight of these. Before
+ * db/his/016_result_components.sql the bridge forwarded only the first
+ * Observation, so a panel arrived as a single number with nothing indicating the
+ * other seven had been dropped.
+ */
+export interface IResultComponent {
+  /**
+   * The analyte's own code — LOINC where the laboratory supplied one. Null when
+   * it sent no coding at all, which is legal and leaves the name as the only
+   * identification.
+   */
+  analyteCode: string | null;
+  analyteName: string;
+  resultValue: string | null;
+  resultUnit: string | null;
+  referenceRange: string | null;
+  interpretation: string | null;
+  /**
+   * Per-analyte severity, and the reason components cannot share the report's.
+   * A metabolic panel can be normal in six analytes and critically high in the
+   * seventh, and that seventh is the whole clinical point of the report.
+   */
+  interpretationCode: string | null;
+  /** Zero-based, in the order the laboratory released them. */
+  position: number;
+}
+
 export interface IResultSummary {
   resultId: string;
   orderId: string;
@@ -206,6 +236,19 @@ export interface IResultSummary {
   releasedAt: string | null;
   openelisResultRef: string;
   receivedAt: string | null;
+  /**
+   * Every analyte the report carried, in released order.
+   *
+   * A single-analyte result has exactly one element, whose values equal the flat
+   * fields above — those remain the report-level answer and are not deprecated.
+   * A panel has one element per component, and the flat fields then hold the
+   * FIRST of them, so a consumer that predates panels still gets a sensible
+   * answer instead of a broken one.
+   *
+   * Empty for a retracted result: there is no value to carry, only the
+   * withdrawal.
+   */
+  components: IResultComponent[];
 }
 
 /** Everything the bridge needs to build a FHIR order, in one response. */
@@ -277,6 +320,28 @@ export interface IReleasedResultMessage {
   labCollectedAt?: string | null;
   resultStatus: string;
   releasedAt: string;
+  /**
+   * Every analyte in the report, in released order, as the bridge resolved them
+   * from DiagnosticReport.result.
+   *
+   * Optional on the wire so a message produced by an older bridge still parses:
+   * absent means "this producer does not send components", and the receiver
+   * falls back to synthesising one component from the flat fields. Present and
+   * empty is a different statement — a retraction, which has no analytes.
+   */
+  observations?: IReleasedObservation[] | undefined;
+}
+
+/** One analyte as it arrives on lab.result.released. */
+export interface IReleasedObservation {
+  position: number;
+  code?: string | null;
+  name?: string | null;
+  value?: string | null;
+  unit?: string | null;
+  referenceRange?: string | null;
+  interpretation?: string | null;
+  interpretationCode?: string | null;
 }
 
 /** Where an order has got to inside the laboratory. See ProgressTracker.cs. */

@@ -39,7 +39,7 @@ endif
 
 .PHONY: help secrets config data-up app-up up down clean logs ps \
         smoke e2e results rejection corrections catalogue-test negative auth capture token \
-        requester \
+        requester panel \
         certs trust-bridge progress \
         sync-catalogue catalogue export-status prune migrate psql-his psql-oe topics urls
 
@@ -134,6 +134,9 @@ collection: ## Specimen collection - the outpatient and inpatient workflows
 
 requester: ## The ordering clinician, from the doctor's screen to the laboratory's
 	@bash scripts/test-requester.sh
+
+panel: ## A report with several analytes - the whole panel, not just its first
+	@bash scripts/test-panel.sh
 
 catalogue-test: ## Catalogue discovery - filters, guards and the HIS mirror
 	@bash scripts/test-catalogue-sync.sh

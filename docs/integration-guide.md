@@ -619,12 +619,47 @@ no accession number exists before the laboratory has taken the specimen in.
   "collectedAt":         "2026-08-14T06:15:00Z",
   "collectionSource":    "ward",
   "labAccession":        "DEV0126000000000004",
-  "openelisResultRef":   "…"
+  "openelisResultRef":   "…",
+  "components": [
+    { "position": 0, "analyteCode": "718-7",  "analyteName": "Haemoglobin",
+      "resultValue": "12.9", "resultUnit": "g/dL",
+      "referenceRange": "12-16", "interpretation": "Normal", "interpretationCode": "N" }
+  ]
 }
 ```
 
 The MRN is not in there and does not need to be — resolve it from `patientId`,
 which you own.
+
+### Step 6a — Read `components`, or you will lose a panel
+
+**`resultValue` is one analyte. `components` is the report.**
+
+For every test on this sandbox's menu they say the same thing, because every one
+of those tests measures a single analyte. The day your laboratory offers a full
+blood count that stops being true: the report carries eight analytes,
+`resultValue` holds the first, and a HIS that files it into the patient record
+has filed one eighth of a blood count with nothing indicating the rest existed.
+
+So:
+
+- **File `components`.** One row per analyte, each with its own value, unit,
+  reference range and interpretation.
+- **Treat the flat fields as a summary**, not as the result. They are kept
+  populated on purpose so nothing that already reads them breaks, and they are
+  the first component — useful for a list view, wrong as the record.
+- **Key severity per component.** `interpretationCode` on a component is that
+  analyte's. A panel that is normal in six analytes and `HH` in the seventh must
+  show the seventh as critical; a report-level severity cannot express it.
+- **Expect the set to be replaced on a correction**, and to be **empty on a
+  retraction**. Do not merge component-by-component — a corrected report is a new
+  statement about every analyte in it, and merging leaves a withdrawn analyte on
+  screen.
+
+`components` is always present and always an array. Empty means the laboratory
+withdrew the report; one element is the ordinary case; more than one is a panel.
+Full field reference in
+[integration-field-map.md § C1](integration-field-map.md#c1-a-report-with-more-than-one-analyte).
 
 Neither the patient id nor the visit is read back from what the laboratory
 returns; both are joined from the order row that `orderNumber` identifies. That

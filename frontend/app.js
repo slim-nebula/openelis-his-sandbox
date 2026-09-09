@@ -229,6 +229,44 @@ function supersededNote(r) {
   return `<div class="superseded">corrected from <strong>${r.previousValue}</strong>${when}</div>`;
 }
 
+// A panel's individual analytes, as rows beneath the report they belong to.
+//
+// Only when there is more than one. A single-analyte result already states its
+// value in the parent row, and repeating it underneath would suggest the report
+// contained something more than it did.
+//
+// The parent row keeps the report-level value (which is the first component) so
+// that the table still reads top-to-bottom for anyone scanning it — the panel
+// simply expands beneath. Each component carries its OWN interpretation,
+// because a panel can be normal in six analytes and critically high in the
+// seventh, and that seventh is the entire reason the report matters.
+function componentRows(r) {
+  const parts = r.components ?? [];
+  if (parts.length <= 1 || isRetracted(r)) return '';
+
+  return parts
+    .map(
+      (c) => `<tr class="component">
+            <td class="analyte">${c.analyteName ?? c.analyteCode ?? '—'}</td>
+            <td class="mono analyte-code">${c.analyteCode ?? ''}</td>
+            <td><strong>${c.resultValue ?? '—'}</strong> ${c.resultUnit ?? ''}</td>
+            <td class="range">${c.referenceRange ?? '—'}</td>
+            <td>${interpretationCell(c)}</td>
+            <td colspan="7"></td>
+          </tr>`,
+    )
+    .join('');
+}
+
+// How many analytes this report carried, shown on the parent row so a reader
+// can see at a glance that there is more underneath. Silent for the ordinary
+// single-analyte result, where the count would be noise.
+function panelNote(r) {
+  const count = (r.components ?? []).length;
+  if (count <= 1 || isRetracted(r)) return '';
+  return `<div class="panel-note">${count} analytes</div>`;
+}
+
 const fmtDate = (v) => (v ? new Date(v).toLocaleString() : '—');
 
 // --- health ----------------------------------------------------------------
@@ -377,7 +415,7 @@ async function refreshPatientData() {
     ? results
         .map(
           (r) => `<tr class="${isRetracted(r) ? 'retracted' : ''}">
-            <td>${r.testName}</td>
+            <td>${r.testName}${panelNote(r)}</td>
             <td class="specimen">${
               // Two orders for the same LOINC on different specimens share a
               // test name — "HIV VIRAL LOAD" for both plasma and dried blood
@@ -412,7 +450,7 @@ async function refreshPatientData() {
               r.labAccession ?? '—'
             }</td>
             <td class="mono">${r.openelisResultRef}</td>
-          </tr>`
+          </tr>${componentRows(r)}`
         )
         .join('')
     : '<tr><td colspan="12" class="empty">Nothing released yet. Validate and release the order in OpenELIS.</td></tr>';

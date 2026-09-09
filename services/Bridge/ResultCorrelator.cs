@@ -117,7 +117,7 @@ public sealed class ResultCorrelator(
                 continue;
             }
 
-            await ForwardAsync(store, report, tracked, status, ct);
+            await ForwardAsync(store, report, tracked, status, receivedAt, ct);
         }
     }
 
@@ -200,9 +200,57 @@ public sealed class ResultCorrelator(
     }
 
     private async Task ForwardAsync(
-        BridgeStore store, DiagnosticReport report, TrackedOrder tracked, string status, CancellationToken ct)
+        BridgeStore store, DiagnosticReport report, TrackedOrder tracked, string status,
+        DateTimeOffset receivedAt, CancellationToken ct)
     {
         var resultRef = $"DiagnosticReport/{report.Id}";
+        var retracted = status == RetractedStatus;
+
+        // Every analyte in the report, not just the first.
+        //
+        // A DiagnosticReport may reference several Observations — eight for a
+        // full blood count. This used to take element zero and drop the rest,
+        // which lost seven results with nothing recording the loss. See
+        // db/his/016_result_components.sql.
+        var (observations, missing) = retracted
+            ? ([], 0)
+            : await ObservationsOfAsync(store, report, ct);
+
+        // RESOLVED BEFORE CLAIMED, and the order is the point.
+        //
+        // OpenELIS pushes a report's Observations in separate deliveries, so a
+        // panel routinely arrives incomplete and completes moments later. The
+        // forward is claimed once per (report, version), so publishing a partial
+        // panel would be final: the analytes still in flight would arrive to
+        // find the version already forwarded and be dropped for ever. Waiting
+        // costs one sweep; claiming early costs the result.
+        //
+        // The wait is bounded by the same window as correlation. Past it, a
+        // laboratory result that exists is worth more to a clinician than a
+        // complete one that never comes — so forward what resolved and say
+        // loudly what did not.
+        if (missing > 0)
+        {
+            var waited = DateTimeOffset.UtcNow - receivedAt;
+            if (waited <= TimeSpan.FromMinutes(options.CorrelationRetryMinutes))
+            {
+                log.LogInformation(
+                    "{Ref} references {Missing} Observation(s) that have not arrived ({Age:F0}s old); "
+                    + "leaving it for the next sweep rather than forwarding a partial report",
+                    resultRef, missing, waited.TotalSeconds);
+                return;   // deliberately NOT marked processed
+            }
+
+            log.LogWarning(
+                "{Ref} still references {Missing} unresolvable Observation(s) after {Age:F0} min; "
+                + "forwarding the {Count} that did arrive. The report in the HIS is INCOMPLETE.",
+                resultRef, missing, waited.TotalMinutes, observations.Count);
+
+            await store.DeadLetterAsync("fhir:Observation",
+                $"{resultRef} references {missing} Observation(s) that never arrived; "
+                + $"forwarded {observations.Count} of {observations.Count + missing} analytes to order {tracked.OrderNumber}",
+                BridgeStore.ToJson(report), tracked.CorrelationId, ct);
+        }
 
         // OpenELIS increments meta.versionId when it corrects a result, so the
         // version is part of the identity of what we are forwarding. Absent a
@@ -218,13 +266,15 @@ public sealed class ResultCorrelator(
             return;
         }
 
-        var retracted = status == RetractedStatus;
-        var observation = await FirstObservationAsync(store, report, ct);
+        // The report-level fields stay exactly as they were, taken from the
+        // first component. They are the compatibility view: a consumer that
+        // knows nothing about panels still gets the answer it always got, and
+        // every existing assertion about resultValue keeps holding.
         var (value, unit, range, interpretation, interpretationCode) = retracted
             // Forwarding the old number alongside a retracted status invites a
             // reader to keep using it. The retraction is the whole message.
             ? ((string?)null, (string?)null, (string?)null, (string?)null, (string?)null)
-            : Flatten(observation, report);
+            : Flatten(observations.FirstOrDefault(), report);
 
         var correlationId = tracked.CorrelationId ?? Guid.NewGuid().ToString();
         var message = new
@@ -251,7 +301,34 @@ public sealed class ResultCorrelator(
             // (A/H/L) without pattern-matching on the laboratory's wording.
             interpretationCode,
             resultStatus = status,
-            releasedAt = ReleasedAt(report)
+            releasedAt = ReleasedAt(report),
+            // The whole report, analyte by analyte, in the order the laboratory
+            // released them. Empty for a retraction — there is no value to
+            // carry, only the withdrawal — and one element for the ordinary
+            // single-analyte result, whose values equal the flat fields above.
+            observations = observations.Select((o, position) =>
+            {
+                var (v, u, r, i, ic) = Flatten(o, report);
+                return new
+                {
+                    position,
+                    code = AnalyteCode(o),
+                    // The report's own name is a fallback ONLY when there is one
+                    // analyte, where the report and the analyte are the same
+                    // thing. For a panel it names the panel, and labelling eight
+                    // components "Full blood count" would make them
+                    // indistinguishable — worse than leaving the name unstated.
+                    name = AnalyteName(o)
+                           ?? (observations.Count == 1
+                                ? report.Code?.Text ?? report.Code?.Coding.FirstOrDefault()?.Display
+                                : null),
+                    value = v,
+                    unit = u,
+                    referenceRange = r,
+                    interpretation = i,
+                    interpretationCode = ic
+                };
+            }).ToList()
         };
 
         await publisher.PublishAsync(options.TopicResultReleased, tracked.OrderNumber, message, correlationId, ct);
@@ -313,16 +390,69 @@ public sealed class ResultCorrelator(
         return ids;
     }
 
-    private static async Task<Observation?> FirstObservationAsync(
+    /// <summary>
+    /// Every Observation the report references, in reference order, plus a count
+    /// of the ones that have not arrived yet.
+    ///
+    /// The count is the interesting half. OpenELIS pushes the pieces of one
+    /// report in several bundles and in no guaranteed order, so a report whose
+    /// Observations are still in flight is INDISTINGUISHABLE from a panel whose
+    /// components were dropped. Forwarding immediately would publish a partial
+    /// panel as though it were the whole report — and because the forward is
+    /// claimed per version, the missing analytes would never arrive afterwards.
+    /// The caller waits instead; see ForwardAsync.
+    ///
+    /// An empty Result list is not a missing observation. Some OpenELIS analyses
+    /// report only a narrative conclusion, and that reaches the HIS through the
+    /// report-level fields with no components at all.
+    /// </summary>
+    private static async Task<(List<Observation> Resolved, int Missing)> ObservationsOfAsync(
         BridgeStore store, DiagnosticReport report, CancellationToken ct)
     {
-        foreach (var id in report.Result.Select(IdOf).Where(x => x is not null))
+        var resolved = new List<Observation>();
+        var missing = 0;
+
+        foreach (var id in report.Result.Select(IdOf))
         {
-            var observation = await store.GetReceivedAsync<Observation>("Observation", id!, ct);
-            if (observation is not null) return observation;
+            if (id is null) { missing++; continue; }
+
+            var observation = await store.GetReceivedAsync<Observation>("Observation", id, ct);
+            if (observation is null) missing++;
+            else resolved.Add(observation);
         }
-        return null;
+
+        return (resolved, missing);
     }
+
+    /// <summary>
+    /// The analyte's own code. LOINC where the laboratory supplied one, because
+    /// that is the code the receiving system can act on; otherwise whatever
+    /// coding it did send, which at least identifies the analyte within this
+    /// laboratory. Null when it sent none — legal, and leaves the name.
+    /// </summary>
+    private static string? AnalyteCode(Observation? observation)
+    {
+        var codings = observation?.Code?.Coding;
+        if (codings is null || codings.Count == 0) return null;
+
+        return codings.FirstOrDefault(c =>
+                   c.System is not null &&
+                   c.System.Contains("loinc.org", StringComparison.OrdinalIgnoreCase))?.Code
+               ?? codings.FirstOrDefault(c => !string.IsNullOrWhiteSpace(c.Code))?.Code;
+    }
+
+    /// <summary>
+    /// What to call the analyte on screen. The report's own text is NOT a
+    /// fallback here — for a panel it names the panel ("Full blood count"), and
+    /// labelling eight components with the panel's name would make them
+    /// indistinguishable. The caller supplies that fallback only when there is
+    /// exactly one analyte, where the two genuinely are the same thing.
+    /// </summary>
+    private static string? AnalyteName(Observation? observation) =>
+        observation?.Code?.Text
+        ?? observation?.Code?.Coding
+            .Select(c => c.Display)
+            .FirstOrDefault(d => !string.IsNullOrWhiteSpace(d));
 
     /// <summary>Collapses the FHIR result into the flat fields the HIS stores.</summary>
     private static (string? Value, string? Unit, string? Range, string? Interpretation, string? InterpretationCode) Flatten(
