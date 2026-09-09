@@ -508,6 +508,68 @@ public sealed class BridgeStore(
         return rows.ToList();
     }
 
+    // --- Reconciliation -----------------------------------------------------
+
+    /// <summary>
+    /// What happened to every order the bridge took on, day by day.
+    ///
+    /// WHY THIS IS NOT AN ALERT
+    /// The alerts answer "is something wrong RIGHT NOW". They cannot answer "did
+    /// everything we accepted last week actually get results", and that is a
+    /// different question with a different failure mode behind it: a slow leak.
+    /// One order a day quietly dead-lettered never crosses any threshold — the
+    /// oldest-undelivered age stays low because the stuck ones keep being
+    /// resolved or swept — and stays invisible until someone counts by hand.
+    ///
+    /// Everything here is already recorded. Nothing new is written to produce
+    /// it; it is one query over order_tracking, forwarded_results and
+    /// dead_letters, which is exactly why it is worth having rather than a
+    /// second bookkeeping table to keep in step.
+    ///
+    /// The age buckets are on ORDERS STILL OUTSTANDING, because "three
+    /// outstanding" means something entirely different depending on whether they
+    /// are three minutes or three days old.
+    /// </summary>
+    public async Task<IReadOnlyList<ReconciliationRow>> GetReconciliationAsync(int days, CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        var rows = await conn.QueryAsync<ReconciliationRow>(new CommandDefinition("""
+            SELECT
+                t.created_at::date                                        AS "Day",
+                count(*)                                                  AS "Accepted",
+                count(*) FILTER (WHERE t.task_status = 'accepted')        AS "AcceptedByLis",
+                count(*) FILTER (WHERE t.task_status = 'rejected')        AS "RejectedByLis",
+                count(*) FILTER (WHERE t.task_status = 'requested')       AS "Outstanding",
+                -- Outstanding AND old. The first bucket is ordinary in-flight
+                -- traffic; the second is the one worth reading.
+                count(*) FILTER (WHERE t.task_status = 'requested'
+                                   AND t.created_at < now() - interval '1 hour')  AS "OutstandingOverAnHour",
+                count(*) FILTER (WHERE t.task_status = 'requested'
+                                   AND t.created_at < now() - interval '1 day')   AS "OutstandingOverADay",
+                count(DISTINCT f.order_id)                                AS "Resulted"
+              FROM bridge.order_tracking t
+              LEFT JOIN bridge.forwarded_results f ON f.order_id = t.order_id
+             WHERE t.created_at >= now() - make_interval(days => @days)
+             GROUP BY t.created_at::date
+             ORDER BY t.created_at::date DESC;
+            """, new { days }, cancellationToken: ct));
+        return rows.ToList();
+    }
+
+    /// <summary>Dead letters over the same window, so the two are read together.</summary>
+    public async Task<IReadOnlyList<DeadLetterDayRow>> GetDeadLettersByDayAsync(int days, CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        var rows = await conn.QueryAsync<DeadLetterDayRow>(new CommandDefinition("""
+            SELECT created_at::date AS "Day", count(*) AS "DeadLetters"
+              FROM bridge.dead_letters
+             WHERE created_at >= now() - make_interval(days => @days)
+             GROUP BY created_at::date
+             ORDER BY created_at::date DESC;
+            """, new { days }, cancellationToken: ct));
+        return rows.ToList();
+    }
+
     // --- Result push channel health ----------------------------------------
 
     public async Task RecordExportCheckAsync(
@@ -559,6 +621,19 @@ public sealed class BridgeStore(
 
 public sealed record DeadLetterRow(
     long Id, string Source, string Reason, string? CorrelationId, DateTimeOffset CreatedAt);
+
+/// <summary>One day of the order ledger. See BridgeStore.GetReconciliationAsync.</summary>
+public sealed record ReconciliationRow(
+    DateOnly Day,
+    int Accepted,
+    int AcceptedByLis,
+    int RejectedByLis,
+    int Outstanding,
+    int OutstandingOverAnHour,
+    int OutstandingOverADay,
+    int Resulted);
+
+public sealed record DeadLetterDayRow(DateOnly Day, int DeadLetters);
 
 public sealed record ExportCheckRow(
     DateTimeOffset CheckedAt, string Verdict, string? Endpoint, string? LastStatus,

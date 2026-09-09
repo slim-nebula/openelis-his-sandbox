@@ -40,7 +40,7 @@ endif
 .PHONY: help secrets config data-up app-up up down clean logs ps \
         smoke e2e results rejection corrections catalogue-test negative auth capture token \
         requester panel monitoring patient-refresh \
-        certs trust-bridge progress alerts dead-letters \
+        certs trust-bridge progress alerts dead-letters reconcile \
         sync-catalogue catalogue export-status prune migrate psql-his psql-oe topics urls
 
 help:
@@ -182,6 +182,19 @@ dead-letters: ## Failures that need a human, newest first
 	  | python3 -c "import sys,json; d=json.load(sys.stdin); \
 	  print('    none') if not d else \
 	  [print(f\"    {r['createdAt'][:19]}  {r['source']:<22} {r['reason'][:110]}\") for r in d]"
+
+reconcile: ## The order ledger - taken on vs resulted, day by day (DAYS=7)
+	@docker exec bridge curl -sS -H "Authorization: Bearer $(BRIDGE_ADMIN_TOKEN)" \
+	  "http://localhost:8080/ops/reconciliation?days=$(if $(DAYS),$(DAYS),7)" \
+	  | python3 -c "import sys,json; d=json.load(sys.stdin); t=d['totals']; \
+	  print(f\"    {d['days']} days: {t['accepted']} taken on | {t['acceptedByLis']} accepted | \" \
+	        f\"{t['rejectedByLis']} rejected | {t['resulted']} resulted | \" \
+	        f\"{t['outstanding']} outstanding ({t['outstandingOverADay']} over a day) | \" \
+	        f\"{t['deadLetters']} dead\"); \
+	  print(f\"    {'day':<12}{'on':>5}{'acc':>6}{'rej':>6}{'res':>6}{'out':>6}{'>1d':>6}{'dead':>6}\"); \
+	  [print(f\"    {r['day']:<12}{r['accepted']:>5}{r['acceptedByLis']:>6}{r['rejectedByLis']:>6}\" \
+	         f\"{r['resulted']:>6}{r['outstanding']:>6}{r['outstandingOverADay']:>6}{r['deadLetters']:>6}\") \
+	   for r in d['byDay']]"
 
 export-status: ## Is OpenELIS still pushing results to us? (checks now)
 	@docker exec bridge curl -sS -X POST \

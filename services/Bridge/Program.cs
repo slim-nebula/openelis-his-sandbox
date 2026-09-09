@@ -169,6 +169,52 @@ ops.MapGet("/orders", async (BridgeStore store, BridgeOptions opts, Cancellation
 ops.MapGet("/dead-letters", async (BridgeStore store, CancellationToken ct) =>
     Results.Ok(await store.GetDeadLettersAsync(ct)));
 
+// The ledger: what was taken on, and what became of it.
+//
+// The alerts answer "is something wrong now". This answers "did everything we
+// accepted actually get a result", which no alert can — a slow leak of one
+// order a day crosses no threshold and stays invisible until somebody counts.
+// Pure read over data already kept.
+ops.MapGet("/reconciliation", async (int? days, BridgeStore store, CancellationToken ct) =>
+{
+    // Clamped rather than trusted. Unbounded, this scans the whole table on an
+    // endpoint anyone with the operator token can call in a loop.
+    var window = Math.Clamp(days ?? 7, 1, 90);
+
+    var ledger = await store.GetReconciliationAsync(window, ct);
+    var deadLetters = (await store.GetDeadLettersByDayAsync(window, ct))
+        .ToDictionary(d => d.Day, d => d.DeadLetters);
+
+    return Results.Ok(new
+    {
+        days = window,
+        // Totals first: the question is usually "does this add up", and that is
+        // answerable without reading every row.
+        totals = new
+        {
+            accepted = ledger.Sum(r => r.Accepted),
+            acceptedByLis = ledger.Sum(r => r.AcceptedByLis),
+            rejectedByLis = ledger.Sum(r => r.RejectedByLis),
+            outstanding = ledger.Sum(r => r.Outstanding),
+            outstandingOverADay = ledger.Sum(r => r.OutstandingOverADay),
+            resulted = ledger.Sum(r => r.Resulted),
+            deadLetters = deadLetters.Values.Sum()
+        },
+        byDay = ledger.Select(r => new
+        {
+            day = r.Day.ToString("yyyy-MM-dd"),
+            accepted = r.Accepted,
+            acceptedByLis = r.AcceptedByLis,
+            rejectedByLis = r.RejectedByLis,
+            outstanding = r.Outstanding,
+            outstandingOverAnHour = r.OutstandingOverAnHour,
+            outstandingOverADay = r.OutstandingOverADay,
+            resulted = r.Resulted,
+            deadLetters = deadLetters.GetValueOrDefault(r.Day, 0)
+        })
+    });
+});
+
 // --- Health of the channel results arrive on -------------------------------
 
 // Answers "is OpenELIS still pushing results to us", which nothing else could
