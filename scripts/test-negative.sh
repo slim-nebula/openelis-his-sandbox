@@ -394,6 +394,42 @@ DLQ=$(bridge_sql "SELECT count(*) FROM bridge.dead_letters")
 info "bridge dead-letter rows: ${DLQ:-0}  (inspect with: bridge_admin GET /ops/dead-letters)"
 
 # ---------------------------------------------------------------------------
+section "The ledger adds up"
+
+# What the alerts cannot answer. They report "is something wrong now"; a slow
+# leak of one order a day crosses no threshold and stays invisible until
+# somebody counts. This is the count.
+RECON=$(bridge_admin GET "/ops/reconciliation?days=30")
+
+check_contains "The ledger reports totals" "echo '$RECON'" '"totals"'
+check_contains "…and a day-by-day breakdown" "echo '$RECON'" '"byDay"'
+
+# Against the database rather than against itself: a ledger that agrees only
+# with its own arithmetic is a ledger that can be confidently wrong.
+DB_TAKEN=$(bridge_sql "SELECT count(*) FROM bridge.order_tracking
+                        WHERE created_at >= now() - interval '30 days'")
+LEDGER_TAKEN=$(echo "$RECON" | json_field "['totals']['accepted']")
+[[ "$LEDGER_TAKEN" == "$DB_TAKEN" ]] \
+    && ok "Orders taken on matches order_tracking ($DB_TAKEN)" \
+    || bad "Orders taken on matches order_tracking" "ledger=$LEDGER_TAKEN table=$DB_TAKEN"
+
+# The window is clamped, not trusted. Unbounded it scans the whole table on an
+# endpoint that can be called in a loop.
+CLAMPED=$(bridge_admin GET "/ops/reconciliation?days=99999" | json_field "['days']")
+[[ "$CLAMPED" == "90" ]] \
+    && ok "An absurd window is clamped to 90 days, not honoured" \
+    || bad "The window is clamped" "asked for 99999, got '$CLAMPED'"
+
+check "A zero or negative window is clamped up rather than returning nothing" \
+    "[[ \$(bridge_admin GET '/ops/reconciliation?days=0' | python3 -c \"import sys,json; print(json.load(sys.stdin)['days'])\") == 1 ]]"
+
+# Same door as the rest of /ops: what this reports is which patients' orders did
+# not complete, which is a description of real people's care and does not become
+# public because it is a GET.
+check "The ledger is not readable without a token" \
+    "[[ \$(http_status bridge GET http://localhost:8080/ops/reconciliation) == 401 ]]"
+
+# ---------------------------------------------------------------------------
 section "An unhealthy service leaves the rotation by itself"
 
 # Kong used to address his-api by its Docker hostname, cached the address, and

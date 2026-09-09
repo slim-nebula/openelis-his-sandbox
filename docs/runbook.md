@@ -222,6 +222,40 @@ series, which is the only way to catch that.
 make monitoring            # 16 checks: collector, gauges, rules, and the fire path
 ```
 
+### The daily glance: does it add up?
+
+Alerts answer *"is something wrong now"*. They cannot answer *"did everything we
+accepted last week actually get a result"* — a slow leak of one order a day
+crosses no threshold, because the oldest-undelivered age keeps being reset as
+stuck orders are resolved or swept. Nothing notices until somebody counts.
+
+```bash
+make reconcile             # last 7 days
+make reconcile DAYS=30
+```
+
+```
+    14 days: 284 taken on | 272 accepted | 10 rejected | 5 resulted | 2 outstanding (1 over a day) | 10 dead
+    day            on   acc   rej   res   out   >1d  dead
+    2026-09-09      5     3     1     0     1     0     1
+    2026-09-07     21    21     0     2     0     0     0
+```
+
+Read it right to left. **`>1d` is the column that matters** — an order
+outstanding for minutes is ordinary in-flight traffic; one outstanding overnight
+is a patient whose test nobody is running. `dead` alongside it says whether the
+shortfall was at least *recorded* as a failure or simply vanished.
+
+A large gap between `acc` and `res` is normal in this sandbox and **not** normal
+in a laboratory: here most orders are placed by test suites and never worked, so
+they are accepted and never resulted. In a real deployment that gap is the
+backlog, and it should close within a working day for routine tests.
+
+Everything in the report is derived from `order_tracking`, `forwarded_results`
+and `dead_letters` at read time. Nothing is written to produce it, which is why
+it cannot drift from the data it describes — and why it is worth trusting when
+the alerts are quiet.
+
 ### Things not to do
 
 **Do not restart the bridge to "clear" a stuck order.** Nothing is held in
