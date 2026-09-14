@@ -11,10 +11,32 @@ import { HTTPError } from '@core/exceptions/http.exceptions.js';
  * in OperationOutcome instead — a different contract for a different caller,
  * stated deliberately rather than by accident.
  */
+/**
+ * The reason phrases this service actually emits. Written out rather than
+ * derived, because a wrong title is worse than a generic one and there is no
+ * table in the standard library to derive it from.
+ *
+ * ASP.NET set `type` to a link into the HTTP semantics RFC; this uses
+ * "about:blank", which RFC 7807 §4.2 defines as "no further information beyond
+ * the status code". That is the honest value — the bridge publishes no problem
+ * registry — and it is a deliberate divergence, recorded in the README. No
+ * suite reads `type` or `title`; both assert the status and the `detail` text.
+ */
+const TITLES: Readonly<Record<number, string>> = {
+  400: 'Bad Request',
+  401: 'Unauthorized',
+  403: 'Forbidden',
+  404: 'Not Found',
+  409: 'Conflict',
+  500: 'Internal Server Error',
+  501: 'Not Implemented',
+  503: 'Service Unavailable',
+};
+
 export const problemResponse = (res: Response, status: number, detail: string): void => {
   res.status(status).type('application/problem+json').json({
     type: 'about:blank',
-    title: status === 401 ? 'Unauthorized' : status === 403 ? 'Forbidden' : 'Error',
+    title: TITLES[status] ?? 'Error',
     status,
     detail,
   });

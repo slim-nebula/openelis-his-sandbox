@@ -28,10 +28,3 @@ export class NotFoundError extends HTTPError {
     super(404, message);
   }
 }
-
-/**
- * A refusal that must answer in RFC 7807, because that is what the .NET service
- * did and what `/ops` callers parse. See problemResponse in the error
- * middleware.
- */
-export class ProblemError extends HTTPError {}

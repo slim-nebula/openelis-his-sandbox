@@ -1,10 +1,17 @@
-import { Kafka, Partitioners, Producer } from 'kafkajs';
+import { Kafka, Partitioners, Producer, logLevel } from 'kafkajs';
 import { config } from './env.js';
 import { logger } from './logger.js';
 
 const kafka = new Kafka({
   clientId: config.serviceName,
   brokers: config.kafka.brokers,
+  // Silenced for the same reason the log shipper's producer is: KafkaJS prints
+  // two lines per retry and retries with backoff for about a minute, so a
+  // broker that is merely slow to start buries the service's own startup lines
+  // under connection errors — in exactly the window an operator is reading
+  // them. Nothing is lost: connect() failures are caught and logged in
+  // server.ts, and a failed send rejects to its caller.
+  logLevel: logLevel.NOTHING,
 });
 
 /**

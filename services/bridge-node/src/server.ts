@@ -6,6 +6,8 @@ import { logger, startLogShipping, stopLogShipping } from '@config/logger.js';
 import { eventPublisher } from '@config/kafka.js';
 import { ConsulRegistration } from '@config/consul.js';
 import { closeRedis } from '@config/redis.js';
+import { createMtlsServer } from '@config/mtls.js';
+import { announceFhirPeerPolicy } from '@core/middleware/fhir-peer-guard.js';
 
 const consul = new ConsulRegistration();
 
@@ -34,9 +36,20 @@ const start = async (): Promise<void> => {
 
   await waitForDatabase();
 
+  announceFhirPeerPolicy();
+
   const plaintext = http.createServer(app);
   await new Promise<void>((resolve) => plaintext.listen(config.port, resolve));
   logger.info(`${config.serviceName} listening on ${config.port}`);
+
+  // The same app, on the port OpenELIS is configured to reach. It binds whether
+  // or not the certificates are on disk yet: a missing file is a handshake that
+  // does not complete, never a process that will not start.
+  const mtls = createMtlsServer(app);
+  if (mtls) {
+    await new Promise<void>((resolve) => mtls.listen(config.mtls.port, resolve));
+    logger.info(`${config.serviceName} serving mutually authenticated /fhir on ${config.mtls.port}`);
+  }
 
   try {
     await eventPublisher.connect();
@@ -53,7 +66,21 @@ const start = async (): Promise<void> => {
     logger.info(`${signal} received; shutting down`);
     // Deregister FIRST — stop receiving traffic before closing anything.
     await consul.deregister();
-    plaintext.close();
+
+    // Closed and DRAINED, with a ceiling. close() stops new connections and
+    // resolves once the in-flight ones finish, so an import that is halfway
+    // through writing an order is not cut in two by a redeploy. The timeout is
+    // what stops a hung connection holding the shutdown open for ever — Docker
+    // would send SIGKILL at 10s regardless, and a clean exit reads better in
+    // the logs than a killed one.
+    const close = (server: { close: (cb: () => void) => void } | null): Promise<void> =>
+      server ? new Promise<void>((resolve) => server.close(() => resolve())) : Promise.resolve();
+
+    await Promise.race([
+      Promise.all([close(plaintext), close(mtls)]),
+      new Promise((resolve) => setTimeout(resolve, 5000)),
+    ]);
+
     await eventPublisher.disconnect().catch(() => undefined);
     await stopLogShipping();
     await closeRedis().catch(() => undefined);

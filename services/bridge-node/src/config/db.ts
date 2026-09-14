@@ -52,7 +52,7 @@ export const query = async <T extends Row>(text: string, params: unknown[] = [])
   return result.rows as T[];
 };
 
-/** First row, or null. The shape most reads here actually want. */
+/** First row, or null. */
 export const queryOne = async <T extends Row>(text: string, params: unknown[] = []): Promise<T | null> => {
   const rows = await query<T>(text, params);
   return rows[0] ?? null;

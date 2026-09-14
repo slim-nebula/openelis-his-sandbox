@@ -5,7 +5,10 @@ import { register, metricsMiddleware } from '@config/metrics.js';
 import { correlation } from '@core/middleware/correlation.js';
 import { errorHandler } from '@core/middleware/error.js';
 import { requireOpsAccess } from '@core/middleware/ops-access.js';
+import { fhirPeerGuard } from '@core/middleware/fhir-peer-guard.js';
+import { problemResponse } from '@core/middleware/error.js';
 import { catalogueRouter, catalogueAdminRouter } from '@modules/catalogue/routes/catalogue.routes.js';
+import { fhirRouter } from '@modules/fhir-api/routes/fhir.routes.js';
 
 const app = express();
 const startedAt = Date.now();
@@ -78,6 +81,40 @@ app.use('/catalogue', catalogueRouter);
 // description of real patients' care.
 
 app.use('/catalogue', requireOpsAccess, express.json(), catalogueAdminRouter);
+
+// --- The FHIR R4 endpoint OpenELIS integrates with --------------------------
+// Guarded at the prefix, not per route: the surface is several handlers plus a
+// bare POST /fhir for the result bundle, and a prefix cannot be forgotten when
+// one more is added.
+//
+// The body parser is the FHIR router's own. OpenELIS sends
+// application/fhir+json, which express.json() does not accept by default, and
+// the limit is raised well above Express's 100 KB default — a released panel
+// with its observations, or a Bundle carrying several, exceeds it, and Kestrel
+// allowed ~30 MB.
+app.use(
+  '/fhir',
+  fhirPeerGuard,
+  express.json({ type: ['application/fhir+json', 'application/json'], limit: '10mb' }),
+  fhirRouter,
+);
+
+/**
+ * Anything unmatched, in the shape the rest of this service answers in.
+ *
+ * Express's default is an HTML page, which is the one content type no caller
+ * here can parse: the estate reads problem+json and OpenELIS reads FHIR. A
+ * request under /fhir gets an OperationOutcome for that reason.
+ */
+app.use((req, res) => {
+  if (req.path.startsWith('/fhir')) {
+    res.status(404).type('application/fhir+json').send(
+      '{"resourceType":"OperationOutcome","issue":[{"severity":"error","code":"not-found","diagnostics":"Unknown FHIR endpoint."}]}',
+    );
+    return;
+  }
+  problemResponse(res, 404, `No endpoint matches ${req.method} ${req.path}.`);
+});
 
 // Express dispatches to the error handler only from here.
 app.use(errorHandler);

@@ -45,8 +45,25 @@ export interface OpsPrincipal {
 interface OpsJwtPayload {
   usr_id?: string | number;
   usr_name?: string;
-  group_names?: string[];
+  group_names?: unknown;
 }
+
+/**
+ * Group membership, defensively.
+ *
+ * `jwt.verify` returns whatever JSON the token carried; the TypeScript type is
+ * an assertion about it, not a check of it. If IAM ever emitted `group_names`
+ * as a bare string, the declared `string[]` would be a lie at runtime and
+ * `groups.includes(name)` would silently become a SUBSTRING test — a token
+ * carrying "developers" would satisfy a required group of "ops".
+ *
+ * The C# is immune by construction: ClaimsIdentity.FindAll always yields one
+ * string claim per value. This is the equivalent guarantee, made explicitly.
+ * Note that his-api's auth middleware has the same latent shape; the bridge
+ * leads here rather than copying it.
+ */
+const groupsFrom = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
 
 const bearerFrom = (header: string | undefined): string | undefined => {
   if (!header?.toLowerCase().startsWith('bearer ')) return undefined;
@@ -103,7 +120,7 @@ const validateUserToken = async (token: string): Promise<OpsPrincipal | null> =>
   const principal: OpsPrincipal = {
     userId,
     userName: payload.usr_name ?? '',
-    groups: payload.group_names ?? [],
+    groups: groupsFrom(payload.group_names),
     degraded: false,
   };
 

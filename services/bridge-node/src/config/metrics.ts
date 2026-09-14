@@ -1,6 +1,5 @@
 import promClient, { Counter, Gauge, Histogram, Registry, Summary } from 'prom-client';
 import type { NextFunction, Request, Response } from 'express';
-import { config } from './env.js';
 
 /**
  * The estate's metric contract, plus the five the integration adds.
@@ -9,7 +8,30 @@ import { config } from './env.js';
  * registers leaks onto this service's /metrics.
  */
 export const register = new Registry();
-register.setDefaultLabels({ service: config.serviceName });
+
+/**
+ * NO DEFAULT LABELS, UNLIKE his-api — and this is load-bearing rather than an
+ * oversight.
+ *
+ * his-api stamps service="his-api-service" on every series. Doing the same here
+ * breaks the suites: `fhir_transport_count` in scripts/lib.sh reads the counter
+ * by grepping for the EXACT string
+ *
+ *     bridge_fhir_requests_total{transport="mtls"}
+ *
+ * and prom-client appends default labels AFTER a metric's own, producing
+ * `{transport="mtls",service="bridge-service"}` — which that grep does not
+ * match. It returns empty rather than wrong, so `make smoke` and the mutual-TLS
+ * block of `make negative` fail on a counter that is in fact being incremented
+ * correctly.
+ *
+ * The service this replaces published every series unlabelled, and Prometheus
+ * already attaches job="bridge" and component="integration" at scrape time
+ * (monitoring/prometheus.yml), so the label adds nothing a dashboard cannot
+ * already get. Keeping the series identical to the .NET ones also means the
+ * `offset 1h` comparison in alerts.yml still matches across the cutover, rather
+ * than silently yielding no result for an hour.
+ */
 
 // --- The estate's four ------------------------------------------------------
 // Same names, labels and buckets as his-api, so one dashboard and one alert

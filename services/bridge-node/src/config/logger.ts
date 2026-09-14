@@ -1,5 +1,5 @@
 import winston from 'winston';
-import { Writable } from 'node:stream';
+import Transport from 'winston-transport';
 import { Kafka, Producer, logLevel } from 'kafkajs';
 import { config } from './env.js';
 
@@ -31,6 +31,22 @@ import { config } from './env.js';
  *
  * Express logs nothing per request on its own, so the fix here is simply never
  * to add a request logger. Do not reach for morgan.
+ *
+ * WHY THIS IS A Transport AND NOT A STREAM, WHICH IS WHAT his-api USES
+ *
+ * A winston Stream transport receives the FORMATTED line, so the only level
+ * available to put in the envelope is a constant. his-api therefore ships every
+ * line as level "info" with the real severity embedded in the message text.
+ *
+ * The .NET service being replaced did not: KafkaLogProvider shipped the real
+ * level, and the live topic proves it — sampling the last 25 messages from the
+ * running bridge gave 17 `info` and 8 `warn`. Copying his-api's shape here would
+ * have been a REGRESSION dressed as consistency: every Loki or Grafana query
+ * filtering the bridge's stream on level="warn" would match nothing, silently.
+ *
+ * A Transport gets the structured `info` object instead, so the level is the
+ * real one and `message` is the bare message rather than a line with a
+ * timestamp and severity already baked into it.
  */
 let producer: Producer | null = null;
 const reported = new Set<string>();
@@ -41,10 +57,14 @@ const reportOnce = (message: string): void => {
   process.stderr.write(`[kafka-logger] ${message}\n`);
 };
 
-const kafkaStream = new Writable({
-  write(chunk, _encoding, callback) {
-    const line = chunk.toString().trim();
-    if (!line || !producer) return callback();
+class KafkaTransport extends Transport {
+  override log(info: Record<string, unknown>, callback: () => void): void {
+    // Called immediately, not after the send resolves: the request that
+    // produced this line must not wait for a broker.
+    setImmediate(() => this.emit('logged', info));
+
+    const message = typeof info.message === 'string' ? info.message : String(info.message ?? '');
+    if (!message.trim() || !producer) return callback();
 
     producer
       .send({
@@ -54,8 +74,11 @@ const kafkaStream = new Writable({
             key: config.serviceName,
             value: JSON.stringify({
               service: config.serviceName,
-              level: 'info',
-              message: line,
+              // The real severity, which is the whole reason this is a
+              // Transport. winston's own names already match the estate's
+              // envelope: info / warn / error.
+              level: typeof info.level === 'string' ? info.level : 'info',
+              message,
               timestamp: new Date().toISOString(),
             }),
           },
@@ -63,11 +86,9 @@ const kafkaStream = new Writable({
       })
       .catch((error: Error) => reportOnce(`send failed: ${error.message}`));
 
-    // Called immediately, not after the send resolves: the request that
-    // produced this line must not wait for a broker.
     callback();
-  },
-});
+  }
+}
 
 export const logger = winston.createLogger({
   level: 'info',
@@ -76,7 +97,10 @@ export const logger = winston.createLogger({
     winston.format.timestamp(),
     winston.format.printf(({ level, message, timestamp }) => `${timestamp} ${level}: ${message}`),
   ),
-  transports: [new winston.transports.Console(), new winston.transports.Stream({ stream: kafkaStream })],
+  // The printf format above writes the formatted line to winston's MESSAGE
+  // symbol and leaves `info.message` and `info.level` untouched, so the console
+  // gets the human line and the Kafka transport gets the structured fields.
+  transports: [new winston.transports.Console(), new KafkaTransport()],
 });
 
 /** Connects the log shipper. Failure is survivable: console logging continues. */
