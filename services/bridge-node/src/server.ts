@@ -8,6 +8,7 @@ import { ConsulRegistration } from '@config/consul.js';
 import { closeRedis } from '@config/redis.js';
 import { createMtlsServer } from '@config/mtls.js';
 import { announceFhirPeerPolicy } from '@core/middleware/fhir-peer-guard.js';
+import OrdersContainer from '@modules/orders/containers/orders.container.js';
 
 const consul = new ConsulRegistration();
 
@@ -60,12 +61,30 @@ const start = async (): Promise<void> => {
     logger.error(`Kafka producer failed to connect: ${(error as Error).message}`);
   }
 
+  // Started AFTER the producer, because the first thing it does on a refusal is
+  // publish lab.order.failed. Started BEFORE Consul registration for the same
+  // reason the listener is: a service in the catalogue should already be doing
+  // its job.
+  //
+  // A broker that is down means this throws; the bridge still serves OpenELIS's
+  // poll and accepts result pushes, which is the half of the integration that
+  // does not need Kafka. KafkaJS reconnects on its own once the broker returns.
+  try {
+    await OrdersContainer.consumer.start();
+  } catch (error) {
+    logger.error(`Order consumer failed to start: ${(error as Error).message}`);
+  }
+
   await consul.register();
 
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`${signal} received; shutting down`);
     // Deregister FIRST — stop receiving traffic before closing anything.
     await consul.deregister();
+
+    // Leave the consumer group before the producer goes, so an in-flight order
+    // finishes publishing rather than being cut off mid-handler and redelivered.
+    await OrdersContainer.consumer.stop();
 
     // Closed and DRAINED, with a ceiling. close() stops new connections and
     // resolves once the in-flight ones finish, so an import that is halfway
