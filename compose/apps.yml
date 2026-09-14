@@ -83,7 +83,14 @@ services:
   # receives released results pushed back from OpenELIS on the same endpoint.
   bridge:
     build:
-      context: ../services/Bridge
+      # Node 20 + Express 5 + TypeScript, the estate's own stack. Replaced the
+      # .NET service once the full sweep passed 355/355 against it.
+      #
+      # Reverting is this one line back to ../services/Bridge while that
+      # directory still exists: the container name, ports, networks, volumes,
+      # healthcheck and every environment variable are identical between the
+      # two, and both read BRIDGE_DB_CONNECTION in the Npgsql shape built below.
+      context: ../services/bridge-node
     image: his-sandbox/bridge:local
     container_name: bridge
     restart: unless-stopped

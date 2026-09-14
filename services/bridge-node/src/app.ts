@@ -9,6 +9,7 @@ import { fhirPeerGuard } from '@core/middleware/fhir-peer-guard.js';
 import { problemResponse } from '@core/middleware/error.js';
 import { catalogueRouter, catalogueAdminRouter } from '@modules/catalogue/routes/catalogue.routes.js';
 import { fhirRouter } from '@modules/fhir-api/routes/fhir.routes.js';
+import { opsRouter } from '@modules/ops/routes/ops.routes.js';
 
 const app = express();
 const startedAt = Date.now();
@@ -80,6 +81,7 @@ app.use('/catalogue', catalogueRouter);
 // second because "which orders are outstanding and which failed" is a
 // description of real patients' care.
 
+app.use('/ops', requireOpsAccess, express.json(), opsRouter);
 app.use('/catalogue', requireOpsAccess, express.json(), catalogueAdminRouter);
 
 // --- The FHIR R4 endpoint OpenELIS integrates with --------------------------

@@ -10,6 +10,7 @@ import { createMtlsServer } from '@config/mtls.js';
 import { announceFhirPeerPolicy } from '@core/middleware/fhir-peer-guard.js';
 import OrdersContainer from '@modules/orders/containers/orders.container.js';
 import ResultsContainer from '@modules/results/containers/results.container.js';
+import OpsContainer from '@modules/ops/containers/ops.container.js';
 
 const consul = new ConsulRegistration();
 
@@ -83,6 +84,13 @@ const start = async (): Promise<void> => {
   ResultsContainer.correlator.start();
   ResultsContainer.progress.start();
 
+  // Observability and housekeeping. The gauges are the ones that matter: every
+  // failure mode that costs a patient a result is invisible in request metrics,
+  // and only an AGE distinguishes a quiet laboratory from a broken integration.
+  OpsContainer.gauges.start();
+  OpsContainer.monitor.start();
+  OpsContainer.retention.start();
+
   await consul.register();
 
   const shutdown = async (signal: string): Promise<void> => {
@@ -95,6 +103,9 @@ const start = async (): Promise<void> => {
     await OrdersContainer.consumer.stop();
     ResultsContainer.correlator.stop();
     ResultsContainer.progress.stop();
+    OpsContainer.gauges.stop();
+    OpsContainer.monitor.stop();
+    OpsContainer.retention.stop();
 
     // Closed and DRAINED, with a ceiling. close() stops new connections and
     // resolves once the in-flight ones finish, so an import that is halfway
