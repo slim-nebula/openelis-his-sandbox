@@ -157,6 +157,28 @@ export const publishIntegrationGauges = (values: IntegrationGaugeValues): void =
 
 export const integrationGaugesPublished = (): boolean => gauges !== null;
 
+/**
+ * When OpenELIS last asked for work.
+ *
+ * Held in memory rather than in the database, and that is deliberate: the
+ * question the gauge answers is "has the laboratory stopped polling THIS
+ * process", so it must reset when the process does. A persisted timestamp would
+ * make a bridge that has never been polled since starting look freshly polled.
+ *
+ * Stamped only by a real order poll, never by a lookup by id — see the search
+ * handler. Counting a `_id` read would let debugging silence the very alert
+ * that says the laboratory has stopped asking for work.
+ */
+let lastPollAt: number | null = null;
+
+export const recordPoll = (): void => {
+  lastPollAt = Date.now();
+};
+
+/** Seconds since the last poll, or -1 if this process has never seen one. */
+export const lastPollAgeSeconds = (): number =>
+  lastPollAt === null ? -1 : Math.round((Date.now() - lastPollAt) / 1000);
+
 // --- Request instrumentation ------------------------------------------------
 
 export const metricsMiddleware = (req: Request, res: Response, next: NextFunction): void => {

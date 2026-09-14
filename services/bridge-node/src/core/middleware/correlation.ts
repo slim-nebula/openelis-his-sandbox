@@ -4,6 +4,11 @@ import type { NextFunction, Request, Response } from 'express';
 declare module 'express-serve-static-core' {
   interface Request {
     correlationId: string;
+    /**
+     * The request body exactly as it arrived, set by the FHIR body parser.
+     * Present only on /fhir, and only when a body was sent.
+     */
+    rawBody?: string;
   }
 }
 

@@ -95,7 +95,18 @@ app.use('/catalogue', requireOpsAccess, express.json(), catalogueAdminRouter);
 app.use(
   '/fhir',
   fhirPeerGuard,
-  express.json({ type: ['application/fhir+json', 'application/json'], limit: '10mb' }),
+  express.json({
+    type: ['application/fhir+json', 'application/json'],
+    limit: '10mb',
+    // The raw text is kept alongside the parsed object because the parsed one
+    // cannot be trusted to round-trip: JavaScript has a single number type, so
+    // a result of 1.10 re-serialises as 1.1 and silently loses the precision
+    // the laboratory reported. Writes use this; the parsed body is only read
+    // for routing decisions. See getText() in the FHIR model.
+    verify: (req, _res, buf) => {
+      (req as express.Request).rawBody = buf.toString('utf8');
+    },
+  }),
   fhirRouter,
 );
 

@@ -21,7 +21,7 @@ which is the valuable part — is language-independent.
 | 0 | RFC 4122 v5 ids reproduce the .NET ones exactly | done |
 | 1 | config, db, logger, metrics, Consul, `/health`, `/`, `/catalogue` | done |
 | 2a | mutual TLS listener, peer pinning, `/fhir` guard, `/fhir/metadata` | done |
-| 2b | FHIR store and the rest of the `/fhir` surface, delivery lease | next |
+| 2b | FHIR store, the `/fhir` surface, delivery lease | built; **cutover pending** |
 | 3 | order consumer, mapper, refusal matrix | not started |
 | 4 | result correlator, progress tracker | not started |
 | 5 | catalogue sync, OpenELIS REST client | not started |
@@ -51,6 +51,37 @@ discovered.
 | `problem+json` `type` | a link into RFC 9110 | `about:blank` | RFC 7807 §4.2: there is no problem registry to point at |
 | Unmatched path under a guarded prefix | 404 | 401 | the guard runs before routing; not revealing which paths exist is the better answer |
 | Unmatched path elsewhere | empty 404 | `problem+json` 404 | Express's default is an HTML page, which no caller here can parse |
+
+## Decimal precision, and why reads and writes go through text
+
+JavaScript has one number type. Postgres stores JSON numbers as `numeric` and
+keeps `1.10` as `1.10`; a `JSON.parse`/`JSON.stringify` round trip returns `1.1`.
+
+For a laboratory result that trailing zero is not decoration — it states the
+precision of the measurement. The .NET service never had the problem: it
+selected `content::text` and parsed into a type with real decimals, and a probe
+against the running container confirms it stores `1.10` unchanged. A first cut
+of this module selected `content` and re-serialised the parsed object, which
+silently reported a different number than the analyser produced.
+
+So, on the paths that carry results:
+
+* reads (`getText`, `getReceivedText`) select `content::text` and the text is
+  written to the response verbatim;
+* writes take the request's **raw body** — captured by a `verify` hook on the
+  FHIR body parser — and the id is applied with `jsonb_set` inside Postgres;
+* a pushed transaction bundle is split **in SQL** with `jsonb_array_elements`,
+  so entries never become JavaScript values. Ids are chosen in TypeScript and
+  zipped by position with `WITH ORDINALITY`.
+
+The searches are the deliberate exception: they must embed rows inside a Bundle,
+but every one of them reads `fhir_resources`, which holds only what the bridge
+publishes — orders, carrying no measured value. **The rule to keep: anything
+reading `received_resources` goes through the text path.**
+
+The one place a body is re-serialised is the echo after storing a resource whose
+caller supplied no id, because the response has to carry the id the bridge
+assigned. The stored row keeps full precision either way.
 
 ## Mutual TLS, and one thing worth knowing
 
