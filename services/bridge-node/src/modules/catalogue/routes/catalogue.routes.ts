@@ -19,5 +19,6 @@ catalogueRouter.get('/', controller.list);
  */
 export const catalogueAdminRouter = Router();
 catalogueAdminRouter.get('/syncs', controller.history);
+catalogueAdminRouter.post('/sync', controller.runSync);
 
 export default catalogueRouter;
