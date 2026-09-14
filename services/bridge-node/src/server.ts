@@ -9,6 +9,7 @@ import { closeRedis } from '@config/redis.js';
 import { createMtlsServer } from '@config/mtls.js';
 import { announceFhirPeerPolicy } from '@core/middleware/fhir-peer-guard.js';
 import OrdersContainer from '@modules/orders/containers/orders.container.js';
+import ResultsContainer from '@modules/results/containers/results.container.js';
 
 const consul = new ConsulRegistration();
 
@@ -75,6 +76,13 @@ const start = async (): Promise<void> => {
     logger.error(`Order consumer failed to start: ${(error as Error).message}`);
   }
 
+  // The return path. Both are timer loops over the inbound mirror rather than
+  // work done inline on OpenELIS's push, because the pieces of one result arrive
+  // in several deliveries and in no guaranteed order — a report whose
+  // Observations are still in flight is left for the next sweep.
+  ResultsContainer.correlator.start();
+  ResultsContainer.progress.start();
+
   await consul.register();
 
   const shutdown = async (signal: string): Promise<void> => {
@@ -85,6 +93,8 @@ const start = async (): Promise<void> => {
     // Leave the consumer group before the producer goes, so an in-flight order
     // finishes publishing rather than being cut off mid-handler and redelivered.
     await OrdersContainer.consumer.stop();
+    ResultsContainer.correlator.stop();
+    ResultsContainer.progress.stop();
 
     // Closed and DRAINED, with a ceiling. close() stops new connections and
     // resolves once the in-flight ones finish, so an import that is halfway

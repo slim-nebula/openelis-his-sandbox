@@ -114,6 +114,27 @@ export class OrderTrackingModel {
     return row ? toTracked(row) : null;
   }
 
+  /**
+   * The two lookups the result path walks back through. What OpenELIS pushes is
+   * ITS resource, not ours: its per-analysis ServiceRequest points at the one we
+   * published, and the order number travels on an identifier.
+   */
+  async byServiceRequestId(serviceRequestId: string): Promise<TrackedOrder | null> {
+    const row = await queryOne<Row>(
+      `SELECT ${COLUMNS} FROM bridge.order_tracking WHERE fhir_servicerequest_id = $1`,
+      [serviceRequestId],
+    );
+    return row ? toTracked(row) : null;
+  }
+
+  async byOrderNumber(orderNumber: string): Promise<TrackedOrder | null> {
+    const row = await queryOne<Row>(
+      `SELECT ${COLUMNS} FROM bridge.order_tracking WHERE order_number = $1`,
+      [orderNumber],
+    );
+    return row ? toTracked(row) : null;
+  }
+
   async setTaskStatus(taskId: string, status: string): Promise<void> {
     await query(
       `UPDATE bridge.order_tracking SET task_status = $2, updated_at = now()
