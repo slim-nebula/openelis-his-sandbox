@@ -13,6 +13,27 @@ API="http://localhost:${EDGE_HTTP_PORT}/api"
 PASS=0
 FAIL=0
 
+# --- Signing in ---------------------------------------------------------------
+# The clinical API is behind the estate's user token, so a suite has to sign in
+# the same way a clinician does. Minted once per run rather than per request:
+# the estate stores ONE session per user, so a second sign-in for the same user
+# ends the first — two tokens minted mid-suite would revoke each other.
+#
+# Minted only if the sandbox is up, because several scripts source this file
+# with nothing running and must not fail here.
+HIS_TOKEN="${HIS_TOKEN:-}"
+if [[ -z "$HIS_TOKEN" ]] && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx his-api; then
+    HIS_TOKEN=$("$ROOT/scripts/mint-token.sh" --quiet --user 1 --name suite.runner \
+        ${LAB_ORDER_GROUP:+--groups "$LAB_ORDER_GROUP"} 2>/dev/null) || HIS_TOKEN=""
+fi
+export HIS_TOKEN
+
+# curl as a signed-in user. Use these for anything under /api that reads or
+# writes patient data; /health and /metrics answer without a credential and can
+# use plain curl.
+api_curl()   { curl -H "Authorization: Bearer $HIS_TOKEN" "$@"; }
+api_status() { curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $HIS_TOKEN" "$@"; }
+
 green() { printf '\033[32m%s\033[0m' "$1"; }
 red()   { printf '\033[31m%s\033[0m' "$1"; }
 dim()   { printf '\033[2m%s\033[0m' "$1"; }
@@ -61,9 +82,25 @@ oe_sql() {
         psql -tAX -U "$OE_DB_USER" -d "$OE_DB_NAME" -c "$1" 2>/dev/null | tr -d '[:space:]'
 }
 
+# Same, but preserves whitespace. Sample-type names and their local abbreviations
+# both contain spaces ("Whole Blood" / "Whole Bld"), and oe_sql would return
+# "WholeBld", which matches no row in type_of_sample.
+oe_rows() {
+    docker exec -e PGPASSWORD="$OE_DB_PASSWORD" openelis-db-external \
+        psql -tAX -U "$OE_DB_USER" -d "$OE_DB_NAME" -c "$1" 2>/dev/null
+}
+
 bridge_sql() {
     docker exec -e PGPASSWORD="$BRIDGE_DB_PASSWORD" his-db-external \
         psql -tAX -U "$BRIDGE_DB_USER" -d "$BRIDGE_DB_NAME" -c "$1" 2>/dev/null | tr -d '[:space:]'
+}
+
+# Same, but preserves whitespace. Required for anything involving specimen names
+# — "Respiratory Swab" and "Whole Blood" both contain a space, and bridge_sql
+# would silently return "RespiratorySwab", which matches nothing in OpenELIS.
+bridge_rows() {
+    docker exec -e PGPASSWORD="$BRIDGE_DB_PASSWORD" his-db-external \
+        psql -tAX -U "$BRIDGE_DB_USER" -d "$BRIDGE_DB_NAME" -c "$1" 2>/dev/null
 }
 
 # Curl from inside the sandbox network, for services that publish no host port.
@@ -71,7 +108,54 @@ in_sandbox() {
     docker exec bridge curl -fsS --max-time 10 "$1" 2>/dev/null
 }
 
+# The bridge's and the HIS service's administrative endpoints need a bearer
+# token. Centralised here so a suite cannot accidentally exercise the
+# unauthenticated path and report a pass on a 401 body it never parsed.
+#
+#   bridge_admin <method> <path> [extra curl args...]
+bridge_admin() {
+    local method="$1" path="$2"; shift 2
+    docker exec bridge curl -sS -X "$method" --max-time 600 \
+        -H "Authorization: Bearer $BRIDGE_ADMIN_TOKEN" "$@" "http://localhost:8080$path"
+}
+
+his_admin() {
+    local method="$1" path="$2"; shift 2
+    docker exec his-api curl -sS -X "$method" --max-time 120 \
+        -H "Authorization: Bearer $HIS_ADMIN_TOKEN" "$@" "http://localhost:8080$path"
+}
+
+# HTTP status only, from a named container, with whatever headers are passed.
+# Used to assert that a door is shut, which needs the code and not the body.
+http_status() {  # http_status <container> <method> <url> [curl args...]
+    local container="$1" method="$2" url="$3"; shift 3
+    docker exec "$container" curl -s -o /dev/null -w '%{http_code}' \
+        -X "$method" --max-time 30 "$@" "$url" 2>/dev/null
+}
+
+# How many FHIR requests reached the bridge over each kind of connection.
+# `mtls`, `plaintext` or `loopback` — see
+# services/bridge/src/core/middleware/fhir-peer-guard.ts.
+fhir_transport_count() {
+    docker exec bridge curl -sf --max-time 10 http://localhost:8080/metrics 2>/dev/null \
+        | grep "bridge_fhir_requests_total{transport=\"$1\"}" | awk '{print $2}' | tail -1
+}
+
 json_field() { python3 -c "import json,sys; print(json.load(sys.stdin)$1)" 2>/dev/null; }
+
+# Any test the HIS will currently accept an order for.
+#
+# Use this wherever a test only needs to be orderable and the particular analyte
+# is irrelevant. Hardcoding a code couples the test to a catalogue that is now
+# discovered from OpenELIS and changes when the laboratory changes: ALT and PLT
+# stopped being orderable the moment discovery noticed their LOINC codes are
+# each shared by two tests, and every suite that named them broke at once with
+# an empty response body.
+any_active_test_code() {
+    his_sql "SELECT test_code FROM his.test_catalogue
+             WHERE is_active AND source = 'DISCOVERED'
+             ORDER BY test_code LIMIT 1"
+}
 
 summary() {
     printf '\n────────────────────────────────────────\n'

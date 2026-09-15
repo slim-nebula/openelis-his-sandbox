@@ -15,25 +15,64 @@ services:
   # --- Patient + Lab Order microservice --------------------------------------
   his-api:
     build:
-      context: ../services/His.Api
+      context: ../services/his-api
     image: his-sandbox/his-api:local
     container_name: his-api
     restart: unless-stopped
     depends_on:
       kafka:
         condition: service_healthy
+      # A healthy broker is not the same as a broker with topics. Auto-creation
+      # is off, so subscribing before this one-shot finishes fails with "This
+      # server does not host this topic-partition" — which is what happened on
+      # the first clean run of this stack, and left the service healthy but
+      # unable to receive a single result.
+      kafka-init:
+        condition: service_completed_successfully
+      consul:
+        condition: service_healthy
+      # Ordering only. Neither service requires Redis to serve: a revocation
+      # check that cannot be made is degraded, not fatal.
+      redis:
+        condition: service_healthy
     environment:
       TZ: ${TZ}
-      HIS_DB_CONNECTION: "Host=${HIS_DB_HOST};Port=${HIS_DB_PORT};Database=${HIS_DB_NAME};Username=${HIS_DB_USER};Password=${HIS_DB_PASSWORD};Include Error Detail=true"
+      HIS_DATABASE_URL: "postgresql://${HIS_DB_USER}:${HIS_DB_PASSWORD}@${HIS_DB_HOST}:${HIS_DB_PORT}/${HIS_DB_NAME}"
       KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP}
       TOPIC_ORDER_CREATED: ${TOPIC_ORDER_CREATED}
       TOPIC_ORDER_SENT: ${TOPIC_ORDER_SENT}
+      TOPIC_ORDER_PROGRESS: ${TOPIC_ORDER_PROGRESS}
       TOPIC_ORDER_FAILED: ${TOPIC_ORDER_FAILED}
       TOPIC_RESULT_RELEASED: ${TOPIC_RESULT_RELEASED}
       TOPIC_RESULT_FAILED: ${TOPIC_RESULT_FAILED}
+      # Where the discovered test menu is pulled from. Reached over `sandbox`,
+      # which both services share; the HIS never joins `integration`, so it
+      # still has no path to OpenELIS.
+      BRIDGE_INTERNAL_URL: ${BRIDGE_INTERNAL_URL}
+      # Guards /admin/catalogue/refresh, which replaces the menu every doctor
+      # orders from. Empty means that endpoint refuses everything.
+      HIS_ADMIN_TOKEN: ${HIS_ADMIN_TOKEN}
+      # Authentication. The secret verifies tokens IAM signed; Redis says
+      # whether the session behind one still exists. Unset secret means every
+      # clinical route answers 503 rather than letting requests through.
+      JWT_SECRET: ${JWT_SECRET}
+      LAB_ORDER_GROUP: ${LAB_ORDER_GROUP}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      # What the bridge must present on /internal/*.
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+      # Platform hooks: register with Consul, and put logs on the shared topic.
+      # Same shapes the Node services use, so the estate cannot tell this one
+      # apart from its neighbours.
+      SERVICE_NAME: his-api-service
+      SERVICE_VERSION: ${SERVICE_VERSION}
+      SERVICE_PORT: 8080
+      CONSUL_HOST: ${CONSUL_HOST}
+      CONSUL_PORT: ${CONSUL_PORT}
+      TOPIC_LOGS: ${TOPIC_LOGS}
     networks: [sandbox, data]
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -44,13 +83,31 @@ services:
   # receives released results pushed back from OpenELIS on the same endpoint.
   bridge:
     build:
-      context: ../services/Bridge
+      # Node 20 + Express 5 + TypeScript, the estate's own stack.
+      context: ../services/bridge
     image: his-sandbox/bridge:local
     container_name: bridge
     restart: unless-stopped
     depends_on:
       kafka:
         condition: service_healthy
+      # Same reason as his-api: the topics have to exist before anything
+      # subscribes to them.
+      kafka-init:
+        condition: service_completed_successfully
+      consul:
+        condition: service_healthy
+      # Ordering only. Neither service requires Redis to serve: a revocation
+      # check that cannot be made is degraded, not fatal.
+      redis:
+        condition: service_healthy
+      # Writes /certs/openelis-client.crt, the certificate the FHIR port pins.
+      # Waiting for it is what makes `make up` deterministic on a fresh clone:
+      # the bridge comes up already able to complete OpenELIS's handshake rather
+      # than refusing its first polls. The bridge survives its absence — see
+      # src/config/mtls.ts — but "survives" is not the same as "works".
+      oe-peer-cert:
+        condition: service_completed_successfully
     environment:
       TZ: ${TZ}
       BRIDGE_DB_CONNECTION: "Host=${HIS_DB_HOST};Port=${HIS_DB_PORT};Database=${BRIDGE_DB_NAME};Username=${BRIDGE_DB_USER};Password=${BRIDGE_DB_PASSWORD};Include Error Detail=true"
@@ -58,18 +115,87 @@ services:
       KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP}
       TOPIC_ORDER_CREATED: ${TOPIC_ORDER_CREATED}
       TOPIC_ORDER_SENT: ${TOPIC_ORDER_SENT}
+      TOPIC_ORDER_PROGRESS: ${TOPIC_ORDER_PROGRESS}
       TOPIC_ORDER_FAILED: ${TOPIC_ORDER_FAILED}
       TOPIC_RESULT_RELEASED: ${TOPIC_RESULT_RELEASED}
       TOPIC_RESULT_FAILED: ${TOPIC_RESULT_FAILED}
       # Must equal org.openelisglobal.remote.source.identifier in
       # openelis/generated/common.properties, or OpenELIS's poll matches nothing.
       OE_REMOTE_SOURCE_IDENTIFIER: ${OE_REMOTE_SOURCE_IDENTIFIER}
+      # What that laboratory is called. Should match the name on its row in
+      # OpenELIS's own organization table, which is the authoritative one.
+      OE_LAB_NAME: ${OE_LAB_NAME}
       BRIDGE_MAX_RETRIES: ${BRIDGE_MAX_RETRIES}
       BRIDGE_RETRY_BASE_DELAY_SECONDS: ${BRIDGE_RETRY_BASE_DELAY_SECONDS}
       BRIDGE_RESULT_CORRELATION_RETRY_MINUTES: ${BRIDGE_RESULT_CORRELATION_RETRY_MINUTES}
-    networks: [sandbox, integration, data]
+      BRIDGE_MAX_SEARCH_RESULTS: ${BRIDGE_MAX_SEARCH_RESULTS}
+      # Withholds a Task from the poll while a delivery is in flight, so
+      # OpenELIS cannot import the same order twice at once.
+      BRIDGE_TASK_LEASE_SECONDS: ${BRIDGE_TASK_LEASE_SECONDS}
+      # Access. The token guards /ops/* and the catalogue sync; the peer list
+      # guards /fhir, which cannot use a token because OpenELIS has no way to
+      # send one (see services/bridge/src/core/middleware/fhir-peer-guard.ts).
+      BRIDGE_ADMIN_TOKEN: ${BRIDGE_ADMIN_TOKEN}
+      BRIDGE_FHIR_ALLOWED_PEERS: ${BRIDGE_FHIR_ALLOWED_PEERS}
+      # /ops also opens to a signed-in HIS user, so reading the dead-letter
+      # queue does not mean passing the shared token around. Same secret, same
+      # Redis session, same degraded behaviour as the Node services.
+      JWT_SECRET: ${JWT_SECRET}
+      BRIDGE_OPS_GROUP: ${BRIDGE_OPS_GROUP}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      # Presented on every call to the HIS service's /internal/*.
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+      # Retention for the tables that otherwise grow for ever.
+      RETENTION_RECEIVED_DAYS: ${RETENTION_RECEIVED_DAYS}
+      RETENTION_EVENTS_DAYS: ${RETENTION_EVENTS_DAYS}
+      RETENTION_EXPORT_CHECKS_DAYS: ${RETENTION_EXPORT_CHECKS_DAYS}
+      RETENTION_DEAD_LETTERS_DAYS: ${RETENTION_DEAD_LETTERS_DAYS}
+      RETENTION_SWEEP_HOURS: ${RETENTION_SWEEP_HOURS}
+      # Platform hooks: register with Consul, and put logs on the shared topic.
+      # Same shapes the Node services use, so the estate cannot tell this one
+      # apart from its neighbours.
+      SERVICE_NAME: bridge-service
+      SERVICE_VERSION: ${SERVICE_VERSION}
+      SERVICE_PORT: 8080
+      CONSUL_HOST: ${CONSUL_HOST}
+      CONSUL_PORT: ${CONSUL_PORT}
+      TOPIC_LOGS: ${TOPIC_LOGS}
+      # Catalogue discovery. Read-only: the bridge asks OpenELIS which tests the
+      # laboratory has switched on, and never writes to it.
+      OE_REST_BASE_URL: ${OE_REST_BASE_URL}
+      OE_SERVICE_USER: ${OE_SERVICE_USER}
+      OE_SERVICE_PASSWORD: ${OE_SERVICE_PASSWORD}
+      OE_REST_TIMEOUT_SECONDS: ${OE_REST_TIMEOUT_SECONDS}
+      OE_REST_ACCEPT_ANY_CERT: ${OE_REST_ACCEPT_ANY_CERT}
+      CATALOGUE_MAX_SHRINK: ${CATALOGUE_MAX_SHRINK}
+      EXPORT_CHECK_MINUTES: ${EXPORT_CHECK_MINUTES}
+      EXPORT_STALE_CYCLES: ${EXPORT_STALE_CYCLES}
+      BRIDGE_PUBLIC_FHIR_HOST: ${BRIDGE_PUBLIC_FHIR_HOST}
+      # Mutual TLS on the OpenELIS hop. Off leaves the plaintext port serving
+      # /fhir exactly as before; on adds a second listener that will not
+      # complete a handshake without OpenELIS's certificate, and closes /fhir
+      # on the plaintext port to everything except loopback.
+      BRIDGE_MTLS_ENABLED: ${BRIDGE_MTLS_ENABLED}
+      BRIDGE_MTLS_PORT: ${BRIDGE_MTLS_PORT}
+      BRIDGE_MTLS_CERT: /certs/bridge.crt
+      BRIDGE_MTLS_KEY: /certs/bridge.key
+      BRIDGE_MTLS_PEER_CERT: /certs/openelis-client.crt
+    volumes:
+      # Read-only, and only the public certificate of the peer: the bridge can
+      # recognise OpenELIS and cannot impersonate it.
+      - ../certs:/certs:ro
+    networks:
+      sandbox:
+      data:
+      integration:
+        aliases:
+          # The name on the bridge's certificate. OpenELIS verifies the
+          # hostname against the certificate's SAN after it trusts the chain,
+          # so reaching it as `bridge` would fail even with the CA imported.
+          - bridge.openelis.org
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20

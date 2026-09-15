@@ -1,0 +1,155 @@
+# =============================================================================
+# The alerts.
+#
+# Each rule here corresponds to a failure mode that is SILENT — one where the
+# system looks healthy, no error rate moves, and the first person to notice is a
+# clinician asking where a result went. That is the test a rule has to pass to
+# belong in this file. Anything already visible as a 500 does not need one.
+#
+# Thresholds are stated in the annotation rather than only in the expression, so
+# whoever is woken up can tell immediately whether the number is close to the
+# line or far past it.
+# =============================================================================
+groups:
+
+  - name: integration
+    rules:
+
+      # An order the laboratory has not collected.
+      #
+      # The bridge holds orders for OpenELIS to poll, so an order that is never
+      # polled simply sits there. Nothing retries, because nothing failed; no
+      # request errors, because no request was made. This is the closest thing
+      # the system has to "a patient is waiting and nobody knows".
+      #
+      # 15 minutes is generous against a poll cadence measured in seconds. A
+      # tighter threshold would fire on an ordinary lease (90s) or a restart.
+      - alert: OrderUndelivered
+        expr: bridge_oldest_requested_task_age_seconds > 900
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "An order has waited over 15 minutes to be collected by the laboratory"
+          description: >-
+            The oldest Task still in `requested` is
+            {{ $value | humanizeDuration }} old. OpenELIS polls every few
+            seconds, so this means it is not polling, not importing, or
+            importing and failing. Check `make export-status`, then
+            `docker logs openelis-webapp`.
+
+      # OpenELIS has stopped asking for work.
+      #
+      # Distinct from the alert above, and it fires FIRST: this one does not
+      # need an order to exist. A laboratory with no outstanding orders and a
+      # dead poll looks perfectly healthy to every other signal in the system,
+      # right up until the next order is placed and nobody comes for it.
+      #
+      # The -1 guard matters. The gauge reads -1 until the first poll of a
+      # process, so without it every bridge restart would fire this immediately
+      # and teach everyone to ignore it.
+      - alert: LaboratoryStoppedPolling
+        expr: bridge_last_poll_age_seconds > 300
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OpenELIS has not polled for orders in over 5 minutes"
+          description: >-
+            Last poll was {{ $value | humanizeDuration }} ago. Nothing will
+            reach the laboratory until this recovers. If the bridge was just
+            restarted this clears itself on the next poll.
+
+      # Failures nobody has looked at.
+      #
+      # Every dead letter was handled correctly — that is what makes it quiet.
+      # The alert is on the CHANGE, not the total: a deployment that has
+      # accumulated old dead letters would otherwise fire for ever and be
+      # silenced, taking the useful signal with it.
+      #
+      # `- offset 1h`, NOT increase(). increase() is a counter function: it
+      # assumes any fall is a process restart, and — the reason this rule was
+      # rewritten — it treats a series that has only just appeared as having
+      # risen from nothing, so the alert fires on every bridge restart with no
+      # new failure at all. Subtraction against an explicit offset yields NO DATA
+      # when the older sample does not exist, which is the honest answer for a
+      # series younger than the window.
+      - alert: DeadLettersGrowing
+        expr: bridge_dead_letters_total - (bridge_dead_letters_total offset 1h) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "New dead letters in the last hour"
+          description: >-
+            {{ $value }} order(s) or result(s) have failed in a way that needs a
+            human since an hour ago. Read them with `make dead-letters`.
+
+      # A test menu nobody has refreshed.
+      #
+      # A failed sync leaves yesterday's menu serving happily, so the laboratory
+      # can withdraw a test and keep receiving orders for it with nothing
+      # failing anywhere. Only the age says so.
+      #
+      # 45 days, because the menu changes when a clinic commissions an analyser
+      # — a few times a year. This is a "somebody should look" warning, not a
+      # page: a stale menu is wrong slowly, not suddenly.
+      - alert: CatalogueStale
+        expr: bridge_catalogue_age_seconds > 3888000
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The test menu has not been synced from OpenELIS in 45 days"
+          description: >-
+            Last sync {{ $value | humanizeDuration }} ago. Orders are still
+            being accepted against it, including for tests the laboratory may
+            have withdrawn. Run `make sync-catalogue` and read the diff.
+
+      # Never synced at all. A separate rule because -1 is not "very old", it is
+      # "never", and the two want different wording at 03:00.
+      - alert: CatalogueNeverSynced
+        expr: bridge_catalogue_age_seconds == -1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The test menu has never been synced from OpenELIS"
+          description: "Run `make sync-catalogue`. Until then no test is orderable."
+
+  - name: availability
+    rules:
+
+      # The unsubtle one, included because its absence is a classic gap: every
+      # rule above reads a gauge, and a gauge from a dead process is not high or
+      # low, it is missing. Without this, the bridge going down silences the
+      # entire integration group rather than firing it.
+      - alert: ServiceDown
+        expr: up{component=~"integration|his"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is not responding to scrapes"
+          description: >-
+            Prometheus cannot reach {{ $labels.instance }}. While this is
+            firing, every other alert about that service is blind rather than
+            quiet.
+
+      # The consumer that stores results.
+      #
+      # his-api can be up, healthy and serving the API while its Kafka consumer
+      # has never joined its group — which is exactly what happened on the first
+      # clean run of this stack. No result would ever have been stored again,
+      # and /health stayed green throughout.
+      - alert: ResultConsumerNotRunning
+        expr: kafka_consumer_running == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The HIS is not consuming laboratory results"
+          description: >-
+            his-api is serving requests but its Kafka consumer is not running.
+            Released results are accumulating on the topic and reaching no
+            patient record.

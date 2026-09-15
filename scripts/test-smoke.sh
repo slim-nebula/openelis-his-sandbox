@@ -17,20 +17,27 @@ for container in his-db-external openelis-db-external his-kafka his-kong his-edg
 done
 
 section "Edge routing"
-check_contains "Reverse proxy answers /healthz" \
-    "curl -sf http://localhost:${EDGE_HTTP_PORT}/healthz" '"status":"ok"'
+check_contains "Reverse proxy answers /health" \
+    "curl -sf http://localhost:${EDGE_HTTP_PORT}/health" '"status":"healthy"'
 check_contains "Frontend is served at /" \
     "curl -sf http://localhost:${EDGE_HTTP_PORT}/" 'HIS Sandbox'
-check_contains "Kong routes /api/healthz to his-api" \
-    "curl -sf ${API}/healthz" '"component":"his-api"'
+check_contains "Kong routes /api/health to his-api" \
+    "curl -sf ${API}/health" '"service":"his-api-service"'
 check_contains "Kong stamps a correlation id" \
-    "curl -sfD - -o /dev/null ${API}/healthz" 'X-Correlation-ID'
+    "curl -sfD - -o /dev/null ${API}/health" 'X-Correlation-ID'
 check_contains "Test catalogue is reachable through the gateway" \
-    "curl -sf ${API}/test-catalogue" 'loincCode'
+    "api_curl -sf ${API}/test-catalogue" 'loincCode'
 
 section "Gateway configuration"
 check_contains "Kong loaded the declarative routes" \
     "curl -sf http://localhost:${KONG_ADMIN_PORT}/routes" 'lab-orders-create'
+
+# Addressing a Docker hostname let Kong cache an address that Docker later
+# reassigned to another container — it served a request for the HIS API from
+# the bridge. Routing by registered service name makes a moved container a
+# registry update instead of a stale cache.
+check_contains "Kong addresses the HIS by its Consul service name, not a container hostname" \
+    "curl -sf http://localhost:${KONG_ADMIN_PORT}/services" 'his-api-service.service.consul'
 check "Internal bridge API is NOT exposed through Kong" \
     "[[ \$(curl -s -o /dev/null -w '%{http_code}' ${API}/internal/lab-orders/00000000-0000-0000-0000-000000000000) == 404 ]]"
 
@@ -48,15 +55,164 @@ check_contains "HIS API consumer group is registered" \
     "docker exec his-kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server kafka:9092 --list" \
     'his-api'
 
+# Not the same assertion as the one above, and the difference is the whole
+# reason this exists. The first clean run of this stack started the service
+# before the topics had been created; the subscription failed, the error was
+# logged once, and boot carried on. The process stayed up, /health stayed green,
+# Consul kept the instance in rotation — and no laboratory result would ever
+# have been stored again. A consumer that never joined has no lag, so no lag
+# alert would have fired either. This is the series that says so.
+check "The HIS API is actually consuming, not merely alive" \
+    "[[ \$(docker exec his-api curl -s http://127.0.0.1:8080/metrics \
+          | grep '^kafka_consumer_running' | awk '{print \$2}') == 1 ]]"
+
+# The producers already write with acks=all. min.insync.replicas is what gives
+# that any meaning: without it, "all replicas acknowledged" can mean "the one
+# replica that happened to be up". The two settings only work as a pair, and
+# only the topic can be asked whether the second one was actually applied.
+check "Topics carry the configured min.insync.replicas, so acks=all means something" \
+    "[[ \$(docker exec his-kafka /opt/kafka/bin/kafka-configs.sh --bootstrap-server kafka:9092 \
+            --entity-type topics --entity-name ${TOPIC_ORDER_CREATED} --describe \
+          | grep -c 'min.insync.replicas=${KAFKA_MIN_INSYNC_REPLICAS}') -ge 1 ]]"
+
+check "Topics are replicated as this deployment configured" \
+    "[[ \$(docker exec his-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+            --describe --topic ${TOPIC_ORDER_CREATED} \
+          | grep -o 'ReplicationFactor: [0-9]*' | head -1 | grep -o '[0-9]*') \
+        == ${KAFKA_REPLICATION_FACTOR} ]]"
+
 section "Bridge FHIR endpoint"
-check_contains "Bridge is healthy" "in_sandbox http://localhost:8080/healthz" '"status":"ok"'
+check_contains "Bridge is healthy" "in_sandbox http://localhost:8080/health" '"status":"healthy"'
 check_contains "CapabilityStatement declares FHIR R4" \
     "in_sandbox http://localhost:8080/fhir/metadata" '4.0.1'
 check_contains "Task search responds with a searchset bundle" \
     "in_sandbox 'http://localhost:8080/fhir/Task?status=requested&owner=${OE_REMOTE_SOURCE_IDENTIFIER}'" \
     'searchset'
-check_contains "OpenELIS can reach the bridge's FHIR endpoint" \
-    "docker exec openelis-webapp curl -sf ${BRIDGE_FHIR_BASE}/metadata" '4.0.1'
+# Reachability used to be asserted with a plain curl from the OpenELIS
+# container. That stopped being possible, and the reason is the point: the FHIR
+# endpoint now requires a client certificate, and curl there has none. Only
+# OpenELIS's own HTTP client — built with loadKeyMaterial from its keystore —
+# can complete the handshake.
+#
+# So reachability is asserted from the far end instead: the bridge counts how
+# each FHIR request arrived. Counters reset when the process does, so any
+# mutually authenticated request at all means OpenELIS has polled successfully
+# since THIS bridge started.
+if [[ "${BRIDGE_MTLS_ENABLED:-false}" == "true" ]]; then
+    MTLS_SEEN=$(fhir_transport_count mtls)
+    check "OpenELIS has reached the bridge over mutual TLS since it started" \
+        "[[ ${MTLS_SEEN:-0} -gt 0 ]]"
+    info "mutually authenticated FHIR requests since start: ${MTLS_SEEN:-0}"
+else
+    check_contains "OpenELIS can reach the bridge's FHIR endpoint" \
+        "docker exec openelis-webapp curl -sf ${BRIDGE_FHIR_BASE}/metadata" '4.0.1'
+fi
+
+# A search that returns everything ever published gets slower as the deployment
+# gets older, and is slowest exactly when the laboratory is busiest. The bundle
+# reports the true match count alongside the capped page, so a truncated caller
+# is never told it has seen everything.
+check "A search page is capped, and says how many matches it capped from" \
+    "docker exec bridge curl -sS 'http://localhost:8080/fhir/Task?_count=1' | python3 -c \"
+import json,sys
+b = json.load(sys.stdin)
+entries, total = len(b.get('entry', [])), b['total']
+assert entries <= 1, f'asked for 1, got {entries}'
+assert total >= entries, f'total {total} is below the {entries} returned'
+\""
+
+check "A client asking for more than the server will serialise gets the server's answer" \
+    "docker exec bridge curl -sS 'http://localhost:8080/fhir/Task?_count=100000' | python3 -c \"
+import json,sys
+b = json.load(sys.stdin)
+assert len(b.get('entry', [])) <= ${BRIDGE_MAX_SEARCH_RESULTS}, 'cap not applied'
+\""
+
+section "Platform integration"
+
+# The sandbox is a reference for the real HIS platform, so both services have to
+# be visible to it the same way the Node services are: discoverable in Consul,
+# scrapeable by Prometheus, and writing to the shared log topic.
+
+for svc in bridge-service his-api-service; do
+    check "$svc is registered in Consul" \
+        "[[ \$(curl -sf http://localhost:${CONSUL_HTTP_PORT}/v1/catalog/service/$svc \
+              | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))') -ge 1 ]]"
+
+    # Registration alone proves nothing. The first attempt registered the bridge
+    # at its DATA-network address while Consul watches the sandbox network: it
+    # appeared in the catalogue and every check failed. A service in the
+    # catalogue that Consul cannot reach is worse than one that never
+    # registered, because Kong will route to it.
+    check "Consul can reach the address $svc advertised" \
+        "[[ \$(curl -sf http://localhost:${CONSUL_HTTP_PORT}/v1/health/service/$svc \
+              | python3 -c \"
+import json,sys
+bad = [c['Status'] for e in json.load(sys.stdin) for c in e['Checks']
+       if c['Name'].endswith('-health') and c['Status'] != 'passing']
+print('critical' if bad else 'passing')\") == passing ]]"
+
+    check "$svc carries the estate's Consul tags" \
+        "[[ \$(curl -sf http://localhost:${CONSUL_HTTP_PORT}/v1/catalog/service/$svc \
+              | python3 -c \"
+import json,sys
+tags = set(json.load(sys.stdin)[0]['ServiceTags'])
+print('ok' if {'hospital','microservice','load-balanced'} <= tags else f'missing from {tags}')\") == ok ]]"
+done
+
+check_contains "The bridge exposes Prometheus request histograms" \
+    "docker exec bridge curl -sf http://localhost:8080/metrics" 'http_request_duration_seconds_bucket'
+check_contains "The HIS service exposes them too" \
+    "docker exec his-api curl -sf http://localhost:8080/metrics" 'http_request_duration_seconds_bucket'
+
+# The log topic is SHARED with every other service in the estate. Two things
+# have to hold: application logs arrive, and framework request chatter does not.
+# Before the category filter, an idle bridge put ~2,800 lines on it in five
+# minutes — none of them about a patient.
+LOGS_SAMPLE=$(
+    part=$(docker exec his-kafka /opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server kafka:9092 \
+             --topic "$TOPIC_LOGS" 2>/dev/null | sort -t: -k3 -n | tail -1)
+    p=$(cut -d: -f2 <<< "$part"); end=$(cut -d: -f3 <<< "$part")
+    start=$(( end > 40 ? end - 40 : 0 ))
+    docker exec his-kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 \
+        --topic "$TOPIC_LOGS" --partition "$p" --offset "$start" --max-messages 40 2>/dev/null
+)
+
+check "Application logs reach the shared topic, in the estate's envelope" \
+    "python3 -c \"
+import json,sys
+rows=[json.loads(l) for l in sys.stdin if l.strip().startswith('{')]
+assert rows, 'no messages on the log topic'
+want={'service','level','message','timestamp'}
+assert all(want <= set(r) for r in rows), f'envelope mismatch: {sorted(rows[0])}'
+\" <<< \"\$LOGS_SAMPLE\""
+
+# This one has to be CAUSAL, not historical. Sampling the tail of the topic
+# tests whatever the service was doing last week; the question is what it does
+# now. So: note the end offsets, generate requests, and look only at what those
+# requests produced.
+LOG_END_BEFORE=$(docker exec his-kafka /opt/kafka/bin/kafka-get-offsets.sh \
+    --bootstrap-server kafka:9092 --topic "$TOPIC_LOGS" 2>/dev/null | awk -F: '{s+=$3} END {print s}')
+
+for _ in $(seq 1 8); do
+    docker exec bridge curl -sf -o /dev/null http://localhost:8080/health 2>/dev/null
+    docker exec his-api curl -sf -o /dev/null http://localhost:8080/health 2>/dev/null
+done
+sleep 4
+
+LOG_END_AFTER=$(docker exec his-kafka /opt/kafka/bin/kafka-get-offsets.sh \
+    --bootstrap-server kafka:9092 --topic "$TOPIC_LOGS" 2>/dev/null | awk -F: '{s+=$3} END {print s}')
+
+# 16 requests, each of which ASP.NET describes in four Information lines. Before
+# the category filter that was ~64 messages on a topic shared with every service
+# in the estate, none of them about a patient.
+PRODUCED=$(( LOG_END_AFTER - LOG_END_BEFORE ))
+if [[ $PRODUCED -le 8 ]]; then
+    ok "16 health requests added $PRODUCED log message(s), not ~64 of framework chatter"
+else
+    bad "Framework request chatter is kept off the shared topic" \
+        "16 requests produced $PRODUCED messages; the category filter is not applied"
+fi
 
 section "Data tier"
 check "HIS schema is present" \
@@ -77,7 +233,7 @@ if [[ "${LOINC_COUNT:-0}" -ge 6 ]]; then
     ok "OpenELIS tests carry LOINC codes ($LOINC_COUNT)"
 else
     bad "OpenELIS tests carry LOINC codes" \
-        "found ${LOINC_COUNT:-0}; run 'make provision' or every order will be rejected"
+        "found ${LOINC_COUNT:-0}; the seeded catalogue should carry these already"
 fi
 
 unmapped=""

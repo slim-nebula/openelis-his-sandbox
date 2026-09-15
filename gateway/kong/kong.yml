@@ -10,7 +10,13 @@ _transform: true
 
 services:
   - name: his-patient-laborder-service
-    url: http://his-api:8080
+    # Resolved through Consul (see KONG_DNS_RESOLVER), which returns only
+    # instances whose health check is passing. A service that cannot reach its
+    # database drops out of DNS and stops receiving traffic, instead of being
+    # routed to and failing every request.
+    protocol: http
+    host: his-api-service.service.consul
+    port: 8080
     connect_timeout: 5000
     read_timeout: 30000
     write_timeout: 30000
@@ -53,13 +59,46 @@ services:
         methods: [POST]
         strip_path: false
 
+      # Every released result from one encounter. Deliberately the only /visits
+      # route: a visit number is an identifier for one patient's encounter, so
+      # the gateway exposes the results question and nothing broader.
+      - name: visit-results
+        paths: ["~/visits/[^/]+/results$"]
+        methods: [GET]
+        strip_path: false
+
       - name: test-catalogue
         paths: ["/test-catalogue"]
         methods: [GET]
         strip_path: false
 
+      # The sites a doctor may order from — the picker behind the order form,
+      # and the laboratory's "Referring Site". GET only: the list is maintained
+      # by whoever owns the site register, never by the ordering screen.
+      - name: facilities
+        paths: ["/facilities"]
+        methods: [GET]
+        strip_path: false
+
+      # Refreshes the test menu from OpenELIS via the bridge. Routed because the
+      # technician who commissions an analyser presses this from the HIS admin
+      # screen, so it has to reach the edge.
+      #
+      # Kong routes it; his-api guards it. It requires HIS_ADMIN_TOKEN as a
+      # bearer token, checked by requireAdminToken (core/middleware/admin.middleware.ts)
+      # with a fixed-time comparison, and an unset token refuses everything with
+      # 503 rather than opening the door. `make negative` asserts the refusal.
+      #
+      # The check lives in the service rather than here on purpose: a route can
+      # be reached by something other than Kong, and a control that only exists
+      # at the gateway is a control the sandbox network can walk around.
+      - name: catalogue-refresh
+        paths: ["/admin/catalogue/refresh"]
+        methods: [POST]
+        strip_path: false
+
       - name: his-health
-        paths: ["/healthz"]
+        paths: ["/health"]
         methods: [GET]
         strip_path: false
 

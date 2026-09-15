@@ -3,15 +3,28 @@
 Every criterion in the brief, mapped to the automated check that proves it.
 
 ```bash
-make smoke      # 37 checks
-make e2e        # order flow into OpenELIS (pauses for the manual lab step)
-make results    # 14 checks
-make rejection  # 14 checks
-make negative   # 19 checks
+make smoke            platform and wiring
+make auth             tokens, revocation, degraded mode, the audit trail
+make catalogue-test   the test menu, and the specimen abbreviations
+make collection       the outpatient and inpatient collection workflows
+make requester        the ordering clinician reaching the laboratory's screen
+make panel            a report with several analytes
+make monitoring       the gauges, the alert rules, and whether they can fire
+make patient-refresh  whether a corrected patient name reaches the laboratory
+make negative         outages: broker, Redis, API, OpenELIS
+make rejection        refusal, drift, and a withdrawn specimen
+make results          the return path
+make corrections      corrections and retractions
+make e2e              order flow into OpenELIS  (pauses for the manual lab step)
 ```
 
-All four suites were run against the real stack: OpenELIS Global 2 on the
-upstream `develop` images, against its own external database.
+Check counts are deliberately **not** listed per suite. They change every time a
+test is added, and a number in a document that nobody updates is worse than no
+number — run the suite and read the total it prints.
+
+Run against the real stack: **OpenELIS Global 2 3.2.2.0**, against its own
+external database. Most recent full unattended run: **355 passed, 0 failed**
+across twelve suites.
 
 | # | Criterion | Verified by | Check |
 |---|---|---|---|
@@ -26,14 +39,129 @@ upstream `develop` images, against its own external database.
 | 9 | No direct database coupling between OpenELIS and the HIS sandbox | `make smoke` | no database container on the sandbox network; the bridge's credentials are refused by the HIS database (`CONNECT` denied); OpenELIS holds no HIS credentials at all |
 | 10 | OpenELIS runs containerised while its database is externalised | `make smoke` | `datasource.url` on the running webapp points at `openelis-db.external`, which lives in a separate compose project and network |
 
+## Beyond the brief — specimen collection time
+
+Not an acceptance criterion, but ISO 15189:2022 7.4.1.7.a requires it and a
+released-time-only display cannot tell a clinician whether a value still
+describes the patient.
+
+| Behaviour | Verified by |
+|---|---|
+| An outpatient order dispatches immediately; no ward collection time is claimed | `make collection` §1 |
+| An inpatient order is held at `AWAITING_COLLECTION` with **no outbox row and no bridge tracking row** — the laboratory has heard nothing | `make collection` §2 |
+| Recording the draw writes the time and queues the dispatch in one transaction, with a `SPECIMEN_COLLECTED` audit row | `make collection` §3 |
+| `Specimen.collection.collectedDateTime` is asserted **on the wire**, from the published resource rather than from intent | `make collection` §4 |
+| `Specimen.receivedTime` is no longer sent — it used to claim the laboratory received a specimen before anyone drew blood | `make collection` §4 |
+| A ward draw against an outpatient order, a second draw, a future timestamp, and an unknown patient class are each refused with 400 | `make collection` §5 |
+| The API exposes `collectedAt` and `collectionSource`, present or null | `make collection` §6 |
+
+The outpatient **read-back** is not covered end to end: it needs a lab user to
+accession a real sample and type a collection date, which is the manual step in
+`make e2e`. The projection of a laboratory-reported collection time is exercised
+through the same FHIR push the laboratory uses.
+
+## Beyond the brief — the ordering clinician
+
+Also not an acceptance criterion. CLIA 42 CFR 493.1291(a) and ISO 15189:2022
+7.4.1.6.c put the ordering clinician on the **laboratory's** report, so it is not
+enough that the HIS knows: the laboratory is who telephones a critical value.
+Every order used to be attributed to "OpenELIS Laboratory" — the integration's
+own routing identity.
+
+| Behaviour | Verified by |
+|---|---|
+| The laboratory's address is an `Organization`, and the running webapp polls for exactly what the bridge stamps | `make requester` §1 |
+| No **undelivered** order is stranded under a different owner — the silent failure mode of changing that value | `make requester` §1 |
+| `ServiceRequest.requester` carries a `Practitioner` whose id is a **UUID**, which `LabOrderSearchProvider` parses unguarded | `make requester` §2 |
+| The Practitioner is keyed on the **clinician** (`hcp.id`) and not the **account** (`usr_id`), and carries the licence number a laboratory recognises | `make requester` §2 |
+| A signed-in **non-clinician** — a receptionist — still gets their order to the laboratory, is recorded in the HIS audit trail, and is **not** passed off as the ordering doctor | `make requester` §6 |
+| The doctor's name appears on the accessioning screen, read from the wizard's own endpoint | `make requester` §3 |
+| One clinician stays one `Practitioner` across orders and across spellings; two clinicians sharing a name stay two | `make requester` §4 |
+| **Known upstream:** shown two names for one clinician, OpenELIS stores one and never updates it | `make requester` §5 |
+| An order with no identified clinician still reaches the laboratory, with no name fabricated and no crash in the wizard | `make requester` §6 |
+| Mononyms, compound names and accented names map correctly; a name the laboratory will refuse is passed through rather than quietly rewritten | `make requester` §7 |
+| **A doctor's order dispatched by someone else — a nurse — still names the DOCTOR to the laboratory, not the dispatcher**, with the nurse's action in the audit trail where an action belongs | `make requester` §8 |
+
+§8 guards the one failure this sandbox cannot otherwise produce. Here an
+outpatient order is placed and dispatched in one request, so "who is signed in"
+and "who ordered this" are always the same person; in a real HIS a workflow sits
+between them and they are not. It uses the inpatient path, which already has the
+shape — doctor orders, order waits, a **different** person causes the dispatch.
+**Mutation-tested**: the bug was written into the dispatch deliberately and §8
+went red, which is the only way to know a guard is a guard.
+
+§3 is the only check that reads the laboratory's actual screen rather than the
+wire — it calls `ajaxQueryXML`, the endpoint the accessioning wizard's own
+JavaScript calls. Everything else could pass with the field still invisible to a
+technician.
+
+---
+
+## Beyond the brief — a report with several analytes
+
+A `DiagnosticReport` may reference several `Observation`s: eight for a full blood
+count, four for an electrolyte panel. Every test on this sandbox's menu measures
+a single analyte, which is why the list was once read as though it held one
+element — the correlator forwarded the first and dropped the rest, silently.
+
+| Behaviour | Verified by |
+|---|---|
+| Every analyte reaches the HIS, with its **own** value, unit and reference range | `make panel` §2 |
+| A critical analyte keeps its own `HH` code inside an otherwise normal panel | `make panel` §2 |
+| The flat report-level fields still answer for a consumer that predates panels | `make panel` §3 |
+| The API exposes the components, in the order the laboratory released them | `make panel` §4 |
+| Redelivery does not accumulate duplicates | `make panel` §5 |
+| A correction **replaces** the analyte set rather than merging into it, so a withdrawn analyte disappears | `make panel` §6 |
+| Components hang off the surviving result row, not an orphan left by the upsert | `make panel` §6 |
+| A retraction clears every analyte as well as the value | `make panel` §7 |
+| **An incomplete panel waits rather than arriving truncated** — the forward is claimed once per version, so publishing early would be final | `make panel` §8 |
+| A single-analyte result is unchanged: one component, equal to the flat fields | `make panel` §9 |
+
+**Mutation-tested**: the first-observation-only behaviour was restored
+deliberately and §2 went red.
+
+## Beyond the brief — the system says when it is broken
+
+Every alert here covers a **silent** failure: one where nothing errors, no rate
+moves, and the first person to notice is a clinician asking where a result went.
+
+| Behaviour | Verified by |
+|---|---|
+| Prometheus is scraping the bridge, his-api and Kong | `make monitoring` §1 |
+| The four integration gauges are **published**, not sitting at a reassuring default | `make monitoring` §2 |
+| Each gauge agrees with the database it claims to describe | `make monitoring` §3 |
+| Every alert rule parses and evaluates | `make monitoring` §4 |
+| **Every metric named by an alert resolves to a real series** — a rule pointing at a renamed gauge is reported `healthy` and can never fire | `make monitoring` §5 |
+| The alert pipeline reaches `pending`/`firing` end to end | `make monitoring` §6 |
+| The order ledger's totals match `order_tracking` exactly | `make negative` |
+| The ledger's window is clamped at both ends, and refuses an anonymous caller | `make negative` |
+
+**Mutation-tested**: a gauge referenced by an alert was renamed. Prometheus
+continued to report the rule as healthy; §5 caught it.
+
+## Beyond the brief — a known upstream limitation, held under test
+
+| Behaviour | Verified by |
+|---|---|
+| The bridge publishes a corrected patient name | `make patient-refresh` §3 |
+| **OpenELIS keeps the name it first imported and writes no new version** | `make patient-refresh` §4 |
+
+This suite asserts the *documented* behaviour, not the desirable one, so it goes
+**red** the day a release fixes it. A test that asserted the staleness as though
+it were correct would be one nobody could act on. Filed as
+[upstream issue 07](upstream-issues/07-patient-name-never-refreshed.md).
+
 ## Non-functional requirements
 
 | Requirement | Where it lives |
 |---|---|
 | Clear service boundaries | Network topology in `compose/platform.yml`; the bridge is the only member of both `sandbox` and `integration` |
 | Containerised apps, external databases | `compose/data.yml` is a separate project; nothing else mounts its volumes |
-| Externalised configuration | `.env` is the only source; `scripts/render-config.sh` renders what cannot read env vars |
-| Structured logging | JSON console logging in both .NET services; JSON access log on the edge proxy |
+| Externalised configuration | `.env` is the only source, generated by `make secrets` from the committed `.env.example` and never itself committed; `scripts/render-config.sh` renders what cannot read env vars |
+| Access control | Four controls for four kinds of caller: the estate's user token (HS256 + Redis revocation) on the clinical API; `x-internal-api-key` between services; a shared operator token, fail-closed and fixed-time compared, on everything that changes something or exposes operational detail; mutual TLS on `/fhir` with the peer pinned to one certificate, because OpenELIS can present a certificate but not a bearer token. All fail-closed when unset. `docs/security.md` §§3–6; asserted on status codes in `make negative` and `make auth` |
+| Availability under a dependency outage | A Redis outage degrades authentication rather than stopping it — signatures still verified, revocation not enforced, one log line per transition and a metric to alert on. Asserted in `make auth`, including that the answer arrives in under five seconds rather than queueing behind the reconnect |
+| Bounded resource use | Search pages capped with a truthful `total`; four bridge tables swept on per-table windows that never remove anything uncorrelated (`make prune`) |
+| Structured logging | Winston in the HIS service and JSON console logging in the bridge, both onto the estate's shared `logs` topic in its envelope; JSON access log on the edge proxy |
 | Correlation ID propagation | Minted by Kong's `correlation-id` plugin, carried on `X-Correlation-ID` across HTTP hops and as a Kafka message header |
 | Retry and dead-letter handling | Exponential backoff on HIS fetches; uncommitted offsets on handler failure; poison messages to `<topic>.dlq`; `bridge.dead_letters` + `/ops/dead-letters` |
 | No lost events on broker outage | Transactional outbox (`his.outbox`) drained by `OutboxRelay`, in outbox order, stopping at the first failure so per-order ordering holds |
@@ -42,11 +170,19 @@ upstream `develop` images, against its own external database.
 
 ## What "verified" means for criterion 6
 
-The outbound channel is proven live, not assumed: OpenELIS registered 8 FHIR
+The outbound channel is proven live, not assumed: OpenELIS registered **9** FHIR
 `Subscription` resources pointing at the bridge, its `data_export_task` row
 targets `http://bridge:8080/fhir`, and the bridge has received real
-`Patient` / `ServiceRequest` / `Specimen` / `Task` / `Practitioner` /
-`Organization` resources pushed by OpenELIS during ordinary operation.
+`Patient` / `ServiceRequest` / `Specimen` / `Task` / `Practitioner` resources
+pushed by OpenELIS during ordinary operation.
+
+**Correction.** This previously said 8 subscriptions and listed `Organization`
+among the resources received. Neither was checked when written, and both were
+wrong: `Organization` was not in
+`org.openelisglobal.fhir.subscriber.resources`, so no such subscription existed
+and none could have arrived. It is subscribed now — see below — and the mirror
+still holds none, correctly, because the one configured organization has not
+changed since and resources are pushed on change.
 
 `DiagnosticReport` and `Observation` only exist once a lab user validates and
 releases a result, so `make results` delivers those two through the bridge's
@@ -95,11 +231,22 @@ created, so nothing enters the work queue.
 
 One limitation falls out of that: the `electronic_order.reject_reason` column
 is left null on this path, and a FHIR `Task` status of `rejected` carries no
-reason either. So the HIS learns *that* the LIS refused, never *why*. The
-`status_detail` the HIS records is our own heuristic ("most often no test
-matches the LOINC code"), not the laboratory's own words. Closing that would
-mean reading `electronic_order` directly — which the no-cross-database rule
-forbids — or OpenELIS populating `Task.statusReason`, which it does not.
+reason either. So the HIS learns *that* the LIS refused, never *why*. Closing
+that would mean reading `electronic_order` directly — which the no-cross-database
+rule forbids — or OpenELIS populating `Task.statusReason`, which it does not.
+
+**And `rejected` does not reliably mean the laboratory refused anything.** The
+first clean rebuild of this stack produced a `rejected` Task that came from a
+Hibernate Search indexing failure inside OpenELIS, with a perfectly valid LOINC
+and an `electronic_order` row sitting at `Entered` (21), not `NonConforming`
+(24) — a green order in the laboratory and a refused one in the HIS. The full
+sequence is documented in [data-flow.md §6](data-flow.md#6-where-the-test-menu-comes-from).
+
+The bridge used to fill the gap with a heuristic — `status_detail` read "most
+often no test matches the LOINC code" — and that episode is what retired it. It
+was a guess shown to a clinician in the voice of the laboratory, and when it was
+wrong it sent the reader to the catalogue, which was fine, instead of to the
+laboratory, where the fault was. A rejection with no reason now says so.
 
 ## Known limitations
 
@@ -116,6 +263,24 @@ an oversight:
 - **The databases are containers.** On a laptop with only Docker Desktop, the
   "external database server" boundary is enforced by project and network
   separation rather than by separate hosts.
+- **The laboratory accession number has never been captured.** `labAccession` is
+  joined, exposed and displayed, but `his.lab_orders` has never held one —
+  because nothing has ever been accessioned here (`clinlims.sample`,
+  `sample_item` and `analysis` are all empty). The bridge reads it from
+  `requisition.system = …/samp_labNo` on OpenELIS's own per-analysis
+  ServiceRequest, which exists only after a lab user accessions a sample. The
+  column shows an em dash, which is indistinguishable from the capture being
+  broken. **One real accessioning settles it** — and the same act would also
+  prove the outpatient collection-time read-back.
+- **Patient names containing digits are rejected by OpenELIS** and the order
+  then retries forever without ever failing. See the runbook.
+- **An inpatient order can wait forever.** `AWAITING_COLLECTION` has no timeout,
+  deliberately: expiring a real pending order because a nurse was busy would be
+  worse than leaving it visible. It is the ward's worklist, and a real estate
+  would put an escalation on top of it rather than an expiry underneath.
+- **Nothing verifies who drew the blood.** Recording a collection is attributed
+  through the token and audited, but a ward user asserting a draw time is
+  trusted. See `docs/security.md` §9.
 - **Result release is manual.** Driving OpenELIS's validation UI
   programmatically would couple the tests to its frontend; a lab user performing
   the step is also closer to what phase 3 is meant to exercise. `make results`

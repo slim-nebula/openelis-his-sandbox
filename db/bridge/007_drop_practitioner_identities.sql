@@ -1,0 +1,29 @@
+-- =============================================================================
+-- Drop bridge.practitioner_identities.
+--
+-- WHY IT EXISTED
+-- 006 added it so that "which clinician is this FHIR Practitioner?" could be
+-- answered by reading a row rather than by reversing the hash the Practitioner
+-- id was derived from. That was the right call while we published a Practitioner
+-- for the ordering doctor: FHIR is explicit that a logical id is opaque, so
+-- deriving meaning from one is a rule the specification tells you not to rely on.
+--
+-- WHY IT GOES
+-- The ordering clinician is no longer published to the laboratory at all. The
+-- HIS records who ordered every test — his.lab_orders.ordering_provider and
+-- ordering_provider_id, taken from the verified token — and that identity simply
+-- does not travel. With no Practitioner going out, there is no correlation left
+-- to record, and the table can only ever hold rows about a resource that is not
+-- sent any more.
+--
+-- Dropped rather than left empty. An empty table with grants and an index is an
+-- invitation to a future reader to start writing to it, and a schema that
+-- describes things the system does not do is worse than a smaller one.
+--
+-- WHAT IS NOT LOST
+-- Accountability. It was never here — it is in the HIS, on the order row and in
+-- his.audit_events, both written from the authenticated token. This table was
+-- only ever a convenience for reading the laboratory's copy.
+-- =============================================================================
+
+DROP TABLE IF EXISTS bridge.practitioner_identities;

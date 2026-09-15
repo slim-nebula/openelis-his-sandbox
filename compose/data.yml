@@ -52,7 +52,11 @@ services:
   # deployed here as a standalone server. The OpenELIS application container
   # points at it via -Ddatasource.url and ships no database of its own.
   openelis-db:
-    image: itechuw/openelis-global-2-database:develop
+    # Always stock, like the fhir/frontend/proxy images in compose/openelis.yml.
+    # No patch touches the database — migrations are explicitly off the patchable
+    # surface — and build-openelis.sh only ever builds the webapp, so following
+    # OE_IMAGE_REPO here just sends compose after an image nobody publishes.
+    image: itechuw/openelis-global-2-database:${OE_VERSION}
     platform: linux/amd64
     container_name: openelis-db-external
     hostname: openelis-db.external

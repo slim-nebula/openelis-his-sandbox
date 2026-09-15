@@ -117,6 +117,31 @@ read -r VALUE UNIT INTERP RANGE STATUS <<< "$(his_rows "
 [[ "$RANGE"  == "3.9-5.8" ]] && ok "reference range formatted: $RANGE"         || bad "reference range" "got '$RANGE'"
 [[ "$STATUS" == "final"  ]] && ok "status is final"                            || bad "status is final" "got '$STATUS'"
 
+# The CODE, not just the label. A severity treatment that matches on the words
+# "Critical high" loses its red the day a laboratory rewords its display text,
+# and loses it silently — the value still shows, and looks ordinary. Keying on
+# the HL7 code (N / H / L for abnormal, AA / HH / LL for critical) is what makes
+# that impossible.
+check "Interpretation CODE carried beside the label, not just the wording" \
+    "[[ \$(his_sql \"SELECT interpretation_code FROM his.lab_results_summary \
+          WHERE openelis_result_ref = 'DiagnosticReport/$DR_ID'\") == N ]]"
+
+# Two orders for the same LOINC on different specimens carry the same test_name
+# — "HIV VIRAL LOAD" for both plasma and dried blood spot — and are different
+# examinations with different methods and reference ranges. The specimen is
+# joined from the catalogue, never split out of test_code: single-specimen tests
+# keep a bare code (GLUC) and a split would yield the test, not the specimen.
+#
+# Asserted against the catalogue rather than a literal, because this script
+# takes whichever order is waiting and so does not know the test in advance.
+PATIENT_UUID=$(his_sql "SELECT patient_id FROM his.lab_orders WHERE order_number='$ORDER_NUMBER'")
+EXPECTED_SPECIMEN=$(his_rows "SELECT c.specimen_type FROM his.lab_orders o
+                                JOIN his.test_catalogue c ON c.test_code = o.test_code
+                               WHERE o.order_number = '$ORDER_NUMBER'")
+
+check_contains "Result says which specimen it was run on ($EXPECTED_SPECIMEN)" \
+    "api_curl -sf ${API}/patients/$PATIENT_UUID/results" "\"specimenType\":\"$EXPECTED_SPECIMEN\""
+
 check "Order advanced to RESULT_AVAILABLE" \
     "[[ \$(his_sql \"SELECT order_status FROM his.lab_orders WHERE order_number = '$ORDER_NUMBER'\") == RESULT_AVAILABLE ]]"
 
@@ -124,7 +149,38 @@ check "Result keeps its back-reference to the OpenELIS record" \
     "[[ \$(his_sql \"SELECT openelis_result_ref FROM his.lab_results_summary WHERE openelis_result_ref = 'DiagnosticReport/$DR_ID'\") == DiagnosticReport/$DR_ID ]]"
 
 check "Frontend can read it through the gateway" \
-    "curl -sf ${API}/patients/\$(his_sql \"SELECT patient_id FROM his.lab_orders WHERE order_number='$ORDER_NUMBER'\")/results | grep -q '$DR_ID'"
+    "api_curl -sf ${API}/patients/\$(his_sql \"SELECT patient_id FROM his.lab_orders WHERE order_number='$ORDER_NUMBER'\")/results | grep -q '$DR_ID'"
+
+# ---------------------------------------------------------------------------
+section "5b · The result says where to file it"
+
+# The whole point of the return path. Knowing WHICH PATIENT is not enough to
+# file a result — one visit can hold several orders, so the result has to say
+# which encounter it belongs to as well.
+#
+# The file number is deliberately not carried: the calling HIS owns the patient
+# record and resolves it from patient_id, so sending it would be a second copy
+# of something the caller already holds, arriving by a longer route.
+#
+# Note what makes the visit work: it is never sent to OpenELIS and never comes
+# back from it. The result is matched to its ORDER first, and the order is the
+# thing that remembers the encounter — so the laboratory cannot lose or alter it.
+VISIT="VISIT-RR-$(date +%s)"
+his_sql "UPDATE his.lab_orders SET visit_number = '$VISIT'
+          WHERE order_number = '$ORDER_NUMBER'" >/dev/null
+
+RESULT_JSON=$(api_curl -sf "${API}/patients/$(his_sql "SELECT patient_id FROM his.lab_orders \
+    WHERE order_number='$ORDER_NUMBER'")/results")
+
+check_contains "Result carries the visit it was ordered during" \
+    "echo '$RESULT_JSON'" "$VISIT"
+
+# And the question a clinician opening an encounter actually asks.
+check_contains "Results are retrievable by visit" \
+    "api_curl -sf '${API}/visits/$VISIT/results'" "$DR_ID"
+
+check "A visit with no orders returns an empty list, not an error" \
+    "[[ \$(api_curl -sf '${API}/visits/VISIT-NOT-A-REAL-ONE/results') == '[]' ]]"
 
 section "6 · Redelivery is idempotent"
 push DiagnosticReport "$DR_ID" "{

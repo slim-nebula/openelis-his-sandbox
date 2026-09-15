@@ -11,6 +11,14 @@
     <h1>HIS Sandbox</h1>
     <p class="sub">Patient registration and lab ordering against OpenELIS</p>
     <div id="health" class="health">checking…</div>
+    <!-- The clinical API is behind the estate's user token. There is no login
+         form because there is no IAM here to log into: `make token` stands in
+         for it, and the token is pasted here the way a real session cookie
+         would arrive from a real sign-in. -->
+    <div id="session" class="session">
+      <span id="session-who">not signed in</span>
+      <button id="signin-btn" type="button">Sign in</button>
+    </div>
   </header>
 
   <main>
@@ -52,26 +60,86 @@
       <h2>2 · <span id="detail-name"></span></h2>
       <dl id="detail-summary" class="summary"></dl>
 
+      <!-- The encounter, shown here rather than on the order form.
+           A doctor is INSIDE a visit and places several orders within it; every
+           order below inherits this one. "New visit" is the patient coming back
+           another day — a new encounter, with its own orders and its own
+           results, against the same patient record. -->
+      <div class="visitbar">
+        <span class="visit-label">Visit</span>
+        <span id="current-visit" class="mono">—</span>
+        <button id="new-visit-btn" type="button">New visit</button>
+        <span class="hint">every order below is filed against this encounter</span>
+      </div>
+
       <h3>Place a lab order</h3>
       <form id="order-form" class="grid">
-        <label>Test
-          <select name="testCode" id="test-select" required></select>
+        <!-- A searchable box, not a dropdown.
+             The laboratory decides the menu, and it can be long — and it holds
+             several entries that differ ONLY by specimen ("HIV Viral Load
+             (Plasma)" vs "(Serum)" vs "(DBS)"). Scrolling a select to tell
+             those apart invites picking the neighbour by accident; typing
+             "HIV" and reading three labelled options does not. The doctor
+             picks the specimen variant here, which is what makes the order
+             unambiguous by the time the laboratory sees it. -->
+        <label class="combo-label">Test
+          <div class="combo" id="test-combo">
+            <input id="test-search" type="text" role="combobox" autocomplete="off"
+                   aria-expanded="false" aria-controls="test-options" aria-autocomplete="list"
+                   placeholder="Type to search the laboratory's menu…" required />
+            <input type="hidden" name="testCode" id="test-code" />
+            <ul id="test-options" class="combo-options" role="listbox" hidden></ul>
+          </div>
         </label>
-        <label>Ordering provider <input name="orderingProvider" value="Dr. Konate" required /></label>
-        <label>Facility code <input name="facilityCode" value="FAC-001" required /></label>
+        <!-- There is no "ordering provider" box any more, and its absence is
+             the point. The order is attributed to whoever is signed in; the
+             server reads that from the token and ignores anything the page
+             might claim. A prefilled name field meant an order could be
+             attributed to a colleague by nobody doing anything at all. -->
+        <label>Ordering provider
+          <output id="order-provider" class="readonly">not signed in</output>
+        </label>
+        <!-- A picker, not a text box. A doctor never types a facility code —
+             they are IN a place and their HIS knows which. Free text invited
+             FAC-01, fac-001 and typos that match nothing, which matters now
+             that this field is the laboratory's Referring Site. -->
+        <label>Ordering from
+          <select name="facilityCode" id="facility-select" required></select>
+        </label>
         <label>Priority
           <select name="priority">
             <option value="routine">Routine</option>
             <option value="stat">STAT</option>
           </select>
         </label>
+        <!-- This choice decides WHO observes the specimen being drawn, and so
+             where the collection time can possibly come from.
+
+             Outpatient: the patient goes to the laboratory and a technician
+             draws there. The laboratory saw it, records it, and sends it back
+             with the result. Nothing for the ward to do.
+
+             Inpatient: a nurse draws at the bedside and nobody in the
+             laboratory sees it. The order is HELD until the ward records the
+             draw — because until the tube exists there is nothing for the
+             laboratory to act on, and because the collection time cannot be
+             sent afterwards: once OpenELIS imports a Task it stops polling it. -->
+        <label>Patient class
+          <select name="patientClass" id="patient-class">
+            <option value="OUTPATIENT">Outpatient — drawn at the laboratory</option>
+            <option value="INPATIENT">Inpatient — drawn on the ward</option>
+          </select>
+        </label>
+        <p class="hint" id="class-hint">
+          The laboratory draws the specimen and reports the collection time back.
+        </p>
         <button type="submit">Create lab order</button>
       </form>
 
       <h3>Lab orders</h3>
       <table id="orders">
         <thead>
-          <tr><th>Order number</th><th>Test</th><th>Status</th><th>Created</th></tr>
+          <tr><th>Order number</th><th>Visit</th><th>Ordered from</th><th>Test</th><th>Status</th><th>Created</th><th>Specimen collection</th></tr>
         </thead>
         <tbody></tbody>
       </table>
@@ -79,7 +147,7 @@
       <h3>Released results <span class="hint">returned from OpenELIS via the bridge</span></h3>
       <table id="results">
         <thead>
-          <tr><th>Test</th><th>Value</th><th>Interpretation</th><th>Status</th><th>Released</th><th>OpenELIS record</th></tr>
+          <tr><th>Test</th><th>Specimen</th><th>Value</th><th>Reference range</th><th>Interpretation</th><th>Status</th><th>Collected</th><th>Released</th><th>Visit</th><th>Order number</th><th>Lab accession</th><th>OpenELIS record</th></tr>
         </thead>
         <tbody></tbody>
       </table>

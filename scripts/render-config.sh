@@ -17,6 +17,29 @@ if [[ ! -f .env ]]; then
     exit 1
 fi
 
+# --- Unquoted values containing spaces --------------------------------------
+# Checked BEFORE sourcing, because sourcing is what breaks: the shell takes the
+# first word of an unquoted value and tries to RUN the rest, so `set -e` kills
+# this script with "words: command not found" and no indication of which
+# setting or why.
+#
+# docker compose and the shell disagree about these, and the disagreement is
+# silent. Compose takes everything after the `=`; the shell takes one word. So
+# OE_LAB_NAME=Sandbox Hospital Lab reaches the bridge intact and reaches a
+# script's environment as an empty string.
+#
+# `make` hides it further: the Makefile includes and exports .env itself,
+# compose-style, so anything run through a make target sees the right value and
+# only a direct `bash scripts/...` sees the broken one — which means the bug
+# appears when someone debugs by hand, the worst time to meet it.
+UNQUOTED=$(grep -nE '^[A-Z_][A-Z0-9_]*=[^"'"'"']*[[:space:]]' .env || true)
+if [[ -n "$UNQUOTED" ]]; then
+    echo "error: .env has value(s) with spaces that are not quoted:" >&2
+    sed 's/^/    /' <<< "$UNQUOTED" >&2
+    echo "       Wrap the value in double quotes." >&2
+    exit 1
+fi
+
 set -a
 # shellcheck disable=SC1091
 source .env
@@ -44,3 +67,26 @@ if ! grep -q "^org.openelisglobal.remote.source.identifier=${OE_REMOTE_SOURCE_ID
 fi
 
 echo "OK — OpenELIS will poll ${BRIDGE_FHIR_BASE} for Task?status=requested&owner=${OE_REMOTE_SOURCE_IDENTIFIER}"
+
+# --- .env drift -------------------------------------------------------------
+# .env is generated from .env.example once and then never again, because
+# `make secrets` refuses to overwrite it — regenerating passwords against
+# databases initialised with the old ones locks you out rather than rotating
+# anything. The cost of that decision is that every setting added afterwards is
+# missing from every .env that already exists.
+#
+# Silence is the wrong response to that. Some settings fall back to a sensible
+# default and some do not, and either way the person running this should be told
+# rather than discovering it as behaviour they did not choose. A warning, not an
+# error: a missing key is usually harmless, and stopping the stack over one
+# would be worse than the problem.
+MISSING=$(comm -23 \
+    <(grep -oE '^[A-Z_][A-Z0-9_]*=' .env.example | tr -d '=' | sort -u) \
+    <(grep -oE '^[A-Z_][A-Z0-9_]*=' .env         | tr -d '=' | sort -u))
+
+if [[ -n "$MISSING" ]]; then
+    echo
+    echo "note: .env is missing $(wc -w <<< "$MISSING" | tr -d ' ') setting(s) added to .env.example since it was created:"
+    sed 's/^/    /' <<< "$MISSING"
+    echo "      Each falls back to a built-in default. Copy the ones you want to set."
+fi

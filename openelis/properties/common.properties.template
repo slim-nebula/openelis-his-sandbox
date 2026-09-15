@@ -51,7 +51,26 @@ org.openelisglobal.fhir.subscriber=${BRIDGE_FHIR_BASE}
 # server. 5 matches the historical default in RegisterFhirHooksTask; tune
 # downward only after measuring partner capacity.
 org.openelisglobal.fhir.subscriber.backup.interval=${OE_SUBSCRIBER_BACKUP_INTERVAL}
-org.openelisglobal.fhir.subscriber.resources=Task,Patient,ServiceRequest,DiagnosticReport,Observation,Specimen,Practitioner,Encounter
+# Organization is here for REFERRAL (send-out) testing, and it has to be
+# subscribed BEFORE the first send-out rather than after.
+#
+# When our laboratory sends a specimen to another laboratory, OpenELIS records
+# the receiving lab as an `organization` tagged organization_type=referralLab,
+# and publishes a Task for the referral (FhirReferralServiceImpl). Task is
+# already on this list, so the referral signal itself would arrive. The
+# Organization naming the laboratory would not.
+#
+# Why now, with no send-outs yet: resources are pushed when they CHANGE. A
+# reference laboratory configured last month is not re-pushed merely because we
+# started listening today, so subscribing after the first referral can leave us
+# holding a Task that points at an Organization we never received.
+#
+# What this does NOT solve: DiagnosticReport.performer and Observation.performer
+# are never set anywhere in OpenELIS - no FHIR field on a result says who
+# actually performed it. Naming the performing laboratory means correlating the
+# result back through the referral Task, and ISO 15189 7.4.1.7.c and CLIA
+# 42 CFR 493.1291(i)(3) both require that name on the report. Filed upstream.
+org.openelisglobal.fhir.subscriber.resources=Task,Patient,ServiceRequest,DiagnosticReport,Observation,Specimen,Practitioner,Encounter,Organization
 
 #org.openelisglobal.facilitylist.fhirstore = http://localhost:4000/fhir/DEFAULT
 org.openelisglobal.facilitylist.fhirstore =  

@@ -28,7 +28,7 @@ services:
       - ../gateway/proxy/nginx.conf:/etc/nginx/nginx.conf:ro
     networks: [sandbox]
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -46,6 +46,21 @@ services:
       KONG_PROXY_ACCESS_LOG: /dev/stdout
       KONG_PROXY_ERROR_LOG: /dev/stderr
       KONG_LOG_LEVEL: notice
+      # Route by service discovery, not by Docker hostname. Kong previously
+      # cached an address that Docker later reassigned to another container and
+      # served a request for the HIS API from the bridge; addressing
+      # <name>.service.consul makes a moved container a registry update rather
+      # than a stale cache.
+      KONG_DNS_RESOLVER: ${CONSUL_IP}:8600
+      # A records only. Consul answers SRV for these names too, but its SRV
+      # targets point at synthetic .addr.<dc>.consul names that need a second
+      # resolution step; A records carry the healthy instance addresses
+      # directly and the port is already declared on the service.
+      KONG_DNS_ORDER: A,CNAME
+      # Consul serves records with TTL 0, meaning "do not cache". Kong needs a
+      # floor or it re-resolves on every request; 5s is short enough that a
+      # failover is noticed quickly and long enough not to be a DNS flood.
+      KONG_DNS_STALE_TTL: 5
     volumes:
       - ../gateway/kong/kong.yml:/etc/kong/kong.yml:ro
     ports:
@@ -71,9 +86,14 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Kafka's own internal topics, replicated exactly like ours. Leaving these
+      # at 1 while the data topics run at 3 would move the single point of
+      # failure rather than remove it: losing __consumer_offsets loses every
+      # consumer's position, which replays or skips orders depending on the
+      # reset policy.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: ${KAFKA_REPLICATION_FACTOR}
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: ${KAFKA_REPLICATION_FACTOR}
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: ${KAFKA_MIN_INSYNC_REPLICAS}
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       CLUSTER_ID: his-lab-sandbox-cluster
@@ -103,14 +123,51 @@ services:
       - |
         set -e
         for t in ${TOPIC_ORDER_CREATED} ${TOPIC_ORDER_SENT} ${TOPIC_ORDER_FAILED} \
+                 ${TOPIC_ORDER_PROGRESS} \
                  ${TOPIC_RESULT_RELEASED} ${TOPIC_RESULT_FAILED} \
                  ${TOPIC_ORDER_CREATED}.dlq ${TOPIC_ORDER_SENT}.dlq \
-                 ${TOPIC_ORDER_FAILED}.dlq ${TOPIC_RESULT_RELEASED}.dlq; do
+                 ${TOPIC_ORDER_FAILED}.dlq ${TOPIC_RESULT_RELEASED}.dlq \
+                 ${TOPIC_LOGS}; do
           /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
-            --create --if-not-exists --topic "$$t" --partitions 3 --replication-factor 1
+            --create --if-not-exists --topic "$$t" --partitions 3 \
+            --replication-factor ${KAFKA_REPLICATION_FACTOR}
+          # Applied by --alter, not by --create, so that raising durability on
+          # an existing deployment is a restart rather than a topic rebuild.
+          # min.insync.replicas is what gives the producers' acks=all any
+          # meaning: without it, "all" can mean "the one replica that is up".
+          /opt/kafka/bin/kafka-configs.sh --bootstrap-server kafka:9092 \
+            --entity-type topics --entity-name "$$t" \
+            --alter --add-config min.insync.replicas=${KAFKA_MIN_INSYNC_REPLICAS}
         done
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
     networks: [sandbox]
+
+  # --- Service discovery ------------------------------------------------------
+  # Mirrors the real HIS platform, where every service registers itself and Kong
+  # routes to `<name>.service.consul` rather than to a hostname someone typed.
+  #
+  # Dev mode: single node, in memory, no persistence. The registry is rebuilt by
+  # the services re-registering on start, so there is nothing here worth keeping
+  # across a restart — and a registry that survives a restart with stale entries
+  # is worse than one that starts empty.
+  consul:
+    image: hashicorp/consul:1.20
+    container_name: his-consul
+    restart: unless-stopped
+    command: ["agent", "-dev", "-client=0.0.0.0", "-ui"]
+    ports:
+      - "${CONSUL_HTTP_PORT}:8500"
+    networks:
+      sandbox:
+        # Fixed, because Kong's dns_resolver takes an address rather than a
+        # name. Everything else on this network keeps a dynamic one — that is
+        # the point of registering.
+        ipv4_address: ${CONSUL_IP}
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   # --- Cache ------------------------------------------------------------------
   # Provisioned because the brief lists it as an optional support component and
@@ -128,10 +185,65 @@ services:
       timeout: 5s
       retries: 10
 
+  # --- Monitoring ---------------------------------------------------------------
+  # Both services have exposed /metrics from the start and nothing read them.
+  # Metrics nobody scrapes are a file the process writes to itself — the failure
+  # modes they describe stay exactly as invisible as they were before.
+  #
+  # On `sandbox` only. It scrapes the bridge's estate-facing port, not its
+  # mutually authenticated FHIR port, so it needs no certificate and gets no
+  # route to OpenELIS.
+  #
+  # Sized for the 8 GiB host this runs on beside a full OpenELIS: two days of
+  # retention and a hard memory limit. Long-term storage is a production
+  # question, answered with remote-write rather than a bigger local disk.
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: his-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/config/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=2d
+      - --storage.tsdb.retention.size=512MB
+      - --web.enable-lifecycle
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      # The DIRECTORY, not the two files inside it.
+      #
+      # Mounting single files here silently served a TRUNCATED alerts.yml: the
+      # container kept an inode from an earlier write, so Prometheus loaded six
+      # of the seven rules and reported all six healthy. A missing alert is the
+      # one failure this whole component exists to prevent, and it was
+      # introduced by the mount rather than by the rules.
+      #
+      # A directory mount tracks the directory, so a rewritten file is picked up
+      # whole — and a rule file added later needs no compose change.
+      - ../monitoring:/config:ro
+      - prometheus-data:/prometheus
+    networks: [sandbox]
+    mem_limit: 320m
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  prometheus-data:
+
 networks:
   sandbox:
     name: oe-sandbox-net
     driver: bridge
+    # An explicit subnet exists for one reason: Kong's `dns_resolver` accepts IP
+    # addresses, not hostnames, so Consul needs an address that survives a
+    # container being recreated. The real HIS solves this the same way — its
+    # CONSUL_HOST default is a fixed 10.10.0.12.
+    ipam:
+      config:
+        - subnet: ${SANDBOX_SUBNET}
   integration:
     name: oe-integration-net
     driver: bridge

@@ -1,0 +1,58 @@
+# =============================================================================
+# Prometheus — the collector this sandbox was missing.
+#
+# WHAT THIS CLOSES
+# Both services have exposed /metrics in Prometheus format from the beginning,
+# and nothing ever read them. Metrics nobody scrapes are a file the process
+# writes to itself: the failure modes they describe stayed exactly as invisible
+# as they were before the instrumentation was added.
+#
+# WHY NO ALERTMANAGER
+# The rules below fire inside Prometheus and are readable from its own API,
+# which `make alerts` prints. Routing them to a pager is a decision about who is
+# on call, and that belongs to the hospital running the real HIS — not to a
+# sandbox, which would only teach one arbitrary answer. What the sandbox owes
+# its developers is the RULES: what to watch, and what each threshold means.
+#
+# SIZING
+# 2-day retention and a small memory ceiling, because this runs beside a full
+# OpenELIS on an 8 GiB laptop. Long-term storage is a production question and
+# would be answered with remote-write, not with a bigger local disk.
+# =============================================================================
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # Beside this file, in the directory mounted at /config. See the mount comment
+  # in compose/platform.yml for why the directory rather than the files.
+  - /config/alerts.yml
+
+scrape_configs:
+  # The integration itself. This is the one that matters: every rule in
+  # alerts.yml except the service-down pair reads a gauge from here.
+  - job_name: bridge
+    static_configs:
+      - targets: ["bridge:8080"]
+        labels:
+          component: integration
+
+  - job_name: his-api
+    static_configs:
+      - targets: ["his-api:8080"]
+        labels:
+          component: his
+
+  # Kong publishes its own metrics only with the prometheus plugin enabled. It
+  # is scraped for request rates at the edge; nothing alerts on it yet, and it
+  # is here so that adding an edge-latency rule later needs no new plumbing.
+  - job_name: kong
+    static_configs:
+      - targets: ["kong:8001"]
+        labels:
+          component: edge
+    metrics_path: /metrics
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

@@ -1,3 +1,7 @@
+# Credentials. The shape of the configuration lives in .env.example, which IS
+# committed; the values live here and never are. `make secrets` builds it.
+.env
+
 # Rendered from .env by scripts/render-config.sh — never edit or commit
 openelis/generated/
 
@@ -8,6 +12,24 @@ services/**/obj/
 .DS_Store
 *.log
 
-# Only needed to regenerate the shared data-flow page
-node_modules/
-package-lock.json
+# Only needed to regenerate the shared data-flow page. Rooted, so it does not
+# also swallow the lockfiles of real services — an unpinned service build is
+# not reproducible, which is the opposite of what a reference implementation
+# should demonstrate.
+/node_modules/
+/package-lock.json
+
+# Node build output for the HIS service
+services/his-api/node_modules/
+services/his-api/dist/
+
+# …and for the bridge. Same rule: the image is built from src by the Dockerfile,
+# so a committed dist/ is a second copy that goes stale the moment anyone edits
+# TypeScript without rebuilding, and shows up as noise in every diff.
+services/bridge/node_modules/
+services/bridge/dist/
+
+# Certificates for the OpenELIS <-> bridge hop, including private keys.
+# `make certs` recreates them; the CA is then imported into OpenELIS's
+# truststore by `make up`, so regenerating means re-running that too.
+certs/

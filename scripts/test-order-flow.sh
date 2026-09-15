@@ -11,20 +11,38 @@
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-TEST_CODE="${1:-HGB}"
+# Default to whatever the laboratory currently accepts, not to a code chosen
+# when this was written. HGB used to be the default and stopped being orderable
+# the moment discovery noticed OpenELIS cannot bind it to a single specimen —
+# so this suite failed on its second step with an empty response body, which
+# looks nothing like "the test menu changed". See any_active_test_code in
+# lib.sh; the same trap has now caught two suites.
+TEST_CODE="${1:-$(any_active_test_code)}"
+
+if [[ -z "$TEST_CODE" ]]; then
+    echo "  No orderable test in the HIS menu. Run: make sync-catalogue" >&2
+    exit 1
+fi
 ACCEPT_TIMEOUT=180     # seconds to wait for OpenELIS to poll and accept
 RESULT_TIMEOUT="${RESULT_TIMEOUT:-600}"
 
 # ---------------------------------------------------------------------------
 section "1 · Create a patient (frontend -> proxy -> Kong -> his-api)"
 
-PATIENT_JSON=$(curl -sf -X POST "${API}/patients" \
+# Held as variables, not literals, because section 5b asserts that these exact
+# values survive the trip into OpenELIS. A fixture that drifts from its own
+# assertion would assert nothing.
+P_SEX="M"
+P_DOB="1979-11-02"
+P_NID="NID-E2E-001"
+
+PATIENT_JSON=$(api_curl -sf -X POST "${API}/patients" \
     -H 'Content-Type: application/json' \
-    -d '{"firstName":"Ibrahim","lastName":"Diallo","sex":"M",
-         "dateOfBirth":"1979-11-02","phone":"+22370000042","nationalId":"NID-E2E-001"}')
+    -d "{\"firstName\":\"Ibrahim\",\"lastName\":\"Diallo\",\"sex\":\"$P_SEX\",
+         \"dateOfBirth\":\"$P_DOB\",\"phone\":\"+22370000042\",\"nationalId\":\"$P_NID\"}")
 
 PATIENT_ID=$(echo "$PATIENT_JSON" | json_field "['patientId']")
-MRN=$(echo "$PATIENT_JSON" | json_field "['externalPatientId']")
+MRN=$(echo "$PATIENT_JSON" | json_field "['mrn']")
 
 if [[ -n "$PATIENT_ID" ]]; then
     ok "Patient created: $MRN ($PATIENT_ID)"
@@ -39,10 +57,10 @@ check "Patient is persisted in the HIS sandbox database" \
 # ---------------------------------------------------------------------------
 section "2 · Place a lab order"
 
-ORDER_JSON=$(curl -sf -X POST "${API}/lab-orders" \
+ORDER_JSON=$(api_curl -sf -X POST "${API}/lab-orders" \
     -H 'Content-Type: application/json' \
     -d "{\"patientId\":\"$PATIENT_ID\",\"testCode\":\"$TEST_CODE\",
-         \"orderingProvider\":\"Dr. Konate\",\"facilityCode\":\"FAC-001\",\"priority\":\"routine\"}")
+         \"facilityCode\":\"FAC-001\",\"priority\":\"routine\"}")
 
 ORDER_ID=$(echo "$ORDER_JSON" | json_field "['orderId']")
 ORDER_NUMBER=$(echo "$ORDER_JSON" | json_field "['orderNumber']")
@@ -121,6 +139,74 @@ else
         "id is '$SR_ID' but external_id will be '$ORDER_NUMBER'"
 fi
 
+# --- The specimen coding that decides WHICH test gets ordered ---------------
+#
+# OpenELIS binds the test in LabOrderSearchProvider.addToTestOrPanel. It walks
+# Specimen.type.coding for a system of exactly "<oeFhirSystem>/sampleType",
+# takes that coding's CODE, and resolves it with
+# getTypeOfSampleIdForLocalAbbreviation — an exact match on local_abbrev.
+#
+# Nothing else in the Specimen is consulted: not text, not the SNOMED coding.
+# Get this wrong and OpenELIS does not fail — it falls through to
+# alltests.get(0), the first active test for the LOINC, and a plasma order goes
+# to the serum bench. That is why this is asserted on the wire rather than
+# inferred from the order being accepted.
+SPECIMEN_FHIR_ID=$(bridge_sql "SELECT fhir_specimen_id FROM bridge.order_tracking WHERE order_number = '$ORDER_NUMBER'")
+
+# bridge_rows, not bridge_sql: abbreviations contain spaces ("Whole Bld"), and
+# bridge_sql strips them, producing a value that matches nothing in OpenELIS.
+SENT_ABBREV=$(bridge_rows "
+    SELECT coalesce((SELECT c ->> 'code'
+                       FROM bridge.fhir_resources r,
+                            jsonb_array_elements(r.content -> 'type' -> 'coding') AS c
+                      WHERE r.resource_type = 'Specimen'
+                        AND r.resource_id = '$SPECIMEN_FHIR_ID'
+                        AND c ->> 'system' = 'http://openelis-global.org/sampleType'
+                      LIMIT 1), '')")
+
+if [[ -n "$SENT_ABBREV" ]]; then
+    ok "Specimen carries the sampleType coding OpenELIS binds by (code '$SENT_ABBREV')"
+else
+    bad "Specimen carries the sampleType coding OpenELIS binds by" \
+        "no coding with system http://openelis-global.org/sampleType — OpenELIS would bind the first test on the LOINC"
+fi
+
+# And that code has to name the sample type the doctor actually chose. A present
+# but wrong abbreviation is worse than an absent one: it binds confidently.
+#
+# Read the pair from the catalogue rather than splitting the test code on "|".
+# A test discovered before the menu went per-specimen keeps its original bare
+# test_code ("736-9", not "736-9|Whole Blood") so existing orders keep resolving,
+# and parsing would hand back the LOINC as the specimen name for exactly those.
+ORDER_LOINC=$(his_sql  "SELECT loinc_code    FROM his.test_catalogue WHERE test_code = '$TEST_CODE'")
+ORDER_SPECIMEN=$(his_rows "SELECT specimen_type FROM his.test_catalogue WHERE test_code = '$TEST_CODE'")
+
+if [[ -n "$SENT_ABBREV" ]]; then
+    BOUND_TEST=$(oe_rows "
+        SELECT coalesce(string_agg(t.description, ', '), '')
+        FROM clinlims.type_of_sample tos
+        JOIN clinlims.sampletype_test st ON st.sample_type_id = tos.id AND st.is_panel = false
+        JOIN clinlims.test t ON t.id = st.test_id AND t.is_active = 'Y'
+       WHERE tos.local_abbrev = '$SENT_ABBREV' AND t.loinc = '$ORDER_LOINC'")
+
+    EXPECTED_TEST=$(oe_rows "
+        SELECT coalesce(string_agg(t.description, ', '), '')
+        FROM clinlims.type_of_sample tos
+        JOIN clinlims.sampletype_test st ON st.sample_type_id = tos.id AND st.is_panel = false
+        JOIN clinlims.test t ON t.id = st.test_id AND t.is_active = 'Y'
+       WHERE tos.description = '$ORDER_SPECIMEN' AND t.loinc = '$ORDER_LOINC'")
+
+    if [[ -n "$BOUND_TEST" && "$BOUND_TEST" == "$EXPECTED_TEST" ]]; then
+        ok "The coding binds the test the doctor ordered: $ORDER_SPECIMEN -> $BOUND_TEST"
+    elif [[ -z "$BOUND_TEST" ]]; then
+        bad "The coding binds the test the doctor ordered" \
+            "abbreviation '$SENT_ABBREV' matches no active test on LOINC $ORDER_LOINC"
+    else
+        bad "The coding binds the test the doctor ordered" \
+            "ordered $ORDER_SPECIMEN (expected '$EXPECTED_TEST') but the coding binds '$BOUND_TEST'"
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 section "5 · OpenELIS polls the bridge and imports the order"
 
@@ -139,7 +225,7 @@ case "$ACCEPTED" in
     accepted) ok "OpenELIS accepted the order (Task -> accepted)" ;;
     rejected)
         bad "OpenELIS accepted the order" \
-            "Task was REJECTED — usually means no OpenELIS test carries this LOINC code. Run 'make provision'."
+            "Task was REJECTED — the LOINC no longer resolves to exactly one OpenELIS test. Re-run 'make sync-catalogue'."
         ;;
     *)  bad "OpenELIS accepted the order" \
             "Task still '$STATUS' after ${ACCEPT_TIMEOUT}s. Check: docker logs openelis-webapp | grep -i task" ;;
@@ -158,6 +244,73 @@ if [[ "${EO_COUNT:-0}" -ge 1 ]]; then
 else
     bad "Electronic order exists in the OpenELIS database" \
         "no clinlims.electronic_order row with external_id = $ORDER_NUMBER"
+fi
+
+# ---------------------------------------------------------------------------
+section "5b · Demographics the laboratory calculates with"
+
+# Sex and date of birth are not descriptive fields here — OpenELIS selects the
+# reference range from them. ResultLimitServiceImpl.selectForPatient() branches
+# four ways: age AND sex, sex only, age only, or a default range. So a sex that
+# arrives blank, or a birth date that shifts by a day across the timezone
+# boundary, does not fail anything loudly. It silently selects a LESS specific
+# range, and every result is then reported against that range.
+#
+# That failure mode is invisible from the order flow, which is exactly why it is
+# asserted rather than trusted. Note also that OpenELIS carries the birth date as
+# a formatted STRING internally (FhirTransformServiceImpl -> PatientSearchResults
+# -> DateUtil.convertTimestampToStringDate), so it is a genuine round trip
+# through the instance's configured date format, not a direct column copy.
+#
+# Asserted across every row with this national id rather than the newest one, so
+# the check does not depend on ordering and would also catch a duplicate patient
+# that imported with different demographics.
+OE_ALL=$(oe_sql "SELECT count(*) FROM clinlims.patient WHERE national_id = '$P_NID'")
+OE_SEX=$(oe_sql "SELECT count(*) FROM clinlims.patient
+                  WHERE national_id = '$P_NID' AND gender = '$P_SEX'")
+OE_DOB=$(oe_sql "SELECT count(*) FROM clinlims.patient
+                  WHERE national_id = '$P_NID' AND birth_date::date = DATE '$P_DOB'")
+
+if [[ "${OE_ALL:-0}" -lt 1 ]]; then
+    bad "Patient reached OpenELIS" "no clinlims.patient row with national_id = $P_NID"
+elif [[ "$OE_SEX" == "$OE_ALL" ]]; then
+    ok "Sex survives the trip to OpenELIS: $P_SEX (reference-range input)"
+else
+    bad "Sex survives the trip to OpenELIS" \
+        "expected all $OE_ALL row(s) to have gender '$P_SEX'; only $OE_SEX do. \
+OpenELIS maps anything that is not MALE/FEMALE to a NULL gender, which drops the \
+patient onto an age-only reference range."
+fi
+
+# The patient id is the ONLY patient identifier that crosses the boundary, and
+# that is deliberate: the HIS resolves the folder number from it locally, so
+# sending one would be a second copy of a fact we already hold.
+#
+# Asserted here because it is the identifier OpenELIS matches the patient on -
+# and the one the accessioning screen uses to find them.
+OE_GUID=$(oe_rows "SELECT pi.identity_data
+                     FROM clinlims.patient p
+                     JOIN clinlims.patient_identity pi ON pi.patient_id = p.id
+                     JOIN clinlims.patient_identity_type t ON t.id = pi.identity_type_id
+                    WHERE p.external_id = '$PATIENT_ID' AND t.identity_type = 'GUID'
+                    LIMIT 1")
+
+if [[ "$OE_GUID" == "$PATIENT_ID" ]]; then
+    ok "Patient id stored as the GUID identity OpenELIS matches on"
+else
+    bad "Patient id stored as the GUID identity OpenELIS matches on" \
+        "expected '$PATIENT_ID', got '${OE_GUID:-none}'. This is what the accessioning \
+screen looks the patient up by; without it the lab user gets a blank patient form."
+fi
+
+if [[ "${OE_ALL:-0}" -ge 1 ]]; then
+    if [[ "$OE_DOB" == "$OE_ALL" ]]; then
+        ok "Date of birth survives the trip to OpenELIS: $P_DOB (age input)"
+    else
+        bad "Date of birth survives the trip to OpenELIS" \
+            "expected all $OE_ALL row(s) to have birth_date $P_DOB; only $OE_DOB do. \
+A one-day shift here changes the age band, which matters most for neonatal ranges."
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -199,7 +352,7 @@ if [[ -n "$RESULT_FOUND" ]]; then
     check "Order status advanced to RESULT_AVAILABLE" \
         "[[ \$(his_sql \"SELECT order_status FROM his.lab_orders WHERE order_number = '$ORDER_NUMBER'\") == RESULT_AVAILABLE ]]"
     check "Frontend can read the result through the gateway" \
-        "curl -sf ${API}/patients/${PATIENT_ID}/results | grep -q openelisResultRef"
+        "api_curl -sf ${API}/patients/${PATIENT_ID}/results | grep -q openelisResultRef"
 else
     bad "Released result stored in the HIS sandbox database" \
         "nothing arrived within $((RESULT_TIMEOUT/60)) min. Check: docker logs bridge | grep -i correlat"

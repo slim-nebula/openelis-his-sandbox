@@ -1,0 +1,120 @@
+import { networkInterfaces } from 'node:os';
+import { createConnection } from 'node:net';
+import { config } from './env.js';
+import { logger } from './logger.js';
+
+/**
+ * Registers this service with Consul, matching the estate's tags and check
+ * timings exactly. Kong routes to <name>.service.consul, and Consul answers
+ * only with instances whose check is passing — so these numbers decide how
+ * quickly a failed instance stops receiving traffic.
+ */
+export class ConsulRegistration {
+  private readonly serviceId: string;
+
+  constructor(
+    private readonly serviceName: string = config.serviceName,
+    private readonly port: number = config.port,
+    private readonly healthCheckPath: string = '/health',
+  ) {
+    this.serviceId = `${serviceName}-${process.env.HOSTNAME || Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  /**
+   * The address Consul can actually reach this container on.
+   *
+   * NOT simply eth0. That is correct for a container on one network, and wrong
+   * for one on several: the bridge service registered at its data-network
+   * address while Consul watches the sandbox network, appeared in the catalogue,
+   * and failed every health check. A service in the catalogue that Consul
+   * cannot reach is worse than one that never registered, because Kong routes
+   * to what it finds.
+   *
+   * So ask the routing table instead. Opening a socket toward Consul and
+   * reading the local end tells us which address the kernel would use to get
+   * there, which is exactly the one to advertise.
+   */
+  private async advertisableAddress(): Promise<string> {
+    if (config.consul.advertisedIp) return config.consul.advertisedIp;
+
+    const routed = await new Promise<string | null>((resolve) => {
+      const socket = createConnection({ host: config.consul.host, port: config.consul.port });
+      const done = (value: string | null) => {
+        socket.destroy();
+        resolve(value);
+      };
+      socket.once('connect', () => done(socket.localAddress ?? null));
+      socket.once('error', () => done(null));
+      socket.setTimeout(2000, () => done(null));
+    });
+
+    if (routed && !routed.startsWith('127.')) return routed;
+    return this.containerAddress();
+  }
+
+  /** eth0, then any non-internal IPv4, then the service name. */
+  private containerAddress(): string {
+    const nets = networkInterfaces();
+    for (const net of nets.eth0 ?? []) {
+      if (net.family === 'IPv4' && !net.internal) return net.address;
+    }
+    for (const name of Object.keys(nets)) {
+      for (const net of nets[name] ?? []) {
+        if (net.family === 'IPv4' && !net.internal) return net.address;
+      }
+    }
+    return this.serviceName;
+  }
+
+  async register(): Promise<void> {
+    if (!config.consul.host) {
+      logger.info('Consul registration is off: CONSUL_HOST is not set');
+      return;
+    }
+
+    const address = await this.advertisableAddress();
+    const body = {
+      ID: this.serviceId,
+      Name: this.serviceName,
+      Address: address,
+      Port: this.port,
+      Tags: ['hospital', 'microservice', 'load-balanced', `version-${config.serviceVersion}`],
+      Check: {
+        Name: `${this.serviceName}-health`,
+        HTTP: `http://${address}:${this.port}${this.healthCheckPath}`,
+        Interval: '10s',
+        Timeout: '3s',
+        DeregisterCriticalServiceAfter: '30s',
+      },
+    };
+
+    try {
+      const response = await fetch(
+        `http://${config.consul.host}:${config.consul.port}/v1/agent/service/register`,
+        { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+      );
+      if (!response.ok) throw new Error(`Consul returned ${response.status}`);
+      logger.info(`Registered ${this.serviceName} with Consul as ${this.serviceId} at ${address}:${this.port}`);
+    } catch (error) {
+      // Deliberately NOT process.exit(1). This service can serve every request
+      // it has while unregistered — the bridge reaches it by hostname and Kafka
+      // consults no registry. Refusing to start over a registry outage turns a
+      // discovery problem into a clinical one.
+      logger.error(`Could not register with Consul; continuing unregistered: ${(error as Error).message}`);
+    }
+  }
+
+  async deregister(): Promise<void> {
+    if (!config.consul.host) return;
+    try {
+      await fetch(
+        `http://${config.consul.host}:${config.consul.port}/v1/agent/service/deregister/${this.serviceId}`,
+        { method: 'PUT' },
+      );
+      logger.info(`Deregistered ${this.serviceId} from Consul`);
+    } catch (error) {
+      // Consul's own DeregisterCriticalServiceAfter clears this in 30s.
+      logger.warn(`Could not deregister ${this.serviceId}: ${(error as Error).message}`);
+    }
+  }
+}
