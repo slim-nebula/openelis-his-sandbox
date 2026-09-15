@@ -1041,6 +1041,10 @@ script only, so such a ward has nothing that can be sent.
 where a technician reconciling records can read it, while identity rests on the
 derived UUID. You lose nothing by keying on the id.
 
+---
+
+# Part 3 — What the sandbox took from you
+
 Conventions adopted deliberately, so the two estates stay legible to each other:
 
 - **Topic naming** — `<domain>.<aggregate>.<event>`, so `lab.order.created` sits
