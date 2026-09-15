@@ -296,6 +296,47 @@ accredited component. Every asymmetry in this design exists because of that.
 
 ## 5. Recovery
 
+### `.env` has been lost, but the stack is still running
+
+**Do not run `make secrets`.** It generates fresh passwords and tokens, and the
+databases already exist with the old ones — you would be locked out of your own
+data, and the fix would be harder than the fault.
+
+The running containers hold every resolved value, so recover from them instead:
+
+```bash
+# every variable the stack actually resolved, deduplicated
+for c in $(docker ps --format '{{.Names}}'); do
+    docker inspect "$c" --format '{{range .Config.Env}}{{println .}}{{end}}'
+done | grep -E "^[A-Z][A-Z0-9_]*=" | sort -u
+```
+
+Most keys map straight across. Six do not, because compose renames them or folds
+them into a connection string:
+
+| `.env` key | where it actually lives |
+|---|---|
+| `HIS_DB_ADMIN_PASSWORD` | `his-db-external` → `POSTGRES_PASSWORD` |
+| `OE_DB_PASSWORD`, `OE_DB_SUPERUSER_PASSWORD` | `openelis-db-external` → `DB_PASSWORD`, `DB_SUPERUSER_PASSWORD` |
+| `SSL_KEYSTORE_PASSWORD`, `SSL_TRUSTSTORE_PASSWORD` | `openelis-certs` → `KEYSTORE_PW`, `TRUSTSTORE_PW` |
+| `BRIDGE_DB_USER` / `_PASSWORD` / `_NAME` | inside `bridge` → `BRIDGE_DB_CONNECTION` |
+| `HIS_DB_USER` / `_PASSWORD` / `_NAME` | inside `his-api` → `HIS_DATABASE_URL` |
+
+Fill the rest from `.env.example`, whose defaults are the non-secret ones —
+ports, hostnames, image tags, subnet. Then prove it before trusting it:
+
+```bash
+make smoke && make auth && make negative
+```
+
+`auth` and `negative` are the credential-heavy suites; if the estate token, the
+operator token, the service key and the mutual-TLS material are all wrong, they
+are what will say so.
+
+*This is written from having done it.* `.env` used to be tracked in git and was
+later removed; checking out a commit from before that removal overwrote the real
+file, and the next merge deleted it. Nothing was lost because the stack was up.
+
 ### An order is sitting at `AWAITING_COLLECTION`
 
 **Check this first, and do not escalate it as an integration fault.** It is the
