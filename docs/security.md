@@ -2,9 +2,15 @@
 
 What is protected, how, and — more usefully — what is not.
 
-This describes the sandbox as it stands. It is written so that someone
-promoting it to production can tell at a glance which controls are real, which
-are placeholders, and which are absent for a reason that will not go away.
+This describes the sandbox as it stands. It is written so that someone promoting
+it to production can tell at a glance which controls are real, which are
+placeholders, and which are absent for a reason that will not go away.
+
+> **Re-verified against the running system on 2026-09-15.** Claims about
+> OpenELIS's own behaviour were read from the deployed bytecode of 3.2.2.0 and
+> its live configuration. Two things this pass corrected are marked in place:
+> the `BasicAuthInterceptor` gate in §3, which was stated backwards, and the
+> certificate expiry in §3 and §9, which nothing had noticed.
 
 ---
 
@@ -14,7 +20,7 @@ Three surfaces, and they cannot be treated alike:
 
 | Surface | Callers | Control |
 |---|---|---|
-| `/fhir` on the bridge | OpenELIS | **Mutual TLS**, peer pinned to one certificate. A *bearer token* is impossible — see §3 |
+| `/fhir` on the bridge | OpenELIS | **Mutual TLS**, peer pinned to one certificate. A token of its own is not something OpenELIS has — see §3 |
 | `/patients`, `/lab-orders`, `/test-catalogue` | clinicians via the browser | **User token** from IAM, verified and checked for revocation — §4 |
 | `/internal/*` on the HIS | the bridge | **Service key** in `x-internal-api-key` — §5 |
 | `/ops/*`, `/catalogue/sync` on the bridge | operators, `make` targets | **Operator token or user token**, fail-closed — §6 |
@@ -24,7 +30,7 @@ Four different controls, because there are four different kinds of caller. The
 distinction that matters is not read-versus-write but *who is asking*, and what
 that caller is able to prove: a clinician has an identity worth auditing, the
 bridge is a service and has no user to be, and OpenELIS can prove itself with a
-certificate but cannot carry a token.
+certificate but has no credential of its own to carry.
 
 ---
 
@@ -63,13 +69,13 @@ is unauthenticated" — *was* correct, and the obvious fix genuinely does not
 exist. The fix that does exist is a layer lower, and the distinction is the
 whole lesson.
 
-OpenELIS 3.2.1.11 **cannot present a bearer token or HTTP credential to a
-remote FHIR source.** Two independent facts in the shipped webapp establish it. Both were read out of the
-deployed classes, not inferred from documentation:
+**OpenELIS 3.2.2.0 has no credential of its own to present to a remote FHIR
+source.** That is a narrower statement than this section used to make, and the
+narrowing is the point — see the correction note below.
 
-**1. There is no configuration key to put one in.** `FhirConfig` declares
-property placeholders for the local store and the client registry, but for the
-remote source it declares only the URI:
+**1. There is no configuration key for one.** `FhirConfig` declares property
+placeholders for the local store and the client registry, but for the remote
+source it declares only the URI and the identifier:
 
 ```
 ${org.openelisglobal.fhirstore.username:}     ${org.openelisglobal.fhirstore.password:}
@@ -77,20 +83,53 @@ ${org.openelisglobal.crserver.username:}      ${org.openelisglobal.crserver.pass
 ${org.openelisglobal.remote.source.uri:}      ← no username, no password
 ```
 
-**2. The one auth interceptor it registers is gated on the target.** The
-`BasicAuthInterceptor` is attached only when the URL being called equals
-`getLocalFhirStorePath()`. The bridge is not the local store, so the header is
-never attached to a call made to it.
+**2. The client it builds for us reuses the LOCAL store's credentials, or
+none.** `FhirUtil.getFhirClient(String url)` — the overload
+`FhirApiWorkFlowServiceImpl` calls to reach the bridge — is not gated on the
+target at all:
 
-The result push arrives over a FHIR `Subscription`, whose channel *does* support
-headers in the R4 model — but `RegisterFhirHooksTask` exposes no property to
-populate them either.
+```java
+IGenericClient client = fhirContext.newRestfulGenericClient(url);
+if (!GenericValidator.isBlankOrNull(fhirConfig.getUsername())) {
+    client.registerInterceptor(
+        new BasicAuthInterceptor(fhirConfig.getUsername(), fhirConfig.getPassword()));
+}
+```
 
-So requiring a token on `/fhir` would not secure the integration. It would end
-it: OpenELIS would poll, receive 401, and no order would ever reach the
-laboratory. Modifying OpenELIS is out of scope by standing constraint — it is
-the accredited component, and changing it is what would actually put the
-laboratory's certification at risk.
+`getUsername()` resolves `org.openelisglobal.fhirstore.username`. So OpenELIS
+**will** send HTTP Basic to whatever remote FHIR source it is pointed at — using
+the credentials of its own local HAPI store. In this deployment those are empty,
+so nothing is sent.
+
+> **Correction.** This section previously said the `BasicAuthInterceptor` is
+> attached *only* when the URL equals `getLocalFhirStorePath()`, and therefore
+> never to us. The bytecode says the opposite: in `FhirConfig` the equality test
+> **skips** the interceptor for the local store, and in `FhirUtil` there is no
+> URL test at all. The conclusion below is unchanged, but it rests on a
+> different fact, and the old one would have misled anyone designing around it.
+
+So a credential on `/fhir` is *technically* reachable — and still the wrong
+control:
+
+- it is **HTTP Basic**, not a bearer token;
+- it is the **same secret as the local FHIR store's**, so it cannot be scoped to
+  the bridge, rotated separately, or revoked without also cutting OpenELIS off
+  from its own store;
+- it would be sent to **every** remote FHIR client OpenELIS builds.
+
+A shared credential spanning two trust domains is weaker than the transport
+control that already works. `FhirUtil` does carry a
+`getFhirClient(url, token)` overload that registers a `BearerTokenAuthInterceptor`
+— but nothing in the remote-source path calls it, and no property feeds it.
+
+The result push arrives over a FHIR `Subscription`. Its channel headers *are*
+populated by `RegisterFhirHooksTask` — with the site name and site code, not
+credentials — and there is no property to add an `Authorization` header.
+
+So requiring a token on `/fhir` would not secure the integration. Modifying
+OpenELIS is out of scope by standing constraint: it is the accredited component,
+and changing it is what would actually put the laboratory's certification at
+risk.
 
 **The first answer was an origin allowlist.** `BRIDGE_FHIR_ALLOWED_PEERS` named
 the OpenELIS containers, the bridge resolved them to addresses, everything else
@@ -159,6 +198,22 @@ connect, so "is this that machine" is the question worth asking. `make negative`
 proves the difference: a certificate freshly signed **by our own CA** is still
 refused.
 
+> **Pinning replaces chain validation, and that includes expiry.** The listener
+> runs `requestCert: true, rejectUnauthorized: false` and compares the peer's
+> DER bytes to the pinned copy in `secureConnection`. A byte comparison has no
+> opinion about `notAfter`.
+>
+> This is not theoretical here. OpenELIS's shipped client certificate
+> (`CN=localhost`, I-TECH's default) **expired on 2026-07-23** and the
+> integration has kept working since. With `rejectUnauthorized: true` the real
+> peer would have been refused on 24 July and every order would have stopped —
+> while every impostor in `make negative` would still have been refused
+> correctly, so the suite would have stayed green.
+>
+> The trade is deliberate and it is the right one for a sandbox pinned to a
+> single peer. It is **not** right for a deployment that has a PKI: there,
+> validate the chain *and* pin. Tracked in §9.
+
 ### Two things this exposed
 
 **The traffic was not on the network everyone believed it was.** Docker resolves
@@ -184,9 +239,10 @@ each FHIR request actually arrived, because a setting can say mutual TLS is on
 while nothing uses the port. **`transport="plaintext"` above zero in a real
 deployment means a caller is still using the old address.**
 
-Still absent: certificate **rotation** (these are ten-year certificates with no
-renewal process), any **CRL or OCSP** — revocation checking is off, because a
-two-member private CA publishes neither — and the ATNA **audit** half, §9.
+Still absent: certificate **rotation** — our own are ten-year certificates with
+no renewal process, and OpenELIS's has already expired without anything noticing
+(§9) — any **CRL or OCSP**, since revocation checking is off because a
+two-member private CA publishes neither, and the ATNA **audit** half, §9.
 
 ---
 
@@ -396,10 +452,11 @@ not that it is open. The opposite default is how these get forgotten: it works
 in testing and is discovered in production by someone who was not looking for
 it.
 
-**Fixed-time comparison.** `CryptographicOperations.FixedTimeEquals`, not `==`.
-A plain string compare returns sooner the earlier it finds a difference, which
-hands the token over one character at a time to anyone patient enough to
-measure.
+**Fixed-time comparison.** `crypto.timingSafeEqual`, not `===`, in both
+services. A plain string compare returns sooner the earlier it finds a
+difference, which hands the token over one character at a time to anyone patient
+enough to measure. Length is checked first, because `timingSafeEqual` throws on
+a length mismatch rather than returning false.
 
 **The token is never logged**, at any level. A rejected credential is often a
 correct credential for somewhere else.
@@ -539,11 +596,14 @@ Three things this exercise established that are worth carrying into the real
 deployment:
 
 * **A gauge that has never been refreshed is not zero, it is absent.**
-  prometheus-net registers gauges at `0`. An early version of the refresh loop
-  threw on every pass, so all four sat at zero and read as "nothing stuck, no
-  dead letters, catalogue fresh" — the most alarming state publishing the most
-  reassuring numbers, with every alert satisfied by a component that had never
-  queried the database. They are unpublished until a refresh succeeds.
+  Every Prometheus client registers a gauge at `0` the moment it is
+  constructed. An early version of the refresh loop threw on every pass, so all
+  four sat at zero and read as "nothing stuck, no dead letters, catalogue
+  fresh" — the most alarming state publishing the most reassuring numbers, with
+  every alert satisfied by a component that had never queried the database. The
+  bridge now **does not construct them** until a refresh has returned real
+  values (`gauges ??= createGauges()`), so a broken collector yields no series
+  at all rather than four reassuring zeroes.
 * **A rule can be `health: ok` and incapable of firing.** Prometheus validates
   that an expression parses, not that the metric exists. Rename a gauge and its
   alerts go silent for ever behind a green rules page. `make monitoring` asserts
@@ -595,8 +655,11 @@ Three things this settled that were not obvious at the outset:
   hash of the display name, which made every spelling of a clinician's name a
   different practitioner in the laboratory's own provider records —
   permanently, since a laboratory report prints the requesting clinician. It is
-  now keyed on `usr_id`, and the Practitioner carries that id under
-  `http://his-sandbox.local/user` alongside the name OpenELIS matches on.
+  now keyed on the **clinician** — `mlh_his_hcp_health_care_provider.id`, not
+  the login account — and the Practitioner carries it under
+  `http://openelis-global.org/hcp_id`, with the licence number as a second
+  identifier. §4 of the integration guide explains why the account is the wrong
+  key: it is nullable, non-unique, and absent for a visiting consultant.
 * **The form was the real risk.** The field was prefilled. An order could be
   attributed to a colleague by nobody doing anything at all — which is the
   clinician who then receives the result, is telephoned about a critical value,
@@ -653,10 +716,29 @@ services to Postgres, Kafka and Redis. Those carry patient data too. The
 OpenELIS hop was ranked first because it crosses an organisational boundary and
 was the one an assessor would open with — it is not the last of this work.
 
-**No certificate rotation.** The integration certificates are valid for ten
-years and there is no renewal path. Ten-year certificates are what you issue
-when you have no rotation process, and they are how an outage arrives with no
-warning nine years later.
+**No certificate rotation — and one certificate has already expired.**
+OpenELIS's client certificate, the one the bridge pins, is I-TECH's shipped
+default (`CN=localhost`) and its `notAfter` was **2026-07-23**. It is still in
+use, because pinning compares DER bytes and a byte comparison cannot read a
+date (§3).
+
+Nothing is broken today and nothing will break on its own, which is exactly the
+problem: the condition is invisible, and it will stay invisible until someone
+turns on chain validation and discovers the integration stops. Two things follow:
+
+- **Regenerate it.** `make certs FORCE=true` then `make trust-bridge`, which
+  restarts OpenELIS because it reads its truststore once at startup.
+- **Do not turn on `rejectUnauthorized` first.** With the peer certificate
+  expired, strict validation refuses the real OpenELIS and the laboratory stops
+  receiving orders — while every impostor in `make negative` is still refused
+  correctly, so the suite stays green and tells you nothing.
+
+The bridge's own certificates are valid for ten years with no renewal path. Ten
+-year certificates are what you issue when you have no rotation process, and
+they are how an outage arrives with no warning nine years later. A real
+deployment wants short-lived certificates from its own PKI, chain validation
+*and* pinning, and a documented rotation procedure that accounts for the
+truststore being read once at startup.
 
 **Self-signed certificates**, and `OE_REST_ACCEPT_ANY_CERT=true`. That flag
 must be `false` anywhere real; it is configuration rather than an unconditional
