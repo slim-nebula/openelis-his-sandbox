@@ -20,7 +20,7 @@ whole point of it.
 | **Not yours** — the laboratory owns it | everything `openelis-*` |
 
 **The bridge is the deliverable.** You should not have to modify it. If you find
-yourself editing `OrderMapper.cs` to make your HIS fit, stop — that is a sign the
+yourself editing `order.mapper.ts` to make your HIS fit, stop — that is a sign the
 contract below is not being met, and the fix is almost certainly on your side.
 
 ---

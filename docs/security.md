@@ -277,11 +277,13 @@ microseconds. `make auth` asserts the clinical API answers **in under five
 seconds** with Redis stopped, which is the assertion that would fail on the
 estate's current settings.
 
-The .NET side has the same trap under a different name.
+The same trap exists in other clients under other names, and the bridge hit it
+while it was still a .NET service: StackExchange.Redis's
 `ConnectionMultiplexer.Connect` throws when Redis is unreachable unless
 `AbortOnConnectFail = false`, and a service that catches that throw ends up
 holding no connection at all — serving happily, silently never checking
-revocation again, until someone restarts it.
+revocation again, until someone restarts it. Worth knowing when connecting any
+new service to this Redis.
 
 ### What HS256 costs
 
@@ -297,7 +299,7 @@ shortcut taken for the sandbox, it is what the design permits.
 **Nothing scopes a token to one service.** IAM's payload has no `aud` claim, so
 a token minted for the appointment service is equally valid at the laboratory
 API and at the bridge. There is nothing to validate, which is why
-`ValidateAudience` is `false` in `Identity.cs` — turning it on would reject
+`aud` is not verified in `ops-access.ts` — turning that on would reject
 every real token.
 
 **The fix belongs in IAM, not here.** Sign RS256: IAM holds the private key,

@@ -128,8 +128,8 @@ correlation sweep.
 
 ## 4. The bridge
 
-The one service written outside the estate's stack, so the people running it
-will not be the people who wrote it. **Nothing below requires reading C#.**
+The service that joins the two systems, so the people running it may not be
+the people who wrote it. **Nothing below requires reading its source.**
 
 It holds no clinical decisions. Everything it does is translation and
 bookkeeping: an order becomes a FHIR `Task`, a released report becomes a row the

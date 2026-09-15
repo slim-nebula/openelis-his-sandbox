@@ -46,4 +46,4 @@ $$;
 
 COMMENT ON COLUMN lab_orders.lab_progress IS
     'Laboratory-side progress within ACCEPTED_BY_LIS. Advances only; see '
-    'his.lab_progress_rank and services/Bridge/ProgressTracker.cs.';
+    'his.lab_progress_rank and services/bridge/src/modules/results/progress.tracker.ts.';

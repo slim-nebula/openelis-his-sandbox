@@ -112,7 +112,7 @@ db/                 HIS and bridge schemas, applied on first database start
 gateway/            Kong declarative routes · edge nginx config
 monitoring/         Prometheus scrape config · the alert rules
 services/his-api    Patient + Lab Order service (Node 20 / TypeScript)
-services/Bridge     Kafka consumer + FHIR R4 server + correlator (.NET 10)
+services/bridge     Kafka consumer + FHIR R4 server + correlator (Node 20 / TypeScript)
 frontend/           the doctor's test client
 openelis/           volume assets, common.properties template
 openelis-patches/   our patches to OpenELIS, and the rules governing them

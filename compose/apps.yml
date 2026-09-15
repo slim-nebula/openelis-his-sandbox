@@ -83,14 +83,8 @@ services:
   # receives released results pushed back from OpenELIS on the same endpoint.
   bridge:
     build:
-      # Node 20 + Express 5 + TypeScript, the estate's own stack. Replaced the
-      # .NET service once the full sweep passed 355/355 against it.
-      #
-      # Reverting is this one line back to ../services/Bridge while that
-      # directory still exists: the container name, ports, networks, volumes,
-      # healthcheck and every environment variable are identical between the
-      # two, and both read BRIDGE_DB_CONNECTION in the Npgsql shape built below.
-      context: ../services/bridge-node
+      # Node 20 + Express 5 + TypeScript, the estate's own stack.
+      context: ../services/bridge
     image: his-sandbox/bridge:local
     container_name: bridge
     restart: unless-stopped
@@ -111,7 +105,7 @@ services:
       # Waiting for it is what makes `make up` deterministic on a fresh clone:
       # the bridge comes up already able to complete OpenELIS's handshake rather
       # than refusing its first polls. The bridge survives its absence — see
-      # MutualTls.cs — but "survives" is not the same as "works".
+      # src/config/mtls.ts — but "survives" is not the same as "works".
       oe-peer-cert:
         condition: service_completed_successfully
     environment:
@@ -140,7 +134,7 @@ services:
       BRIDGE_TASK_LEASE_SECONDS: ${BRIDGE_TASK_LEASE_SECONDS}
       # Access. The token guards /ops/* and the catalogue sync; the peer list
       # guards /fhir, which cannot use a token because OpenELIS has no way to
-      # send one (see services/Bridge/Access.cs).
+      # send one (see services/bridge/src/core/middleware/fhir-peer-guard.ts).
       BRIDGE_ADMIN_TOKEN: ${BRIDGE_ADMIN_TOKEN}
       BRIDGE_FHIR_ALLOWED_PEERS: ${BRIDGE_FHIR_ALLOWED_PEERS}
       # /ops also opens to a signed-in HIS user, so reading the dead-letter

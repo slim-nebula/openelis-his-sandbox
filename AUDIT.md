@@ -6,6 +6,15 @@
 > across twelve suites. Phase E (unit tests, ATNA groundwork) was left
 > deliberately — it is optional in the plan below and nothing depends on it.
 >
+> **The bridge was subsequently rewritten from .NET into Node 20 / Express 5 /
+> TypeScript** (phases 0–8, full sweep 355/355). The C# filenames below are left
+> as written — this is a record of what was found in September 2026, not a
+> description of today's tree — and they map as follows:
+> `CatalogueSync.cs` → `modules/catalogue/catalogue.sync.ts`,
+> `Messaging.cs` → `modules/orders/order.consumer.ts`,
+> `ResultCorrelator.cs` → `modules/results/result.correlator.ts` with `Flatten`
+> now `result.flatten.ts`, all under `services/bridge/src/`.
+>
 > Three things were found during implementation that were not in the audit:
 > a silent data-loss hazard from **digits in patient names** (field map §5), a
 > **fan-out bug in the ledger's own arithmetic** caught only because its test
@@ -38,7 +47,7 @@ Every item on the standard checklist passes:
 
 | Checklist item | Where it is satisfied |
 |---|---|
-| FHIR as the canonical contract, adapter isolates the LIS | `services/Bridge/` — one container, sole occupant of `oe-integration-net` alongside the webapp |
+| FHIR as the canonical contract, adapter isolates the LIS | `services/bridge/` — one container, sole occupant of `oe-integration-net` alongside the webapp |
 | No coupling to LIS tables | Network membership + separate databases; no shared schema |
 | LOINC-based mapping, controlled | Discovered from OpenELIS, keyed (LOINC, specimen); `CatalogueSync.cs`, shrink guard, one-transaction swap |
 | Identity ownership decided | HIS owns the patient (one identifier crosses); lab owns the accession; both shown side by side |

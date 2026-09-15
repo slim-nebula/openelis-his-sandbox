@@ -14,7 +14,7 @@ Both services carry them, in their own language:
 | | |
 |---|---|
 | `services/his-api/src/config/` | `consul.ts`, `metrics.ts`, `logger.ts` — the estate's own libraries, laid out as `patient-service` lays them out |
-| `services/Bridge/Platform.cs` | the same four contracts, written against the same wire formats |
+| `services/bridge/src/config/{consul,logger,metrics}.ts` | the same four contracts, written against the same wire formats |
 
 The bridge is the interesting one. It is not in the estate's stack and never
 will be, so it is the proof that these are **contracts** rather than a shared
@@ -99,22 +99,27 @@ one.
 The `logs` topic is **shared with every service in the estate**, so the question
 is not "is this worth logging" but "is this worth putting on everyone's bus".
 
-ASP.NET emits four Information lines per request — starting, executing,
-executed, finished. With a Consul check every 10s and a Docker healthcheck
-alongside it, an idle bridge produced **~2,800 messages in five minutes**, none
-of them about a patient. Framework categories now ship only at Warning and
-above, which took the same idle window to **21**. Framework *warnings* still
-ship: "connection reset", "request rejected" are exactly what is wanted
-centrally.
+This was learned expensively. When the bridge was an ASP.NET service it emitted
+four Information lines per request — starting, executing, executed, finished —
+and with a Consul check every 10s and a Docker healthcheck alongside it, an idle
+bridge produced **~2,800 messages in five minutes**, none of them about a
+patient. Filtering framework categories to Warning and above took the same idle
+window to **21**.
+
+Express logs nothing per request on its own, so the current service needs no
+filter — it simply never adds a request logger, and `make smoke` pins that:
+sixteen `/health` requests across both services must produce **no more than
+eight** lines on the shared topic. Do not reach for morgan.
 
 Two further properties, neither optional:
 
-- **It never blocks a request.** Lines go onto a bounded channel drained by a
-  background pump. When the channel is full they are **dropped**, because a
-  logging subsystem that consumes memory until the process dies has turned an
-  observability problem into an outage.
+- **It never blocks a request.** The send is fire and forget: the winston
+  transport hands the line to the producer and calls back immediately, so a slow
+  broker cannot become a slow API. A failed send is dropped rather than awaited,
+  because a logging subsystem that consumes memory until the process dies has
+  turned an observability problem into an outage.
 - **It never logs.** The obvious implementation publishes through the bridge's
-  `EventPublisher`, which logs every publish — which publishes, which logs. It
+  event publisher, which logs every publish — which publishes, which logs. It
   holds its own producer and reports failures to `stderr`, once per distinct
   reason. Failing in complete silence is how a log pipeline ends up dead for
   months without anyone noticing.

@@ -26,8 +26,8 @@ services/his-api/dist/
 # …and for the bridge. Same rule: the image is built from src by the Dockerfile,
 # so a committed dist/ is a second copy that goes stale the moment anyone edits
 # TypeScript without rebuilding, and shows up as noise in every diff.
-services/bridge-node/node_modules/
-services/bridge-node/dist/
+services/bridge/node_modules/
+services/bridge/dist/
 
 # Certificates for the OpenELIS <-> bridge hop, including private keys.
 # `make certs` recreates them; the CA is then imported into OpenELIS's

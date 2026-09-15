@@ -387,8 +387,8 @@ actually pushed back:
   breaks.
 
 The bridge tries the direct id match first, then the parent hop, then the
-order-number identifier — see `ResolveOrderAsync` in
-[ResultCorrelator.cs](../services/Bridge/ResultCorrelator.cs).
+order-number identifier — see `resolveOrder` in
+[result.correlator.ts](../services/bridge/src/modules/results/result.correlator.ts).
 
 The **parent hop is the one that matters in practice**. A real released result,
 captured from OpenELIS rather than simulated, arrived as

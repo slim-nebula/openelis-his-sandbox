@@ -134,7 +134,8 @@ http_status() {  # http_status <container> <method> <url> [curl args...]
 }
 
 # How many FHIR requests reached the bridge over each kind of connection.
-# `mtls`, `plaintext` or `loopback` — see services/Bridge/Access.cs.
+# `mtls`, `plaintext` or `loopback` — see
+# services/bridge/src/core/middleware/fhir-peer-guard.ts.
 fhir_transport_count() {
     docker exec bridge curl -sf --max-time 10 http://localhost:8080/metrics 2>/dev/null \
         | grep "bridge_fhir_requests_total{transport=\"$1\"}" | awk '{print $2}' | tail -1
