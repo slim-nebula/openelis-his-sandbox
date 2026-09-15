@@ -43,6 +43,23 @@ his_api() {     # his_api <method> <path>
 }
 
 # ---------------------------------------------------------------------------
+# The DRIFT fixture below is created by this suite and must not outlive it.
+#
+# It is a LOINC OpenELIS has never heard of, deliberately, and while it is
+# active the smoke suite's "every HIS catalogue LOINC resolves to an OpenELIS
+# test" assertion fails. `make rejection` happens to deactivate the same row on
+# its way out, so running these two in one order left a clean database and in
+# another left a red smoke run — a suite that only passes depending on what ran
+# before it is worse than one that fails, because the failure moves.
+#
+# On EXIT, so section 3 can still assert that a sync leaves the row alone.
+cleanup() {
+    his_sql "UPDATE his.test_catalogue SET is_active = false
+              WHERE test_code = 'DRIFT'" >/dev/null 2>&1
+}
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
 section "1 · The menu is served from cache, with its age"
 
 CATALOGUE=$(bridge_api GET /catalogue)
