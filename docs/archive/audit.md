@@ -109,7 +109,7 @@ Standing constraints for every work item:
   documented patch strategy.
 - Every behavioural change gets test coverage in the existing suite style, and
   new checks get mutation-tested once (inject the bug, watch the check go red).
-- Docs are part of done: `integration-guide.md` / `integration-field-map.md` for
+- Docs are part of done: `integration-guide.md` / `integration-contract.md` for
   anything the user's developers will consume; `his-findings.md` for anything
   about the real HIS; `security.md` §9 updated when an item there is closed.
 - The estate is Latin-name only; do not resurrect the charset work.
@@ -174,7 +174,7 @@ component and assert replacement, not accumulation; push a retraction and assert
 components are cleared. Mutation-test by reverting the correlator to
 first-observation and watching the suite fail.
 
-**Docs**: new section in `integration-field-map.md` (message shape, ordering,
+**Docs**: new section in `integration-contract.md` (message shape, ordering,
 the partial-panel rule); a paragraph in `integration-guide.md` telling the
 developers to read `observations` and treat the flat fields as a compatibility
 view.
@@ -225,7 +225,7 @@ after their first order may keep the wrong name on laboratory reports forever.
 correct the patient's name via the HIS API, order again, then read OpenELIS's
 patient record (its own DB or the accessioning wizard endpoint, same technique
 as `test-requester.sh` §3).
-- If it refreshes: one paragraph in `integration-field-map.md` saying so, with
+- If it refreshes: one paragraph in `integration-contract.md` saying so, with
   the evidence, and a regression check in `test-requester.sh` style.
 - If it freezes: `docs/upstream-issues/07-patient-name-never-refreshed.md`
   (same shape as 05), a workaround note for the developers (demographic

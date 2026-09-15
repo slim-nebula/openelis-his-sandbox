@@ -36,7 +36,7 @@ implements — no shortcut endpoints, no shared database.
 |---|---|
 | new to this | **[docs/architecture.md](docs/architecture.md)** — what runs and why |
 | wiring your real HIS to it | **[docs/integration-guide.md](docs/integration-guide.md)** — step by step, and what production still needs |
-| deciding what an order must carry | [docs/integration-field-map.md](docs/integration-field-map.md) |
+| deciding what an order must carry | [docs/integration-contract.md](docs/integration-contract.md) |
 | following an order through the system | [docs/data-flow.md](docs/data-flow.md) |
 | running it, or fixing it at 3am | [docs/runbook.md](docs/runbook.md) |
 | assessing risk before go-live | [docs/security.md](docs/security.md) |

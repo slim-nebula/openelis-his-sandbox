@@ -499,7 +499,7 @@ exactly `<oeFhirSystem>/sampleType` and matches its code against
 (`Whole Blood` is stored as `Whole Bld`). Miss it and OpenELIS binds the first
 active test on the LOINC and reports success. The catalogue therefore syncs both
 forms, and the order carries the abbreviation alongside SNOMED. Full detail in
-[integration-field-map.md](integration-field-map.md#3-why-the-specimen-is-load-bearing).
+[integration-contract.md](integration-contract.md#3-why-the-specimen-is-load-bearing).
 
 **Sync is manual.** A clinic changes its menu when it commissions an analyser, a
 few times a year, so a timer would run thousands of times to catch that and

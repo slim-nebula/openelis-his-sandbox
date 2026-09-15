@@ -132,7 +132,7 @@ back, by joining on it. Regenerate or reuse it and the result returns
 uncorrelatable: dead-lettered, published as `lab.result.failed` /
 `UNCORRELATED`, and sitting in a queue instead of in front of a doctor. The
 full contract is in
-[integration-field-map.md §1b](integration-field-map.md#1b-the-identity-contract).
+[integration-contract.md §1b](integration-contract.md#1b-the-identity-contract).
 
 **The ordering doctor is taken from the verified token, never from the body.**
 Ordering on behalf of another clinician is not supported, deliberately.
@@ -496,7 +496,7 @@ because there is nothing to join to.
 
 Deliberately **not** sent: the file number/MRN, the requesting organisation, and
 the visit number. Full reasoning in
-[integration-field-map.md](integration-field-map.md).
+[integration-contract.md](integration-contract.md).
 
 > **`OE_REMOTE_SOURCE_IDENTIFIER` must be typed `Organization/…`, not
 > `Practitioner/…`.** It is the address OpenELIS polls on, and OpenELIS also
@@ -618,13 +618,13 @@ So:
 `components` is always present and always an array. Empty means the laboratory
 withdrew the report; one element is the ordinary case; more than one is a panel.
 Full field reference in
-[integration-field-map.md § C1](integration-field-map.md#c1-a-report-with-more-than-one-analyte).
+[integration-contract.md § C1](integration-contract.md#c1-a-report-with-more-than-one-analyte).
 
 Neither the patient id nor the visit is read back from what the laboratory
 returns; both are joined from the order row that `orderNumber` identifies. That
 is what makes filing correct even when results arrive out of order, or when a
 correction lands weeks after the encounter closed —
-[§1b](integration-field-map.md#1b-the-identity-contract).
+[§1b](integration-contract.md#1b-the-identity-contract).
 
 **Show `collectedAt` next to `releasedAt`, and never substitute one for the
 other.** A result released five minutes ago may be from blood drawn six hours

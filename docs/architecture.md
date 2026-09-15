@@ -204,7 +204,7 @@ vocabularies.
 The one subtlety is that "the specimen" needs two forms — the name the doctor
 reads (`Whole Blood`) and the local abbreviation OpenELIS matches on
 (`Whole Bld`). Both are synced. Getting this wrong binds the wrong test
-*silently*; see [integration-field-map.md](integration-field-map.md#3-why-the-specimen-is-load-bearing).
+*silently*; see [integration-contract.md](integration-contract.md#3-why-the-specimen-is-load-bearing).
 
 ---
 
@@ -230,7 +230,7 @@ startup, which is why `make trust-bridge` restarts it.
 |---|---|
 | new to this | this file, then [data-flow.md](data-flow.md) |
 | wiring the real HIS | [integration-guide.md](integration-guide.md) |
-| deciding what to send | [integration-field-map.md](integration-field-map.md) |
+| deciding what to send | [integration-contract.md](integration-contract.md) |
 | running or fixing it | [runbook.md](runbook.md) — start with its alerts section |
 | assessing risk | [security.md](security.md) |
 | judging whether it is any good | [archive/audit.md](archive/audit.md) — independent review and what it changed |
