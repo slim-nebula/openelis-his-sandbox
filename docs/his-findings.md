@@ -10,8 +10,15 @@ there is working code to copy, not a snippet.
 
 **How to read this.** Part 1 is defects: things that are wrong now. Part 2 is a
 design for something you do not have yet and will be asked for. Part 2b is what
-an outside laboratory will ask of `org-setup-service`, including one place where
-the natural choice is the wrong one. Part 3 is what the sandbox took *from* you.
+an outside laboratory will ask of `org-setup-service` — two places where the
+natural choice is the wrong one. Part 3 is what the sandbox took *from* you, and
+Part 4 is what the laboratory imposes on you whatever you do.
+
+> **Re-verified against `HIS Project` on 2026-09-15.** All ten defects below
+> still exist, and every code snippet quoted was re-read from the current
+> source rather than carried forward. Line numbers are as they stand today —
+> nine of the ten were unchanged; the two in `config/kafka.ts` had moved and are
+> corrected. One new instance of finding 6 was found and is recorded there.
 
 ---
 
@@ -21,13 +28,13 @@ the natural choice is the wrong one. Part 3 is what the sandbox took *from* you.
 |---|---|---|---|---|
 | 1 | No transactional outbox | `patient-service` visits module | An order exists and billing never hears about it | Design change |
 | 2 | Dead-letter queue is unreachable | `order-fulfillment.consumer.ts:24` | A poison message blocks its partition for ever | **One line** |
-| 3 | Failed publish looks successful | `config/kafka.ts` — every service | Callers cannot retry what they cannot see fail | Small |
-| 4 | Producer not idempotent | `config/kafka.ts` — every service | A retry can overwrite a newer status with an older one | **Two lines** |
+| 3 | Failed publish looks successful | `config/kafka.ts:142` — every service | Callers cannot retry what they cannot see fail | Small |
+| 4 | Producer not idempotent | `config/kafka.ts:126` — every service | A retry can overwrite a newer status with an older one | **Two lines** |
 | 5 | `jwt.decode` instead of `jwt.verify` | `org-setup-service`, `file-upload-service` | Signature unchecked, expiry ignored | **One word, twice** |
-| 6 | Hardcoded fallback signing secret | `file-upload-service/.../file-auth.middleware.ts:8` | Unset variable ⇒ links signed with a public string | **One line** |
+| 6 | Hardcoded fallback signing secret, **twice** | `file-auth.middleware.ts:8`, `signed-url.utils.ts:9` | Unset variable ⇒ links signed with a public string | **Two lines** |
 | 7 | Degraded mode does not degrade | `config/redis.ts` — every service | A Redis outage hangs requests instead of bypassing the check | **One line** |
 | 8 | Outage logs once per request | `auth.middleware.ts` | Thousands of identical lines/min on the shared topic | Small |
-| 9 | Consul registration takes `eth0` | `config/consul.ts` | Breaks the moment a service joins a second network | Small |
+| 9 | Consul registration takes `eth0` | `config/consul.ts:22` | Breaks the moment a service joins a second network | Small |
 | 10 | HS256 with no `aud` | `iam-service` | Every verifier can mint; nothing scopes a token to one service | Design change |
 
 Items 5, 6 and 7 interact and are the ones to take first — see **Sequencing** at
@@ -42,7 +49,7 @@ nobody knows about them:
 | **Patient names must not contain digits** — the laboratory's `lastNameCharset` excludes them | An order for a patient called `Doe 2` stays `SENT_TO_LIS` for ever: no rejection, no dead letter, nothing to look at | Small — validate at registration |
 | **A corrected patient name never reaches the laboratory** | The two systems permanently disagree about whose specimen is on the bench | Cannot be fixed in code — needs a workflow |
 
-Both are covered in **Part 3** below.
+Both are covered in **Part 4** below.
 
 ---
 
@@ -155,7 +162,7 @@ publish is invisible. Fixing #3 fixes that too.
 
 ### 3. A failed publish looks exactly like a successful one
 
-**Where:** `config/kafka.ts` — `KafkaProducer.send()`
+**Where:** `config/kafka.ts:142` — `KafkaProducer.send()`
 
 ```ts
 public async send(topic: string, key: string, value: any): Promise<void> {
@@ -170,6 +177,10 @@ public async send(topic: string, key: string, value: any): Promise<void> {
 
 The promise resolves whether or not the message was published. Callers cannot
 tell, so no caller can retry, compensate, or refuse to commit.
+
+Note also that it is `console.error`, not `logger.error`. The one record that an
+event was lost goes to the container's stdout and **never reaches the shared
+`logs` topic**, so it is absent from the place anyone would search afterwards.
 
 `publishOrderCreatedEvent` then catches again on top:
 
@@ -194,7 +205,7 @@ patient-service.
 
 ### 4. Producer is not idempotent, so retries can reorder
 
-**Where:** `config/kafka.ts` — `this.producer = this.kafka.producer();`
+**Where:** `config/kafka.ts:126` — `this.producer = this.kafka.producer();`
 
 No options. KafkaJS defaults give `acks: -1` (all in-sync replicas), which is
 right — but `idempotent: false` and unbounded in-flight requests, which means a
@@ -291,9 +302,18 @@ question for whoever later changes the key type.
 ```ts
 // file-upload-service/src/middleware/file-auth.middleware.ts:8
 const secret = process.env.SIGNING_JWT_SECRET || 'your-secret-key';
+
+// file-upload-service/src/utils/signed-url.utils.ts:9   ← same string, different variable
+const secret = process.env.JWT_SECRET || 'your-secret-key';
 ```
 
-If that variable is ever unset — a new environment, a renamed key, a typo — file
+**There are two of them**, and they do not even read the same variable: the
+middleware falls back for `SIGNING_JWT_SECRET`, the URL builder for
+`JWT_SECRET`. So a deployment that sets one and not the other signs with the
+public string at one end and the real secret at the other — which fails closed
+by accident, until someone "fixes" the mismatch by setting neither.
+
+If either variable is unset — a new environment, a renamed key, a typo — file
 download links are signed and verified with a string that is in the repository.
 Anyone can then mint a link to any file.
 
@@ -973,9 +993,53 @@ is what the laboratory prints from then on. A later correction never arrives.
 
 Write `hcp.name` the way it should appear on a laboratory report.
 
----
+## The referring site: a stable key per branch, ward and business unit
 
-# Part 3 — What the sandbox took from you
+The laboratory also needs to know **where the order came from** — its *Referring
+Site*, which decides where the report goes back and who gets telephoned about a
+problem. This is now implemented: the bridge publishes the site as a FHIR
+`Location`, and OpenELIS creates its own referring-clinic organization from it on
+first import, keyed on the Location's UUID for ever after.
+
+"For ever after" is what makes this a schema question rather than a mapping one.
+Reading `org-setup-service`'s own Prisma schema:
+
+```prisma
+model mlh_his_org_setup_branches       { id Int @id @default(autoincrement())  code String   name String? }
+model mlh_his_org_setup_wards          { id Int @id @default(autoincrement())  code String   name String? }
+model mlh_his_org_setup_business_units { id Int @id @default(autoincrement())  code String?            }
+```
+
+**Send `{table}|{id}`, not the code.** Three properties of your own schema decide
+it, and each on its own is disqualifying:
+
+| | Consequence |
+|---|---|
+| `code` has **no unique constraint** anywhere in the 50-model schema | nothing stops two branches sharing a code, and a key that can collide is not a key |
+| `code` is **nullable** on `business_units` | a department may have no code at all |
+| ids are **per table** | branch 5 and ward 5 are different places, so the table name has to be part of the key |
+
+Identity must also survive a rename and a code edit, because a changed key grows
+a **second** clinic in the laboratory's records for a place that already had one
+and silently splits that site's report routing in half. The autoincrement id is
+the only thing that never changes.
+
+### Two things worth changing on your side
+
+**`name` is nullable on all three, and `business_units` has none at all.**
+OpenELIS guards only the name assignment, so a Location with no name still
+creates the organization — an unnamed one, which the accessioner reads as a blank
+field indistinguishable from a rendering fault. The bridge therefore sends **no
+Location** rather than a nameless one, which leaves the technician typing it.
+Making `name` required is a one-line migration and removes the case.
+
+Note the asymmetry on wards: `name_ar` is **non-null** while `name` is nullable,
+so an Arabic-only ward is valid in your schema today. The laboratory stores Latin
+script only, so such a ward has nothing that can be sent.
+
+**The site code is still worth carrying.** It rides on `Location.identifier`,
+where a technician reconciling records can read it, while identity rests on the
+derived UUID. You lose nothing by keying on the id.
 
 Conventions adopted deliberately, so the two estates stay legible to each other:
 
@@ -996,28 +1060,7 @@ picking one estate-wide.
 
 ---
 
-# Sequencing
-
-Not by severity — by dependency, and by what makes the next step safe.
-
-| Order | Do | Why first |
-|---|---|---|
-| 1 | **5** `decode` → `verify`, and **6** the fallback secret | One word and one line. Everything else about identity is unsound until these are done |
-| 2 | **7** `enableOfflineQueue: false` | One line, and it must land *before* anyone adds degraded mode to the two services in #5 — that combination is the dangerous one |
-| 3 | **2** DLQ `retryCount`, **4** idempotent producer | One line and two lines, no design work, immediate benefit |
-| 4 | **3** let `send` reject | Touches every service, so it needs a coordinated release — but #1 is silent until it is done |
-| 5 | **8** log transitions, add the metric | Makes the outage behaviour from #7 visible |
-| 6 | **1** transactional outbox | Design change. Reference implementation in `services/his-api` |
-| 7 | **9** routing-table registration | Before any service joins a second network, not after |
-| 8 | **Audit trail** | Needs #1's outbox pattern and #5's verified identity |
-| 9 | **10** RS256 and `aud` | Largest change, and the only one that is purely IAM's |
-
-Items 1–3 are roughly an afternoon between them and remove the two ways an order
-is currently lost silently.
-
----
-
-# Part 3 — Two things the laboratory imposes on your HIS
+# Part 4 — Two things the laboratory imposes on your HIS
 
 Neither of these is a defect in your code. Both were found by running real orders
 against a real OpenELIS, and both are the kind of thing that is obvious in
@@ -1101,3 +1144,27 @@ The same defect affects the ordering **clinician's** name
 ([05](upstream-issues/05-practitioner-name-never-refreshed.md)). That one is a
 reconciliation nuisance. The patient one is a patient-identification risk, which
 is why it is worth a workflow rather than a note.
+
+
+---
+
+# Sequencing
+
+Not by severity — by dependency, and by what makes the next step safe.
+
+| Order | Do | Why first |
+|---|---|---|
+| 1 | **5** `decode` → `verify`, and **6** the fallback secret | One word and one line. Everything else about identity is unsound until these are done |
+| 2 | **7** `enableOfflineQueue: false` | One line, and it must land *before* anyone adds degraded mode to the two services in #5 — that combination is the dangerous one |
+| 3 | **2** DLQ `retryCount`, **4** idempotent producer | One line and two lines, no design work, immediate benefit |
+| 4 | **3** let `send` reject | Touches every service, so it needs a coordinated release — but #1 is silent until it is done |
+| 5 | **8** log transitions, add the metric | Makes the outage behaviour from #7 visible |
+| 6 | **1** transactional outbox | Design change. Reference implementation in `services/his-api` |
+| 7 | **9** routing-table registration | Before any service joins a second network, not after |
+| 8 | **Audit trail** | Needs #1's outbox pattern and #5's verified identity |
+| 9 | **10** RS256 and `aud` | Largest change, and the only one that is purely IAM's |
+
+Items 1–3 are roughly an afternoon between them and remove the two ways an order
+is currently lost silently.
+
+---
