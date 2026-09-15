@@ -175,7 +175,7 @@ continued to report the rule as healthy; §5 caught it.
 This suite asserts the *documented* behaviour, not the desirable one, so it goes
 **red** the day a release fixes it. A test that asserted the staleness as though
 it were correct would be one nobody could act on. Filed as
-[upstream issue 07](upstream-issues/07-patient-name-never-refreshed.md).
+[upstream issue 07](../upstream-issues/07-patient-name-never-refreshed.md).
 
 ## Non-functional requirements
 
@@ -266,7 +266,7 @@ first clean rebuild of this stack produced a `rejected` Task that came from a
 Hibernate Search indexing failure inside OpenELIS, with a perfectly valid LOINC
 and an `electronic_order` row sitting at `Entered` (21), not `NonConforming`
 (24) — a green order in the laboratory and a refused one in the HIS. The full
-sequence is documented in [data-flow.md §6](data-flow.md#6-where-the-test-menu-comes-from).
+sequence is documented in [data-flow.md §6](../data-flow.md#6-where-the-test-menu-comes-from).
 
 The bridge used to fill the gap with a heuristic — `status_detail` read "most
 often no test matches the LOINC code" — and that episode is what retired it. It

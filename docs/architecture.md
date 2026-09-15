@@ -233,5 +233,5 @@ startup, which is why `make trust-bridge` restarts it.
 | deciding what to send | [integration-field-map.md](integration-field-map.md) |
 | running or fixing it | [runbook.md](runbook.md) — start with its alerts section |
 | assessing risk | [security.md](security.md) |
-| judging whether it is any good | [audit.md](audit.md) — independent review and what it changed |
+| judging whether it is any good | [archive/audit.md](archive/audit.md) — independent review and what it changed |
 | changing OpenELIS itself | [openelis-patches/README.md](../openelis-patches/README.md) |

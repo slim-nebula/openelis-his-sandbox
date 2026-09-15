@@ -389,10 +389,12 @@ auth_revocation_checks_total{result="allowed"|"revoked"|"degraded"}
 Without it, degraded mode is invisible — the requests all succeed, so no error
 rate moves.
 
-The same lesson bit the sandbox from the other direction: ASP.NET's four
-Information lines per request, plus a 10-second Consul check, put **~2,800
-messages in five minutes** on the shared topic from an idle service. Filtering
-framework categories to Warning and above took it to 21.
+The same lesson bit the sandbox from the other direction. The bridge was an
+ASP.NET service at the time, and its four Information lines per request, plus a
+10-second Consul check, put **~2,800 messages in five minutes** on the shared
+topic from an idle service. Filtering framework categories to Warning and above
+took it to 21. (The bridge is Node now, and Express logs nothing per request —
+so the rule there is simply never to add a request logger.)
 
 ---
 

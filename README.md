@@ -42,10 +42,9 @@ implements — no shortcut endpoints, no shared database.
 | assessing risk before go-live | [docs/security.md](docs/security.md) |
 | matching the estate's infra contracts | [docs/platform-integration.md](docs/platform-integration.md) |
 | **improving your own HIS codebase** | **[docs/his-findings.md](docs/his-findings.md)** — defects and designs found in `HIS Project`, with working code to copy |
-| checking what is actually proven | [docs/acceptance.md](docs/acceptance.md) — every criterion, and the check that proves it |
 | changing OpenELIS itself | [openelis-patches/README.md](openelis-patches/README.md) |
 | looking at what we found in OpenELIS | [docs/upstream-issues/](docs/upstream-issues/) |
-| why the integration is shaped as it is | [docs/audit.md](docs/audit.md) — an independent review and what it changed |
+| why the integration is shaped as it is | [docs/archive/](docs/archive/) — the audit and the acceptance record, kept as history |
 
 ---
 
@@ -101,6 +100,40 @@ the laboratory — it is a tripwire on a known upstream defect, written to go re
 the day a release fixes it. `make monitoring` checks that every metric named by
 an alert still resolves to a real series, because Prometheus reports a rule
 pointing at a nonexistent metric as perfectly healthy.
+
+## What this does not do
+
+Each is a deliberate scope decision rather than an oversight, and knowing them
+up front saves re-discovering them later.
+
+- **The databases are containers.** On a laptop with only Docker Desktop, the
+  "external database server" boundary is enforced by project and network
+  separation rather than by separate hosts.
+- **Patient names containing digits are rejected by OpenELIS**, and the order
+  then retries indefinitely without ever failing. It is the one stall with no
+  error anywhere — see [docs/runbook.md](docs/runbook.md) and
+  [upstream issue 07](docs/upstream-issues/07-patient-name-never-refreshed.md).
+- **An inpatient order can wait forever.** `AWAITING_COLLECTION` has no timeout,
+  deliberately: expiring a real pending order because a nurse was busy would be
+  worse than leaving it visible. It is the ward's worklist, and a real estate
+  would put an escalation on top of it rather than an expiry underneath.
+- **Nothing verifies who drew the blood.** Recording a collection is attributed
+  through the token and audited, but a ward user asserting a draw time is
+  trusted. See [docs/security.md](docs/security.md) §9.
+- **Result release is manual.** Driving OpenELIS's validation UI
+  programmatically would couple the tests to its frontend, and a lab user
+  performing the step is closer to what it actually is. `make results` covers
+  everything downstream of the release.
+- **The bridge implements FHIR itself** rather than running a HAPI FHIR server.
+  It serves exactly the interactions OpenELIS uses — enough to be correct, not a
+  general-purpose FHIR server.
+- **No authentication between services inside the sandbox.** It relies on
+  network isolation; Kong is where authentication would attach.
+- **Referring Site is not populated.** OpenELIS has no `Organization` row
+  carrying a facility code, so the ordering site does not reach the laboratory's
+  screen. It is the one functional gap the audit left open.
+
+---
 
 ## Operations
 

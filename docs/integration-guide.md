@@ -25,48 +25,6 @@ contract below is not being met, and the fix is almost certainly on your side.
 
 ---
 
-## Step 0 — Two settings in OpenELIS, before anything else
-
-**Neither is a code change. Both are laboratory administration, on the stock
-image. Get these wrong and the integration looks broken in ways that point
-nowhere near the real cause.**
-
-### `external orders` must be `true`
-
-**Administration → Order Entry Configuration** → `external orders`
-("Allow external sites to send electronic orders").
-
-**OpenELIS ships with this `false`**, and the failure it produces is
-misleading. Orders still arrive, still import, still appear in Incoming Orders —
-because the import path is server-side and this flag does not gate it. What
-breaks is the **accessioning screen**: the wizard takes this branch,
-
-```js
-} else {
-    setOrderFormValues(prev => ({ ...prev,
-      sampleOrderItems: { ...prev.sampleOrderItems, externalOrderNumber: "" }}));
-}
-```
-
-deliberately discarding the order number and never fetching the order. The lab
-user sees a blank patient form and *"No patients found matching search terms"*,
-with nothing to suggest a configuration flag is responsible.
-
-**Changing it requires a restart of the OpenELIS webapp.** The save writes
-`true` to the database, but the running application keeps serving the old value
-— verified: the database read `true` while `/rest/configuration-properties` still
-returned `"false"` until the container restarted.
-
-### `auto-fill collection date/time` should stay `false`
-
-Same page. With it on, an accessioner who does not know when the specimen was
-drawn gets the **arrival** time stamped in as the collection time. That is worse
-than a blank: it is indistinguishable from an observed value, and a clinician
-will judge how current a result is by it. See
-[Step 3b](#step-3b--patient-class-decides-the-collection-workflow).
-
----
-
 ## Step 0 — Two OpenELIS settings, before anything else
 
 **Neither is a code change.** Both are laboratory administration on the stock
@@ -103,7 +61,8 @@ returned `"false"` until the container was restarted.
 Same page. With it on, an accessioner who does not know when the specimen was
 drawn gets the **arrival** time stamped in as the collection time — worse than a
 blank, because it is indistinguishable from an observed value and a clinician
-will judge how current a result is by it.
+will judge how current a result is by it. See
+[Step 3b](#step-3b--patient-class-decides-the-collection-workflow).
 
 ---
 

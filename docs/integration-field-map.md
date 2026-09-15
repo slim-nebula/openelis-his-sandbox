@@ -484,6 +484,20 @@ and a HIS built on this boundary should tell whoever makes the correction that i
 did not propagate rather than let them assume it did. Filed as
 [07](upstream-issues/07-patient-name-never-refreshed.md).
 
+**Defect 6 — an order cannot be cancelled over FHIR.** `TaskInterpreterImpl`
+assigns `orderType = OrderType.REQUEST` unconditionally on the FHIR path
+(`:147`, tag `3.2.2.0`). Nothing in the `Task` or the `ServiceRequest` is
+consulted — not `Task.status`, not `Task.intent`, not `ServiceRequest.status`,
+all of which can carry a cancellation. OpenELIS has a complete cancellation
+path, reachable from HL7 and unreachable from FHIR.
+
+**What this costs a HIS to know up front:** an order placed over this boundary
+cannot be withdrawn. There is no message to send and no error saying so — a
+cancellation sent as a revised order simply arrives as a *second* order. A HIS
+built on this integration must either keep cancellation as a telephone call to
+the laboratory, or treat a cancelled order as one the laboratory will still run.
+Filed as [06](upstream-issues/06-fhir-cannot-cancel-an-order.md).
+
 **Not filed:** `?ID=` lost by the Enter Order button. One unreproduced occurrence
 against code with no async gap; filing it invites a "cannot reproduce" close that
 makes the other three easier to dismiss.
