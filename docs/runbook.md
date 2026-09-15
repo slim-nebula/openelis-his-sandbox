@@ -136,16 +136,27 @@ bookkeeping: an order becomes a FHIR `Task`, a released report becomes a row the
 HIS can display. If it stops, nothing is lost — orders queue in Kafka and results
 queue in OpenELIS. **What matters is how long it stops for**, not that it stopped.
 
-### The four things it does on a timer
+### The six things it does in the background
 
-Knowing these answers most "why has nothing happened yet" questions.
+Knowing these answers most "why has nothing happened yet" questions. The first
+delay is measured from process start, so after a restart nothing below has
+happened yet — which is the commonest reason a thing looks broken when it is
+merely young.
 
 | Worker | Cadence | What it does |
 |---|---|---|
 | Order consumer | continuous | reads `lab.order.created`, publishes a FHIR Task |
 | Result correlator | every **10s**, first run 15s after start | matches pushed results to orders |
+| Progress tracker | every **15s**, first run 20s after start | turns what OpenELIS pushes into `labProgress` and the accession number |
+| Integration gauges | every **30s**, first run 20s after start | refreshes the four gauges the alerts read |
 | Export monitor | every `EXPORT_CHECK_MINUTES` (**5m**), first run 1m after start | asks OpenELIS whether it is still pushing |
 | Retention sweep | every `RETENTION_SWEEP_HOURS` (**24h**), first run 5m after start | deletes aged rows |
+
+The gauges are the one to remember: they are **absent**, not zero, until that
+first refresh succeeds. A `/metrics` scrape in the first twenty seconds after a
+restart shows no `bridge_*` gauges at all, and that is deliberate — an absent
+metric breaks an alert expression instead of answering it with a reassuring
+zero.
 
 OpenELIS polls the bridge on **its own** schedule — `OE_REMOTE_POLL_FREQUENCY`,
 default 30s. The bridge cannot make that happen sooner.
