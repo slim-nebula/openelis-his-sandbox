@@ -244,14 +244,14 @@ of the three the order actually came from.**
 
 #### Carrying it to the laboratory
 
-Today the facility reaches `his.lab_orders` and the bridge, and stops there —
-`order.mapper.ts` does not reference it, and it appears in none of the resources
-we publish. Until it does, the Referring Site is typed by hand at accessioning on
-every order.
+**The bridge sends it.** `order.mapper.ts` publishes the site as a `Location` and
+references it from `Task.location`; OpenELIS creates the referring organization
+on first import and pre-fills the Referring Site from then on. This used to be
+typed by hand on every order.
 
-Closing that is a change to the mapper, and the deployed OpenELIS 3.2.2.0
-bytecode says exactly what it has to send. There are **two** routes in, and they
-are not equally cheap:
+What follows is why it is built the way it is, because the obvious route is the
+wrong one. The deployed OpenELIS 3.2.2.0 bytecode offers **two**, and they are
+not equally cheap:
 
 **Route A — `Task.restriction.recipient[0]`, an Organization.** On the
 accessioning screen, `LabOrderSearchProvider` reads that reference, fetches it
@@ -289,27 +289,43 @@ when the recipient path yields nothing, `addRequestingOrg` falls back to
 `Task.location` and looks it up by the same `fhir_uuid`, emitting the
 organization's internal id and name for the wizard to prefill.
 
-So the whole mechanism is:
+So the mechanism, and what the bridge does:
 
-1. Give every referring site a **stable UUID** — one you mint once and keep.
+1. Derive a **stable UUID** per site — `locationIdFor` does it the same way as
+   every other resource id, v5 over `location|{siteKey}`.
 2. Publish a `Location` with that id and the site's name in `Location.name`.
-3. Reference it from `Task.location`.
+3. Reference it from `Task.location`, published after the Location so it is
+   readable when OpenELIS dereferences it.
 
-First import creates the referring organization, named correctly, active, and of
-the right type. Every import after that prefills the Referring Site.
+#### What the site key must be
+
+This is the decision to get right, because it is **permanent**: OpenELIS keys its
+organization on this uuid for ever after, so a key that changes grows a *second*
+clinic for a place that already had one and silently splits its report routing.
+
+In this sandbox the key is `his.facilities.facility_code`, because the fixture
+has nothing else. **In your HIS it must be the table and the primary key** —
+`branch|5`, `ward|12`, `bunit|7`. Reading the estate's own schema:
+
+| | |
+|---|---|
+| all three tables key on `id Int @id @default(autoincrement())` | the id is the identity; name and code are display |
+| ids are **per table** | branch 5 and ward 5 are different places, so the table has to be in the key |
+| `code` carries **no unique constraint** anywhere in the 50-model schema | a key that can collide is not a key |
+| `code` is **nullable** on `business_units` | and a key that can be absent is not a key either |
+
+`name` is also nullable on all three, so the mapper publishes **no Location at
+all** when there is no name — see below.
 
 #### Proven on this stack
 
-Not inferred — run end to end on 15 September 2026 against stock OpenELIS
-3.2.2.0, with **no laboratory administration of any kind**. A `Location` named
-`Obygaine Dermatology` was published to the bridge's FHIR store, referenced from
-`Task.location`, and one order placed.
-
-OpenELIS imported it 35 seconds later and created the organization itself:
+Run end to end on 15 September 2026 against stock OpenELIS 3.2.2.0, with **no
+laboratory administration of any kind**. One ordinary order placed against
+`FAC-003`. OpenELIS created the organization itself:
 
 ```
- id |         name          | code | fhir_uuid                            | org_type
-  4 | Obygaine Dermatology  | null | e319a15a-0c34-413a-9f12-65463fa0eefa |    5
+ id |     name     | code | fhir_uuid                            | org_type
+  5 | Medical Ward | null | 94205cc2-911f-587d-a5f0-393c3aee95b2 |    5
 ```
 
 Type 5 is `referring clinic`. Note `code` is **null** — further confirmation that
@@ -319,9 +335,9 @@ The accessioning screen then received it. Querying the endpoint the wizard itsel
 calls, `ajaxQueryXML?provider=LabOrderSearchProvider&orderNumber=…`:
 
 ```json
-"requestingOrg": { "fhir-id": "e319a15a-0c34-413a-9f12-65463fa0eefa",
-                   "name": "Obygaine Dermatology",
-                   "id": 4 }
+"requestingOrg": { "fhir-id": "94205cc2-911f-587d-a5f0-393c3aee95b2",
+                   "name": "Medical Ward",
+                   "id": 5 }
 ```
 
 and the React form maps that straight onto the field the technician would
@@ -333,12 +349,27 @@ K = (e, t) => { e.sampleOrderItems = { ...e.sampleOrderItems,
 //  called as:  n.requestingOrg && K(r, n.requestingOrg)
 ```
 
-So all three links hold: Location → organization row → prefilled Referring Site.
+All three links hold: Location → organization row → prefilled Referring Site.
+`scripts/probe-referring-site.sh` re-runs the check against a future release.
 
-> **One caution that remains.** `UUID.fromString` on the Location id is
-> unguarded, exactly as it is for `Practitioner.id` — a non-UUID site code like
-> `FAC-001` throws inside the import and the order never lands. The id must be a
-> UUID; put your own site code in `Location.identifier` if you want it carried.
+#### Three things to know before you switch it on
+
+> **The Location id must be a UUID.** `UUID.fromString` on it is unguarded,
+> exactly as for `Practitioner.id` — a raw site code like `FAC-001` throws inside
+> the import and the order never lands. Your own code rides on
+> `Location.identifier`, where it is readable and harmless.
+
+> **No name means no Location.** OpenELIS guards only the name assignment
+> (`if (location.hasName())`), so a nameless Location still creates the
+> organization — an unnamed one, which the accessioner reads as a blank field
+> indistinguishable from a rendering fault. The mapper sends nothing instead,
+> which leaves them typing it, which is honest. Given `name` is nullable in your
+> schema, this case is real.
+
+> **This writes into the laboratory's records.** It is the only resource we
+> publish that does. A bad site list becomes a bad clinic list, and nothing
+> prunes it — validate the list before go-live, and tell the laboratory it will
+> happen.
 
 ### Step 3b — Patient class decides the collection workflow
 
@@ -993,6 +1024,14 @@ make auth             tokens, revocation, degraded mode, audit
 make monitoring       the gauges and whether the alerts can fire
 make patient-refresh  a known upstream limitation, held under test
 ```
+
+> **`make negative` is not safely re-runnable back to back.** It proves the
+> outage paths by actually stopping Kafka, Redis, his-api and OpenELIS, and it
+> restores them — but a second run started before everything has truly settled
+> fails checks that have nothing to do with the code. We watched one clean run
+> give 56/56, and immediate re-runs give 54, then 49, then 48, purely from
+> compounding restart lag. Restart the stack between runs, or read the first
+> result. A failure here is worth re-testing from clean before believing it.
 
 If `catalogue-test` fails, stop. A catalogue problem produces **silently wrong
 test binding**, which is worse than an outage because nothing looks broken.

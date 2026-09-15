@@ -279,6 +279,11 @@ export interface IBridgeOrderPayload {
   /** Their licence number, published as a second Practitioner identifier. */
   orderingProviderLicense: string | null;
   facilityCode: string;
+  /**
+   * The site's display name, for the referring Location the bridge publishes.
+   * Null when the site has been retired since the order was placed.
+   */
+  facilityName: string | null;
   priority: string;
   /** OUTPATIENT or INPATIENT — see 013_specimen_collection.sql. */
   patientClass: string;

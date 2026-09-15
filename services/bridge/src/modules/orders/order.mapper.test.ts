@@ -62,6 +62,7 @@ const order = (overrides: Partial<IHisOrder> = {}): IHisOrder => ({
   orderingProviderHcpId: '9001',
   orderingProviderLicense: 'ML-9001',
   facilityCode: 'FAC-001',
+  facilityName: 'Obygaine Clinic',
   priority: 'routine',
   patientClass: 'OUTPATIENT',
   collectedAt: null,
@@ -179,5 +180,82 @@ describe('mapOrder', () => {
     assert.equal(priorityOf('urgent'), 'stat');
     assert.equal(priorityOf('asap'), 'asap');
     assert.equal(priorityOf('whatever'), 'routine');
+  });
+});
+
+/**
+ * THE REFERRING SITE.
+ *
+ * This one resource has a side effect inside the laboratory's own database:
+ * on first import OpenELIS CREATES a referring-clinic organization keyed on the
+ * Location's uuid, then matches every later order against it. Verified end to
+ * end against 3.2.2.0 — see scripts/probe-referring-site.sh.
+ *
+ * That makes the id permanent in a way the other resource ids are not. These
+ * tests exist to stop it drifting, because drift here does not fail: it
+ * quietly grows a SECOND clinic in the laboratory's records for a place that
+ * already had one, and splits that site's report routing in half.
+ */
+describe('the referring site', () => {
+  const locationOf = (o = order()): Record<string, unknown> | undefined =>
+    mapOrder(o, OWNER, 'Lab', 'DBS').referringSite as Record<string, unknown> | undefined;
+
+  test('is published as a Location, named for the site', () => {
+    const loc = locationOf();
+    assert.equal(loc?.resourceType, 'Location');
+    assert.equal(loc?.name, 'Obygaine Clinic', 'this becomes the organization name in the lab');
+    assert.equal(loc?.status, 'active');
+  });
+
+  test('the id is a UUID, because OpenELIS calls UUID.fromString on it', () => {
+    // Unguarded, exactly as for Practitioner.id. A raw "FAC-001" throws inside
+    // the import and the order never reaches the laboratory at all.
+    assert.match(String(locationOf()?.id), /^[0-9a-f-]{36}$/);
+  });
+
+  test('the Task points at it, which is what OpenELIS actually reads', () => {
+    const mapped = mapOrder(order(), OWNER, 'Lab', 'DBS');
+    const location = mapped.task.location as { reference: string };
+    assert.equal(location.reference, `Location/${String(mapped.referringSite?.id)}`);
+  });
+
+  test('IDENTITY IS THE SITE KEY, NOT THE NAME — a rename must not make a new clinic', () => {
+    const before = locationOf(order({ facilityName: 'Obygaine Clinic' }));
+    const renamed = locationOf(order({ facilityName: 'Obygaine Dermatology' }));
+    assert.equal(before?.id, renamed?.id, 'same facility code is the same place');
+    assert.notEqual(before?.name, renamed?.name, 'but the new name is carried');
+  });
+
+  test('a different site is a different Location', () => {
+    assert.notEqual(locationOf()?.id, locationOf(order({ facilityCode: 'FAC-003' }))?.id);
+  });
+
+  test('the site code rides on identifier, never on the id', () => {
+    const identifiers = locationOf()?.identifier as { system: string; value: string }[];
+    assert.equal(identifiers[0]?.value, 'FAC-001');
+    assert.ok(!String(locationOf()?.id).includes('FAC-001'));
+  });
+
+  test('NO NAME MEANS NO LOCATION, rather than a nameless one', () => {
+    // OpenELIS guards only the name assignment, so a nameless Location still
+    // creates the organization — an unnamed one the accessioner reads as a
+    // blank field, indistinguishable from a rendering fault. Sending nothing
+    // leaves them typing it, which is honest.
+    const mapped = mapOrder(order({ facilityName: null }), OWNER, 'Lab', 'DBS');
+    assert.equal(mapped.referringSite, null);
+    assert.equal(mapped.task.location, undefined);
+    assert.ok(!mapped.all.some((r) => r.resourceType === 'Location'));
+  });
+
+  test('a blank name counts as no name', () => {
+    assert.equal(mapOrder(order({ facilityName: '   ' }), OWNER, 'Lab', 'DBS').referringSite, null);
+  });
+
+  test('the Location is published BEFORE the Task that references it', () => {
+    // OpenELIS dereferences Task.location during import, so the Location has to
+    // be readable before the Task becomes visible to a poll.
+    const all = mapOrder(order(), OWNER, 'Lab', 'DBS').all.map((r) => r.resourceType);
+    assert.ok(all.indexOf('Location') < all.indexOf('Task'));
+    assert.equal(all[all.length - 1], 'Task', 'the Task is still published last');
   });
 });

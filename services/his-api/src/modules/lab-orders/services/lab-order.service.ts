@@ -78,6 +78,12 @@ export class LabOrderService {
         row.ordering_provider_license === null || row.ordering_provider_license === undefined
           ? null : String(row.ordering_provider_license),
       facilityCode: String(row.facility_code),
+      // Null when the site has since been retired, and null is the honest
+      // answer: the bridge publishes no referring Location rather than one
+      // with no name, which OpenELIS would turn into a nameless organization.
+      facilityName:
+        row.facility_name === null || row.facility_name === undefined
+          ? null : String(row.facility_name),
       priority: String(row.priority),
       patientClass: String(row.patient_class ?? 'OUTPATIENT'),
       collectedAt: toIso(row.collected_at),

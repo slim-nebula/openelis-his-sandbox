@@ -1,4 +1,4 @@
-import { practitionerIdFor, specimenIdFor, taskIdFor } from '@fhir/identity.js';
+import { locationIdFor, practitionerIdFor, specimenIdFor, taskIdFor } from '@fhir/identity.js';
 import type { FhirResource } from '@fhir/types.js';
 import type { IHisOrder, IMappedOrder } from './types/order.types.js';
 
@@ -109,6 +109,42 @@ export const splitName = (displayName: string): { given: string | null; family: 
  * account, which would put a login on a laboratory report as though it were a
  * person.
  */
+/**
+ * The referring site — which clinic or ward sent the sample, where the report
+ * goes back, and who the laboratory telephones about a problem.
+ *
+ * Published as a Location and referenced from Task.location. OpenELIS reads it
+ * during import and, if no organization already carries that uuid, CREATES one:
+ * named from Location.name, marked active, and linked to the "referring clinic"
+ * organization type. The accessioning screen then resolves the same uuid back
+ * and pre-fills the Referring Site the technician types today.
+ *
+ * Verified end to end against stock 3.2.2.0 on 15 September 2026 — see
+ * scripts/probe-referring-site.sh, which re-runs it.
+ *
+ * NO NAME MEANS NO LOCATION. OpenELIS guards only the name assignment, so a
+ * nameless Location still creates the organization — just an unnamed one, which
+ * the accessioner sees as a blank field indistinguishable from a bug. Sending
+ * nothing leaves them typing it, which is today's behaviour and is honest.
+ *
+ * The site's own code is deliberately NOT the identifier here: it goes on
+ * Location.identifier, where it is readable, while identity rests on the
+ * derived uuid. See locationIdFor.
+ */
+const buildReferringSite = (order: IHisOrder): FhirResource | null => {
+  const siteKey = order.facilityCode?.trim();
+  const name = order.facilityName?.trim();
+  if (!siteKey || !name) return null;
+
+  return {
+    resourceType: 'Location',
+    id: locationIdFor(siteKey),
+    status: 'active',
+    name,
+    identifier: [{ system: `${OE_SYSTEM}/referringSite`, value: siteKey }],
+  };
+};
+
 const buildOrderingClinician = (order: IHisOrder): FhirResource | null => {
   const hcpId = order.orderingProviderHcpId?.trim();
   const display = order.orderingProvider?.trim();
@@ -232,6 +268,7 @@ export const mapOrder = (
   }
 
   const orderingClinician = buildOrderingClinician(order);
+  const referringSite = buildReferringSite(order);
 
   // Represents the receiving laboratory, and this one DOES have to exist:
   // Task.owner is how OpenELIS finds orders addressed to it
@@ -324,6 +361,14 @@ export const mapOrder = (
     owner: { reference: labOwnerReference },
   };
 
+  // Absent when the HIS named no site, or named one with no display name.
+  // OpenELIS dereferences this during import (getTaskLocationFromServer), so
+  // the Location has to be readable before the Task is visible to a poll —
+  // which the ordering of `all` below is what guarantees.
+  if (referringSite) {
+    task.location = { reference: `Location/${referringSite.id as string}` };
+  }
+
   return {
     task,
     serviceRequest,
@@ -331,8 +376,15 @@ export const mapOrder = (
     specimen,
     labOwner,
     orderingClinician,
-    all: orderingClinician
-      ? [patient, labOwner, orderingClinician, specimen, serviceRequest, task]
-      : [patient, labOwner, specimen, serviceRequest, task],
+    referringSite,
+    all: [
+      patient,
+      labOwner,
+      ...(orderingClinician ? [orderingClinician] : []),
+      ...(referringSite ? [referringSite] : []),
+      specimen,
+      serviceRequest,
+      task,
+    ],
   };
 };

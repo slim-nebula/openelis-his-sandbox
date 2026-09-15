@@ -515,12 +515,18 @@ export class LabOrderModel {
               -- Practitioner on; ordering_provider_id stays for the audit trail.
               o.ordering_provider_hcp_id, o.ordering_provider_license,
               o.facility_code, o.priority,
+              -- The site's display name, LEFT JOINed because facility_code is
+              -- validated on the way in and then deliberately not a foreign
+              -- key: a site can be retired without rewriting order history, and
+              -- an order that outlives its site must still reach the bridge.
+              f.facility_name,
               -- What the ward recorded, for an inpatient draw. Null for an
               -- outpatient, whose collection the laboratory observes itself.
               o.patient_class, o.collected_at,
               o.created_at, o.patient_id
          FROM his.lab_orders o
          JOIN his.test_catalogue c ON c.test_code = o.test_code
+         LEFT JOIN his.facilities f ON f.facility_code = o.facility_code
         WHERE o.order_id = $1`,
       [orderId],
     );

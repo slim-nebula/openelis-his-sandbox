@@ -19,17 +19,22 @@ alongside it; this document is the *what*, that one is the *how*.
 
 ## 1. The shape of it
 
-A HIS order becomes **six FHIR resources**. OpenELIS polls for the `Task`,
-follows its references, and imports the order.
+A HIS order becomes up to **seven FHIR resources**. OpenELIS polls for the
+`Task`, follows its references, and imports the order.
 
 ```
 Task ──basedOn──▶ ServiceRequest ──requester──▶ Practitioner
  │                      │
  │                      ├──subject────▶ Patient
  │                      └──specimen───▶ Specimen
- └──for────────▶ Patient
- └──owner──────▶ Organization   ← the laboratory's routing address
+ ├──for────────▶ Patient
+ ├──owner──────▶ Organization   ← the laboratory's routing address
+ └──location───▶ Location       ← the referring site the order came from
 ```
+
+Two are conditional. `Practitioner` is absent when the order carries no
+identified clinician, and `Location` is absent when the site has no name — in
+both cases absence is the honest statement rather than a gap to fill.
 
 **Exactly one identifier has to survive the round trip: the order number.**
 Everything else is re-derived locally. If your order numbers are unique,

@@ -129,9 +129,9 @@ up front saves re-discovering them later.
   general-purpose FHIR server.
 - **No authentication between services inside the sandbox.** It relies on
   network isolation; Kong is where authentication would attach.
-- **Referring Site is not populated.** OpenELIS has no `Organization` row
-  carrying a facility code, so the ordering site does not reach the laboratory's
-  screen. It is the one functional gap the audit left open.
+- **No authentication on the FHIR endpoint itself.** It is protected by mutual
+  TLS at the transport layer instead, because OpenELIS cannot authenticate to a
+  remote FHIR source at all.
 
 ---
 

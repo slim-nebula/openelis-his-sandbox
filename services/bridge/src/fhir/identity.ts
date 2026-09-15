@@ -49,10 +49,34 @@ export const deterministicUuid = (name: string): string => {
 };
 
 /**
- * The three names the bridge derives ids from. Kept together because the STRING
+ * The four names the bridge derives ids from. Kept together because the STRING
  * is the contract, not just the algorithm: changing "task|" to "Task|" would
  * republish every order in the system under new ids.
  */
 export const taskIdFor = (orderId: string): string => deterministicUuid(`task|${orderId}`);
 export const specimenIdFor = (orderId: string): string => deterministicUuid(`specimen|${orderId}`);
 export const practitionerIdFor = (hcpId: string): string => deterministicUuid(`practitioner|${hcpId}`);
+
+/**
+ * The referring site, as a Location id.
+ *
+ * Derived rather than taken from the HIS because OpenELIS calls
+ * UUID.fromString on this id with no guard, exactly as it does for
+ * Practitioner.id — a site key like "FAC-001" or "branch|5" would throw inside
+ * the import and the order would never reach the laboratory.
+ *
+ * It is also permanent in a way the other three are not. On first import
+ * OpenELIS CREATES an organization keyed on this uuid
+ * (FhirApiWorkFlowServiceImpl, verified end to end against 3.2.2.0) and matches
+ * every later order against it. So the site key must be something that does not
+ * change when a clinic is renamed or its code edited, or the laboratory grows a
+ * second organization for the same place and its report routing silently splits.
+ *
+ * In this sandbox the key is his.facilities.facility_code, because the fixture
+ * has nothing else. In a real HIS it must be the table and the PRIMARY KEY —
+ * "branch|5", "ward|12", "bunit|7" — because ids are per-table (branch 5 and
+ * ward 5 are different places), and because in the estate's own schema `code`
+ * carries no unique constraint and is nullable on business units. A key that
+ * can collide or be absent is not a key.
+ */
+export const locationIdFor = (siteKey: string): string => deterministicUuid(`location|${siteKey}`);

@@ -55,7 +55,7 @@ sequenceDiagram
     Note over BR, API: Direct on the sandbox network.<br/>Kong does not route /internal/*
     API->>HDB: SELECT order + catalogue + patient
     API-->>BR: order payload incl. LOINC + specimen type
-    BR->>BR: Map to Patient, Organization (the lab),<br/>Practitioner (ordering clinician),<br/>Specimen, ServiceRequest, Task
+    BR->>BR: Map to Patient, Organization (the lab),<br/>Practitioner (ordering clinician), Location (referring site),<br/>Specimen, ServiceRequest, Task
     Note right of BR: Resource ids are UUIDv5 of the order id,<br/>so a replay updates instead of duplicating
     BR->>BDB: upsert fhir_resources<br/>+ order_tracking task_status=requested
     BR->>K: publish lab.order.sent SENT_TO_LIS

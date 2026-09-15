@@ -39,6 +39,17 @@ export interface IHisOrder {
    */
   orderingProviderLicense: string | null;
   facilityCode: string;
+  /**
+   * The site's display name, which becomes Location.name and — on first import —
+   * the name of the organization OpenELIS creates for it.
+   *
+   * Null is a real answer and is handled by publishing no Location at all. A
+   * Location with no name still creates the organization, because OpenELIS
+   * guards only the name assignment (`if (location.hasName())`), leaving a
+   * nameless row the accessioner sees as a blank Referring Site — which looks
+   * like a rendering fault rather than missing data.
+   */
+  facilityName: string | null;
   priority: string;
   /**
    * OUTPATIENT or INPATIENT. Only the inpatient path carries a collection time
@@ -99,9 +110,20 @@ export interface IMappedOrder {
   labOwner: FhirResource;
   orderingClinician: FhirResource | null;
   /**
+   * The referring site, as a Location. Null when the HIS gave us no site name.
+   *
+   * Unlike every other resource here this one has a side effect in the
+   * laboratory's own records: OpenELIS creates a referring-clinic organization
+   * from it the first time it sees the uuid. That is the point — it retires the
+   * hand-typing at accessioning — but it means a bad site list becomes a bad
+   * clinic list, so the name is worth validating before it is sent.
+   */
+  referringSite: FhirResource | null;
+  /**
    * Publication order matters: OpenELIS dereferences ServiceRequest.requester
    * while importing, so the Practitioner has to be readable before the
-   * ServiceRequest that points at it is visible to a poll.
+   * ServiceRequest that points at it is visible to a poll. The Location is read
+   * from Task.location during the same import and goes out on the same rule.
    */
   all: FhirResource[];
 }
