@@ -474,7 +474,7 @@ upstream defect and it will not stop on its own.** A Task whose import throws is
 never acknowledged, so it stays `status=requested` and the next poll picks it up
 again — one clean rebuild left a single order being re-imported every 30 seconds
 for twenty-six minutes, and one of those passes created a **duplicate patient
-record**. Full evidence: [data-flow.md §6](data-flow.md#6-where-the-test-menu-comes-from).
+record**. Full evidence: [architecture.md §9](architecture.md#where-the-test-menu-comes-from).
 
 ```bash
 # Is this happening? A count that keeps climbing for one Task is the signature.

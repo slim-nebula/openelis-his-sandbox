@@ -1,13 +1,13 @@
 /* ---------------------------------------------------------------------------
- * Renders docs/data-flow.md into a standalone HTML page for publishing.
+ * Renders docs/architecture.md into a standalone HTML page for publishing.
  *
- * docs/data-flow.md stays the single source of truth — this script only wraps
+ * docs/architecture.md stays the single source of truth — this script only wraps
  * it, so the diagrams cannot drift between the repo copy and the shared page.
  * Mermaid fences are passed through as <pre class="mermaid"> blocks, which the
  * artifact runtime renders natively.
  *
  * Requires `marked` on the module path:
- *   npm i marked && node scripts/build-dataflow-page.mjs <output.html>
+ *   npm i marked && node scripts/build-architecture-page.mjs <output.html>
  * ------------------------------------------------------------------------- */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -15,9 +15,9 @@ import { fileURLToPath } from 'node:url';
 import { marked } from 'marked';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const source = fs.readFileSync(path.join(root, 'docs/data-flow.md'), 'utf8');
+const source = fs.readFileSync(path.join(root, 'docs/architecture.md'), 'utf8');
 const out = process.argv[2];
-if (!out) throw new Error('usage: build-dataflow-page.mjs <output.html>');
+if (!out) throw new Error('usage: build-architecture-page.mjs <output.html>');
 
 const escape = (s) =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

@@ -34,10 +34,9 @@ implements — no shortcut endpoints, no shared database.
 
 | You are… | Read |
 |---|---|
-| new to this | **[docs/architecture.md](docs/architecture.md)** — what runs and why |
+| new to this | **[docs/architecture.md](docs/architecture.md)** — what runs, why, and how an order travels |
 | wiring your real HIS to it | **[docs/integration-guide.md](docs/integration-guide.md)** — step by step, and what production still needs |
 | deciding what an order must carry | [docs/integration-contract.md](docs/integration-contract.md) |
-| following an order through the system | [docs/data-flow.md](docs/data-flow.md) |
 | running it, or fixing it at 3am | [docs/runbook.md](docs/runbook.md) |
 | assessing risk before go-live | [docs/security.md](docs/security.md) |
 | matching the estate's infra contracts | [docs/platform-integration.md](docs/platform-integration.md) |
@@ -88,7 +87,7 @@ make progress         laboratory progress within an order
 
 The twelve suite targets run unattended and are the ones to trust before a
 change: **355 checks, currently 0 failures.** `make unit` is separate and needs
-nothing running — 53 assertions over the pure functions whose failure would be
+nothing running — 64 assertions over the pure functions whose failure would be
 silent, chiefly the deterministic resource ids and the decimal precision of a
 result. `make e2e` deliberately pauses for a human
 to release a result in the OpenELIS UI, because that step is a real laboratory
