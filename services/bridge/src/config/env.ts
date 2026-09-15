@@ -59,15 +59,21 @@ const redisTarget = (): { host: string; port: number } => {
  * handed to pg as a URL. Parsing into fields also sidesteps URL-encoding a
  * generated password, which is a real trap in the other direction.
  */
-const databaseConnection = (): {
+export interface DatabaseConnection {
   connectionString?: string;
   host?: string;
   port?: number;
   database?: string;
   user?: string;
   password?: string;
-} => {
-  const raw = required('BRIDGE_DB_CONNECTION');
+}
+
+/**
+ * Exported, and taking the raw string rather than reading the environment, so
+ * that it can be tested as the pure function it is. `config` below supplies
+ * `required('BRIDGE_DB_CONNECTION')`.
+ */
+export const parseDatabaseConnection = (raw: string): DatabaseConnection => {
   if (!raw.includes('=')) return { connectionString: raw };
 
   const parts = new Map<string, string>();
@@ -92,7 +98,7 @@ export const config = {
   serviceVersion: env('SERVICE_VERSION', '1.0.0'),
   port: num('SERVICE_PORT', '8080'),
 
-  database: databaseConnection(),
+  database: parseDatabaseConnection(required('BRIDGE_DB_CONNECTION')),
 
   hisApiBaseUrl: env('HIS_API_INTERNAL_URL', 'http://his-api:8080'),
 

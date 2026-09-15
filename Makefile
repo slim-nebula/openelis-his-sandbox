@@ -115,6 +115,9 @@ urls: ## Print the entry points
 	@echo "  HIS database           psql -h localhost -p $(HIS_DB_PUBLISHED_PORT) -U $(HIS_DB_USER) -d $(HIS_DB_NAME)"
 	@echo "  OpenELIS database      psql -h localhost -p $(OE_DB_PUBLISHED_PORT) -U $(OE_DB_USER) -d $(OE_DB_NAME)"
 
+unit: ## Unit tests for the bridge's pure functions (no stack required)
+	@cd services/bridge && npm test
+
 smoke: ## Phase 1 - platform smoke test
 	@bash scripts/test-smoke.sh
 
