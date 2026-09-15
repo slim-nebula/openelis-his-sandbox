@@ -204,7 +204,7 @@ vocabularies.
 The one subtlety is that "the specimen" needs two forms — the name the doctor
 reads (`Whole Blood`) and the local abbreviation OpenELIS matches on
 (`Whole Bld`). Both are synced. Getting this wrong binds the wrong test
-*silently*; see [integration-contract.md](integration-contract.md#3-why-the-specimen-is-load-bearing).
+*silently*; see [integration-contract.md](integration-contract.md#45-the-specimen-must-carry-the-local-abbreviation).
 
 ---
 

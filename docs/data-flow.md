@@ -213,7 +213,7 @@ on:
 
 The first row is an origin check rather than a credential for a reason that is
 not going to change: OpenELIS 3.2.1.11 has no way to send one. The evidence is
-in [`security.md` §3](security.md#3-why-the-fhir-endpoint-has-no-token); the
+in [`security.md` §3](security.md#3-why-the-fhir-endpoint-has-no-token--and-how-it-is-secured-instead); the
 short version is that its `BasicAuthInterceptor` is gated on the target being
 its own local FHIR store, and there is no configuration key for remote-source
 credentials at all. Demanding a token on `/fhir` would not secure the
@@ -499,7 +499,7 @@ exactly `<oeFhirSystem>/sampleType` and matches its code against
 (`Whole Blood` is stored as `Whole Bld`). Miss it and OpenELIS binds the first
 active test on the LOINC and reports success. The catalogue therefore syncs both
 forms, and the order carries the abbreviation alongside SNOMED. Full detail in
-[integration-contract.md](integration-contract.md#3-why-the-specimen-is-load-bearing).
+[integration-contract.md](integration-contract.md#45-the-specimen-must-carry-the-local-abbreviation).
 
 **Sync is manual.** A clinic changes its menu when it commissions an analyser, a
 few times a year, so a timer would run thousands of times to catch that and
@@ -773,7 +773,7 @@ Two more, from the dedicated publishers `publishReferralLost` and
 `REFERRAL_LOST` should not be a quiet grey note. A specimen that never arrived
 means somebody needs another needle, and nobody discovers that by watching a
 screen — it belongs with the correction alerting in
-[integration-guide.md § Step 6b](integration-guide.md#step-6b--corrections-need-an-alert-not-a-badge).
+[integration-guide.md § Step 6b](integration-guide.md#step-6c--corrections-need-an-alert-not-a-badge).
 
 ### The one instruction that matters now
 
