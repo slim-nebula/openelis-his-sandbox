@@ -85,7 +85,7 @@ const unauthorized = (
  * middleware logs a warning inside the per-request catch block. At any real
  * rate that is thousands of identical lines a minute, on a Kafka topic shared
  * with every other service — the same failure mode the framework log filter
- * exists to prevent (docs/platform-integration.md, §3).
+ * exists to prevent (docs/operations.md, §10.3).
  */
 let revocationReachable = true;
 

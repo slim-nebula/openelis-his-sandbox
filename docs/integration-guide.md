@@ -977,9 +977,12 @@ bytecode:
 public void pollForRemoteTasks()
 ```
 
-**Two minutes**, and the property is commented out in `application.properties`,
-so the default is what runs. Measured on this stack at idle: five mutually
-authenticated FHIR requests per minute.
+Two minutes is only the **fallback**. Read the running value, not the bytecode:
+this stack polls every **30 s**, set from `OE_REMOTE_POLL_FREQUENCY` in `.env`
+and rendered into `common.properties`, which the container mounts over the stock
+file. The copy inside the WAR has the property commented out and looks unset,
+which is a good way to talk yourself into the wrong number — measure instead. At
+idle this stack makes five mutually authenticated FHIR requests per minute.
 
 Two details in that annotation matter. `fixedRate`, not `fixedDelay`, means the
 next poll starts on schedule whether or not the previous one finished — combined

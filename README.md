@@ -37,9 +37,8 @@ implements — no shortcut endpoints, no shared database.
 | new to this | **[docs/architecture.md](docs/architecture.md)** — what runs, why, and how an order travels |
 | wiring your real HIS to it | **[docs/integration-guide.md](docs/integration-guide.md)** — step by step, and what production still needs |
 | deciding what an order must carry | [docs/integration-contract.md](docs/integration-contract.md) |
-| running it, or fixing it at 3am | [docs/runbook.md](docs/runbook.md) |
+| running it, or fixing it at 3am | [docs/operations.md](docs/operations.md) |
 | assessing risk before go-live | [docs/security.md](docs/security.md) |
-| matching the estate's infra contracts | [docs/platform-integration.md](docs/platform-integration.md) |
 | **improving your own HIS codebase** | **[docs/his-findings.md](docs/his-findings.md)** — defects and designs found in `HIS Project`, with working code to copy |
 | changing OpenELIS itself | [openelis-patches/README.md](openelis-patches/README.md) |
 | looking at what we found in OpenELIS | [docs/upstream-issues/](docs/upstream-issues/) |
@@ -110,7 +109,7 @@ up front saves re-discovering them later.
   separation rather than by separate hosts.
 - **Patient names containing digits are rejected by OpenELIS**, and the order
   then retries indefinitely without ever failing. It is the one stall with no
-  error anywhere — see [docs/runbook.md](docs/runbook.md) and
+  error anywhere — see [docs/operations.md](docs/operations.md) and
   [upstream issue 07](docs/upstream-issues/07-patient-name-never-refreshed.md).
 - **An inpatient order can wait forever.** `AWAITING_COLLECTION` has no timeout,
   deliberately: expiring a real pending order because a nurse was busy would be

@@ -256,7 +256,7 @@ sequenceDiagram
 
     rect rgb(252, 245, 230)
     Note over OE, ODB: C · OpenELIS pulls the order — it is never pushed
-    loop every 120s by default
+    loop every OE_REMOTE_POLL_FREQUENCY — 30s here
         OE->>BR: GET /fhir/Task?status=requested&owner=Organization/{uuid}
     end
     BR-->>OE: searchset Bundle, and a delivery lease is taken
@@ -297,10 +297,19 @@ sequenceDiagram
 Three details matter more than they look:
 
 **OpenELIS pulls, we don't push.** The bridge holds the order and waits. That is
-OpenELIS's design, and it means the laboratory is never interrupted by us. The
-cadence is a Spring `@Scheduled(fixedRateString = "${…:120000}")` — two minutes,
-and `fixedRate` rather than `fixedDelay`, so a slow import does not delay the
-next poll and the two can overlap.
+OpenELIS's design, and it means the laboratory is never interrupted by us.
+
+The cadence is a Spring
+`@Scheduled(fixedRateString = "${org.openelisglobal.remote.poll.frequency:120000}")`.
+Two minutes is only the compiled-in fallback — **this stack runs 30 s**, set from
+`OE_REMOTE_POLL_FREQUENCY` in `.env` and rendered into `common.properties`, which
+the container mounts over the stock file. Read the running value there rather
+than from the WAR, where the property is commented out and looks unset. Measured
+at idle: five mutually authenticated FHIR requests per minute.
+
+`fixedRate` rather than `fixedDelay` matters too — a slow import does not delay
+the next poll, so with `@Async` the two can overlap. That is the mechanism behind
+[defect 01](upstream-issues/01-task-poll-not-idempotent.md).
 
 **Results correlate by a two-hop chain**, not by patient or timestamp. See §8.
 
@@ -717,7 +726,7 @@ in-house value as though the two were comparable.
 | new to this | this file |
 | wiring the real HIS | [integration-guide.md](integration-guide.md) |
 | deciding what to send | [integration-contract.md](integration-contract.md) |
-| running or fixing it | [runbook.md](runbook.md) — start with its alerts section |
+| running or fixing it | [operations.md](operations.md) — start with its alerts section |
 | assessing risk | [security.md](security.md) |
 | improving the real HIS | [his-findings.md](his-findings.md) |
 | judging whether it is any good | [archive/audit.md](archive/audit.md) — independent review and what it changed |
