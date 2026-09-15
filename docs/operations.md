@@ -684,13 +684,21 @@ The three things that break it, in order of likelihood:
    it trusts the chain, so a wrong name fails even with the CA present.
    `BRIDGE_FHIR_BASE` must use `bridge.openelis.org` — a SAN on the bridge's
    certificate, and an alias that exists only on the `integration` network.
-3. **OpenELIS's certificate changed.** certgen regenerates the keystore on a fresh
-   volume, and the bridge pins the old one. `make up` re-exports it every time and
-   the bridge re-reads the file on the next handshake, so this normally corrects
-   itself; to force it on a running stack, `make certs FORCE=true`. No bridge
-   restart is needed — the log says `Pinned the FHIR peer to …` when it picks the
-   new one up, and `Refused a client certificate` with the thumbprint while it has
-   not.
+3. **OpenELIS's certificate changed** — which in practice means the certgen
+   *image* changed, not that time passed. `make up` re-exports the peer
+   certificate every time and the bridge re-reads the file on the next
+   handshake, so this normally corrects itself; to force it on a running stack,
+   `make certs FORCE=true`. No bridge restart is needed — the log says
+   `Pinned the FHIR peer to …` when it picks the new one up, and
+   `Refused a client certificate` with the thumbprint while it has not.
+
+   > **`certgen` does not generate certificates.** It ships prebuilt keystores
+   > baked into the image and copies them into the volumes, so the peer
+   > certificate is a fixed property of the pinned digest. Deleting the volumes
+   > returns the *same* certificate, byte for byte. `make certs FORCE=true`
+   > rotates our own CA and re-exports OpenELIS's unchanged — which is a useful
+   > thing to know before reaching for it to fix an expiry. See
+   > [security.md §9](security.md#9-what-is-still-open).
 
 To bisect, turn it off: `BRIDGE_MTLS_ENABLED=false` and
 `BRIDGE_FHIR_BASE=http://bridge:8080/fhir`, then `make config` and restart both.

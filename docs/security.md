@@ -724,14 +724,43 @@ date (§3).
 
 Nothing is broken today and nothing will break on its own, which is exactly the
 problem: the condition is invisible, and it will stay invisible until someone
-turns on chain validation and discovers the integration stops. Two things follow:
+turns on chain validation and discovers the integration stops.
 
-- **Regenerate it.** `make certs FORCE=true` then `make trust-bridge`, which
-  restarts OpenELIS because it reads its truststore once at startup.
-- **Do not turn on `rejectUnauthorized` first.** With the peer certificate
-  expired, strict validation refuses the real OpenELIS and the laboratory stops
-  receiving orders — while every impostor in `make negative` is still refused
-  correctly, so the suite stays green and tells you nothing.
+**It cannot be fixed from this repository, and the obvious attempts do not
+work.** Tested on 2026-09-15:
+
+| Attempt | Result |
+|---|---|
+| `make certs FORCE=true` | Regenerates **our** CA and bridge certificate, then **re-exports the same expired peer certificate** — `init-mtls.sh` exports OpenELIS's cert from its truststore rather than issuing it. No change, and now the CA has rotated for nothing. |
+| Delete the certgen volumes and `make up` | Also no change. The certificate came back **byte-identical**, same `notBefore` to the second. |
+
+The reason is that `itechuw/certgen` does not generate anything. Its name is
+misleading: the image **ships prebuilt keystores baked into its layers**, dated
+`Jul 23 2025`, and the container copies them into the volumes. Pinned by digest,
+as it should be, that makes the certificate a fixed property of the image:
+
+```
+$ docker run --rm --entrypoint sh itechuw/certgen@sha256:e27a81… -c 'ls -la /etc/openelis-global'
+-rwxrwxrwx 1 root root 2589 Jul 23  2025 client_facing_keystore
+-rwxrwxrwx 1 root root 2589 Jul 23  2025 keystore
+-rwxrwxrwx 1 root root 1366 Jul 23  2025 truststore
+```
+
+So the real options are upstream's or your own:
+
+1. **A newer certgen image.** Moves the expiry; does not remove the problem,
+   since whatever it ships also has a fixed date.
+2. **Supply OpenELIS's keystore yourself**, from your PKI, and mount it in place
+   of the certgen volume. This is configuration rather than a code change to the
+   accredited component, and it is what a real deployment should do anyway —
+   see §9.
+3. **Leave it, knowingly.** Which is the current state, and is defensible only
+   because the peer is pinned by bytes.
+
+**Whichever you choose, do not turn on `rejectUnauthorized` first.** With the
+peer certificate expired, strict validation refuses the real OpenELIS and the
+laboratory stops receiving orders — while every impostor in `make negative` is
+still refused correctly, so the suite stays green and tells you nothing.
 
 The bridge's own certificates are valid for ten years with no renewal path. Ten
 -year certificates are what you issue when you have no rotation process, and
