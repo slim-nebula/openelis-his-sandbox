@@ -298,11 +298,47 @@ So the whole mechanism is:
 First import creates the referring organization, named correctly, active, and of
 the right type. Every import after that prefills the Referring Site.
 
-> **Two cautions.** `UUID.fromString` on the Location id is unguarded, exactly as
-> it is for `Practitioner.id` — a non-UUID site code throws inside the import and
-> the order never lands. And this is read out of the deployed bytecode, not yet
-> exercised end to end on this stack: prove it on one order before you rely on
-> it for a site list.
+#### Proven on this stack
+
+Not inferred — run end to end on 15 September 2026 against stock OpenELIS
+3.2.2.0, with **no laboratory administration of any kind**. A `Location` named
+`Obygaine Dermatology` was published to the bridge's FHIR store, referenced from
+`Task.location`, and one order placed.
+
+OpenELIS imported it 35 seconds later and created the organization itself:
+
+```
+ id |         name          | code | fhir_uuid                            | org_type
+  4 | Obygaine Dermatology  | null | e319a15a-0c34-413a-9f12-65463fa0eefa |    5
+```
+
+Type 5 is `referring clinic`. Note `code` is **null** — further confirmation that
+this path has nothing to do with the `code` column.
+
+The accessioning screen then received it. Querying the endpoint the wizard itself
+calls, `ajaxQueryXML?provider=LabOrderSearchProvider&orderNumber=…`:
+
+```json
+"requestingOrg": { "fhir-id": "e319a15a-0c34-413a-9f12-65463fa0eefa",
+                   "name": "Obygaine Dermatology",
+                   "id": 4 }
+```
+
+and the React form maps that straight onto the field the technician would
+otherwise type:
+
+```js
+K = (e, t) => { e.sampleOrderItems = { ...e.sampleOrderItems,
+                                       referringSiteId: t.id }; … }
+//  called as:  n.requestingOrg && K(r, n.requestingOrg)
+```
+
+So all three links hold: Location → organization row → prefilled Referring Site.
+
+> **One caution that remains.** `UUID.fromString` on the Location id is
+> unguarded, exactly as it is for `Practitioner.id` — a non-UUID site code like
+> `FAC-001` throws inside the import and the order never lands. The id must be a
+> UUID; put your own site code in `Location.identifier` if you want it carried.
 
 ### Step 3b — Patient class decides the collection workflow
 
