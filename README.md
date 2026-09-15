@@ -41,8 +41,11 @@ implements — no shortcut endpoints, no shared database.
 | running it, or fixing it at 3am | [docs/runbook.md](docs/runbook.md) |
 | assessing risk before go-live | [docs/security.md](docs/security.md) |
 | matching the estate's infra contracts | [docs/platform-integration.md](docs/platform-integration.md) |
+| **improving your own HIS codebase** | **[docs/his-findings.md](docs/his-findings.md)** — defects and designs found in `HIS Project`, with working code to copy |
+| checking what is actually proven | [docs/acceptance.md](docs/acceptance.md) — every criterion, and the check that proves it |
 | changing OpenELIS itself | [openelis-patches/README.md](openelis-patches/README.md) |
 | looking at what we found in OpenELIS | [docs/upstream-issues/](docs/upstream-issues/) |
+| why the integration is shaped as it is | [docs/audit.md](docs/audit.md) — an independent review and what it changed |
 
 ---
 
@@ -67,6 +70,7 @@ Then open the frontend at **http://localhost:8090** and the OpenELIS UI at
 ## Tests
 
 ```bash
+make unit             the bridge's pure functions — no stack required
 make smoke            platform and wiring
 make auth             tokens, revocation, degraded mode, the audit trail
 make catalogue-test   the test menu, and the specimen abbreviations
@@ -83,8 +87,11 @@ make e2e              an order into OpenELIS   (pauses for the manual lab step)
 make progress         laboratory progress within an order
 ```
 
-The first twelve run unattended and are the ones to trust before a change:
-**355 checks, currently 0 failures.** `make e2e` deliberately pauses for a human
+The twelve suite targets run unattended and are the ones to trust before a
+change: **355 checks, currently 0 failures.** `make unit` is separate and needs
+nothing running — 53 assertions over the pure functions whose failure would be
+silent, chiefly the deterministic resource ids and the decimal precision of a
+result. `make e2e` deliberately pauses for a human
 to release a result in the OpenELIS UI, because that step is a real laboratory
 action and pretending otherwise would prove nothing.
 

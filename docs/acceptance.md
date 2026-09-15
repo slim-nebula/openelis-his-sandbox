@@ -18,6 +18,12 @@ make corrections      corrections and retractions
 make e2e              order flow into OpenELIS  (pauses for the manual lab step)
 ```
 
+Plus one that needs nothing running:
+
+```bash
+make unit             the bridge's pure functions
+```
+
 Check counts are deliberately **not** listed per suite. They change every time a
 test is added, and a number in a document that nobody updates is worse than no
 number — run the suite and read the total it prints.
@@ -25,6 +31,26 @@ number — run the suite and read the total it prints.
 Run against the real stack: **OpenELIS Global 2 3.2.2.0**, against its own
 external database. Most recent full unattended run: **355 passed, 0 failed**
 across twelve suites.
+
+### What the unit tests are for, which is different
+
+The suites above are black-box: HTTP in, database and Kafka out. That is what
+makes them a real safety net, and it is also their limit — they prove the system
+BEHAVES correctly, not that a given function is correct. Four things in the
+bridge would fail silently rather than visibly if someone refactored them:
+
+* the deterministic resource ids, where a drift mints a new `Practitioner` for
+  every clinician on every order rather than raising anything;
+* the decimal precision of a result, where `4.0` quietly becoming `4` changes
+  what the laboratory reported;
+* the unsanitised name split, where "helpfully" stripping digits would alter a
+  clinician's identity to dodge an OpenELIS validation error;
+* the Npgsql connection string, which node-postgres treats as a host name and
+  never complains about.
+
+`make unit` pins those with the vectors they were originally verified against —
+including a resource id the previous .NET service actually wrote. It is fast and
+needs no containers, so it is the one to run while editing.
 
 | # | Criterion | Verified by | Check |
 |---|---|---|---|
