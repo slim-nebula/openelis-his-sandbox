@@ -17,7 +17,8 @@ Plain English throughout. Where it names a table in your real HIS
 - The laboratory identifies a test by a **LOINC code plus a specimen**.
 - Your HIS charges using an **ERP item**, and claims using a **CPT code**.
 - Something has to join them. That something is one small table, and it belongs
-  in your HIS, filled in when you deploy at a hospital.
+  in your HIS, filled in when you deploy at a hospital — see **§5** for who
+  fills it in and how.
 - **You already have almost everything else.** The table below is the only
   genuinely new thing.
 
@@ -192,7 +193,110 @@ correct.
 
 ---
 
-## 5. What was built, and how to use it
+## 5. How the mapping actually gets made
+
+The table is easy. Filling it in correctly is the work, and it is **not a
+developer's job** — it needs three different people. This section is the method.
+
+### Start from the laboratory's menu, never from a CPT book
+
+The list of rows you need is not a decision. It is whatever the laboratory
+offers, and the system will hand it to you:
+
+```bash
+make sync-catalogue     # pull the menu, then report coverage
+make billing-check      # names every orderable test with no mapping
+```
+
+Work that list until it is empty. Starting from a CPT manual instead means
+pricing tests the laboratory cannot perform and missing ones it can.
+
+### Each row needs two answers, from two different people
+
+For every `(LOINC, specimen)` on that list:
+
+| Question | Who answers it | Where it goes |
+|---|---|---|
+| *What do we charge for this?* | **Finance / the ERP owner** — they create or identify the item, which carries `retail_price`, `vat_percentage`, `chargable` | `charge_item_ref` → `fn_str_mit_id` |
+| *What is this procedure called on a claim?* | **A medical coder** — a professional role, not a developer and not the lab | `claim_code` → `ep_mdc_cpt_code` |
+| *What can be ordered at all?* | **The laboratory**, in OpenELIS | already decided — it is why the row is on your list |
+
+A developer's job is to load the result, not to choose it. **If you find
+yourself picking CPT codes from a search engine, stop** — a wrong code is a
+rejected claim at best and a false record of what was done at worst.
+
+### The logic: CPT is shared, the charge item usually is not
+
+This is the part that confuses people, and the demonstration data shows it
+plainly:
+
+```
+loinc     specimen   charge_item_ref    claim_code
+10351-5   DBS        ITEM-103515-DBS    87536
+10351-5   Plasma     ITEM-103515-PLA    87536      ← same CPT
+10351-5   Serum      ITEM-103515-SER    87536      ← same CPT
+```
+
+**One CPT, three charge items.** That is normal and correct:
+
+- **CPT describes the procedure.** HIV-1 quantification by nucleic acid probe is
+  the same procedure whichever tube it arrived in, so all three claim under
+  87536. CPT is coarser than LOINC, remember.
+- **The charge item describes what you sell.** A dried blood spot needs
+  different handling, different consumables, sometimes a different analyser —
+  so the hospital may price it differently, and finance decides.
+
+Which is exactly why the table is **keyed on `(loinc, specimen)`** while
+`claim_code` is just a column. Several rows sharing a CPT is expected. Several
+rows sharing a *charge item* is possible but worth a second look — `make
+billing-check` reports it for that reason and does not fail on it.
+
+### When there is no obvious CPT, leave it null
+
+`claim_code` is nullable on purpose. Two cases:
+
+- **Cash-only work**, where nothing is claimed. Null is the truth.
+- **You cannot find the right code.** Null, and ask the coder. A guessed CPT is
+  worse than an absent one, because an absent one fails visibly at claim time
+  while a wrong one is paid and becomes a false record.
+
+The test is still orderable and still chargeable either way — `charge_item_ref`
+is the required half.
+
+### Mechanically: a reviewed file, not a screen
+
+The map is deployment configuration. Treat it the way you treat a price list:
+
+1. Export the unmapped list (`make billing-check`, or `GET /billing/reconciliation`).
+2. Fill in the two columns in a spreadsheet, with finance and the coder.
+3. **Review it as a group before loading** — this is the last point at which a
+   wrong price or a wrong code is cheap to fix.
+4. Load it as a migration or through your own deployment tooling, so it is in
+   version control and `git log` answers *"who repriced this test, and when"*.
+5. Re-run `make billing-check` until it passes.
+
+That is also why there is **no write endpoint** (§6). A screen that let someone
+edit prices at runtime would make step 4's audit trail impossible.
+
+### Keeping it honest afterwards
+
+The laboratory will change its menu again — that is the normal life of a lab.
+Each time:
+
+```
+lab enables a test  →  make sync-catalogue  →  orderable immediately
+                                           →  billing-check names the gap
+                                           →  finance + coder fill it
+                                           →  load, re-check
+```
+
+The same three people, the same short loop. What makes it safe is that the gap
+is *visible* from the first minute rather than discovered in a revenue
+reconciliation months later.
+
+---
+
+## 6. What was built, and how to use it
 
 Four things. All of them are foundation — none of them decides your business
 rules.
@@ -317,7 +421,7 @@ when"* unanswerable.
 
 ---
 
-## 6. The four decisions — yours, not ours
+## 7. The four decisions — yours, not ours
 
 These are business rules. We have deliberately not chosen for you, because a
 sandbox that picked answers would teach them as though they were the answers.
@@ -370,14 +474,15 @@ through the same table, your team knows and we cannot tell from the schema.
 
 ---
 
-## 7. What to build, in order
+## 8. What to build, in order
 
-1. **Answer §6a** — the billing trigger, and the reversal on rejection. Every
+1. **Answer §7a** — the billing trigger, and the reversal on rejection. Every
    other decision sits on top of this one.
 2. **Create the map in your HIS**, with real foreign keys to
    `mlh_erp_fin_scm_main_items` and `mlh_his_ehr_mdc_cpt_codes`. Copy the
    composite key and the catalogue foreign key exactly — those are the two
-   things that fail silently.
+   things that fail silently. **§5 is the method for filling it in**, and it
+   needs finance and a medical coder, not a developer alone.
 3. **Port the reconciliation check, and wire it to the sync.** Syncing the
    catalogue makes tests orderable but never billable, so the check belongs
    immediately after the sync — in the same script or the same runbook step, not
@@ -387,11 +492,11 @@ through the same table, your team knows and we cannot tell from the schema.
    `fn_str_mit_id` onto the clinical order. Your existing `OrderCreatedEvent`
    then works unchanged — **billing needs no modification at all.**
 5. **Consume `lab.order.failed`** and reverse.
-6. **Panels last**, after the §6b decision.
+6. **Panels last**, after the §7b decision.
 
 ---
 
-## 8. Where the foundation is
+## 9. Where the foundation is
 
 | | |
 |---|---|
