@@ -739,6 +739,7 @@ in-house value as though the two were comparable.
 | wiring the real HIS | [integration-guide.md](integration-guide.md) |
 | deciding what to send | [integration-contract.md](integration-contract.md) |
 | running or fixing it | [operations.md](operations.md) — start with its alerts section |
+| watching it | [monitoring.md](monitoring.md) — the collector, the metrics, the rules |
 | assessing risk | [security.md](security.md) |
 | improving the real HIS | [his-findings.md](his-findings.md) |
 | wiring lab tests to billing | [billing-integration.md](billing-integration.md) |

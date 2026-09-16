@@ -242,6 +242,10 @@ series, which is the only way to catch that.
 make monitoring            # 16 checks: collector, gauges, rules, and the fire path
 ```
 
+The collector itself — what it scrapes, what every metric means, how to add a
+rule, and what is deliberately missing — is in
+[monitoring.md](monitoring.md). Prometheus is at **http://localhost:9090**.
+
 ### The daily glance: does it add up?
 
 Alerts answer *"is something wrong now"*. They cannot answer *"did everything we

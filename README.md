@@ -38,6 +38,7 @@ implements — no shortcut endpoints, no shared database.
 | wiring your real HIS to it | **[docs/integration-guide.md](docs/integration-guide.md)** — step by step, and what production still needs |
 | deciding what an order must carry | [docs/integration-contract.md](docs/integration-contract.md) |
 | running it, or fixing it at 3am | [docs/operations.md](docs/operations.md) |
+| watching it — Prometheus, the alerts, the metrics | [docs/monitoring.md](docs/monitoring.md) |
 | assessing risk before go-live | [docs/security.md](docs/security.md) |
 | **improving your own HIS codebase** | **[docs/his-findings.md](docs/his-findings.md)** — defects and designs found in `HIS Project`, with working code to copy |
 | wiring lab tests to billing and CPT codes | [docs/billing-integration.md](docs/billing-integration.md) |
