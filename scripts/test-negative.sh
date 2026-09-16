@@ -680,7 +680,8 @@ import json,sys
 want = {'received_resources': $RETENTION_RECEIVED_DAYS,
         'processed_events': $RETENTION_EVENTS_DAYS,
         'export_status_checks': $RETENTION_EXPORT_CHECKS_DAYS,
-        'dead_letters': $RETENTION_DEAD_LETTERS_DAYS}
+        'dead_letters': $RETENTION_DEAD_LETTERS_DAYS,
+        'delivery_leases': $RETENTION_LEASES_DAYS}
 got = {r['table']: r['days'] for r in json.load(sys.stdin)}
 print('match' if got == want else f'MISMATCH want={want} got={got}')\") == match ]]"
 

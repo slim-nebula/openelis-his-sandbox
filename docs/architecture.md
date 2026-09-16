@@ -72,10 +72,13 @@ pinned digest, not something made at install time. Changing it means changing
 the digest and clearing the volumes — `make certs-rotate`, and
 [operations.md](operations.md#replacing-openeliss-tls-certificate).
 
-> **On patching.** The webapp is the only image we ever build ourselves, and only
-> when `OE_IMAGE_REPO=his-sandbox`. The default is `itechuw` — stock. See
+> **On patching.** The webapp is the only image we could ever build ourselves,
+> and only when `OE_IMAGE_REPO=his-sandbox`. Today that is moot: this repository
+> carries **no patches**, so a self-built image would be identical to stock. One
+> patch was carried and then retired once measurement showed the bridge's
+> delivery lease already covered it — see
 > [openelis-patches/README.md](../openelis-patches/README.md). `docker ps` always
-> shows which is running.
+> shows which build is running.
 
 ---
 

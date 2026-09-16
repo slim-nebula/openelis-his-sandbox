@@ -135,112 +135,73 @@ use it purely as a `keytool` toolbox.
 
 ## Patches
 
-### 0001 — serialise the remote Task poll
+**None. This repository carries no patches against OpenELIS, and that is the
+intended steady state.**
 
-**File:** `3.2.2.0/0001-serialise-remote-task-poll.patch`
-**Touches:** `dataexchange/fhir/service/FhirApiWorkFlowServiceImpl.java` — 1 file,
-1 insertion, 3 deletions.
-**Surface:** FHIR remote order import. Touches no laboratory core.
+One was carried between 25 August and 16 September 2026 and has been retired.
+The reasoning is kept below, because the decision to *stop* carrying a patch is
+worth as much as the decision to write one, and because the evidence may matter
+again at a future release.
 
-**Verification status** — stated step by step, because "applies", "is in the
-image" and "validated" are three different claims:
+### Retired — 0001, serialise the remote Task poll
 
-| Step | Status |
-|---|---|
-| Applies cleanly to tag `3.2.2.0` (`aa00894`) | **verified** — `git apply --check` against a fresh clone |
-| Code it modifies is present and unchanged at that tag | **verified** — `FhirApiWorkFlowServiceImpl.java:89-96` |
-| Patched image builds | **verified** — `his-sandbox/openelis-global-2:3.2.2.0`, 567 MB |
-| The change is in the compiled artefact | **verified** — see the constant-pool check below |
-| Patched build boots and serves | **verified** — Tomcat startup 205 s, `LoginPage` HTTP 200 |
-| Offers the same test menu as stock | **verified** — sync reported `17 -> 17`, nothing withdrawn |
-| Full suite against the patched image | **verified** — 195 passed, 0 failed |
+Recover it with `git show 033cbca -- openelis-patches/3.2.2.0/`.
 
-Suite-for-suite against stock: smoke 53/0, auth 52/0, catalogue-test 22/0,
-negative 50/0, rejection 18/0. The negative suite restarts the webapp mid-run,
-so the patched image is also known to survive a restart and resume importing.
+**What it did.** In `FhirApiWorkFlowServiceImpl`, changed
+`@Scheduled(fixedRateString=…)` to `fixedDelayString` and removed `@Async` from
+`processWorkflow`, so OpenELIS's remote Task polls could not overlap.
 
-> **This validation record is now incomplete, and deliberately left saying so.**
-> It was taken at 195 checks. The suite has since grown to **355** — `panel`,
-> `monitoring` and `patient-refresh` did not exist when the patched build was
-> validated, and `negative` gained the ledger checks. Nothing suggests the patch
-> affects any of them; the point is that nobody has *shown* it does not.
->
-> Under ISO 15189 7.6.3(a) the validation is only as current as the suite it was
-> run against. **Re-run the full sweep against the patched image before relying
-> on this record**, and replace the numbers above with what you get. Editing the
-> total to 355 without re-running would be the worst of both — a record that
-> looks current and is not.
+**The problem it addressed was real.** On 24 August 2026, on the first clean
+rebuild of the whole stack, OpenELIS imported the same Task twice within two
+seconds, 409'd on a client-assigned FHIR id, never acknowledged the Task, and
+re-polled it for twenty-six minutes — one pass of which created a duplicate
+`clinlims.patient` row. The obvious confound was checked and eliminated: the
+import lines fell into four series each repeating every 60 seconds where
+30000 ms configures two, so the over-firing was inside a single instance, not
+two replicas.
 
-**What this does and does not prove.** It establishes that the patched build is
-behaviourally identical to stock — that the patch broke nothing — which is the
-ISO 15189 clause 7.6.3(a) requirement for a change to be validated before use.
+**Why it was retired anyway.** Four reasons, in order of weight:
 
-It does **not** prove the race is closed, because the suite never provokes two
-overlapping poll executions, and provoking one reliably would mean deliberately
-slowing an import past the poll interval. The evidence for the fix itself remains
-the code analysis: with `@Async` gone, `scheduleAtFixedRate`'s own guarantee that
-a task never overlaps itself applies again.
+1. **The lease already covers it, and predates it.**
+   `db/bridge/005_delivery_lease.sql` landed in `666d952` — *the same commit
+   that recorded the incident*, a full day before the patch existed. Measured on
+   2026-09-16: ten simultaneous polls issuing exactly the search OpenELIS
+   issues, and **one** received the Task. The control — the same ten against
+   `?_id=`, which deliberately takes no lease — returned it to **all ten**. The
+   lease is what has been carrying this, not the patch.
 
-Despite all of the above the stack still ships on `OE_IMAGE_REPO=itechuw`. The
-integration must stay demonstrable against unmodified upstream, because that is
-the first thing an implementer needs to know (rule 3).
+2. **The window the patch closes is not close to being reached.** Its argument
+   was that a lease can expire mid-import. Measured import duration on real
+   orders: **1.1 to 5.4 seconds**, against a 90-second lease. An import would
+   have to run seventeen times slower than the worst observed — and the remedy
+   for that is `BRIDGE_TASK_LEASE_SECONDS=300` in our own `.env`, which is a
+   config change we own rather than a modification to the accredited component.
 
-**The defect.** `pollForRemoteTasks()` can run concurrently with itself. Two
-executions import the same Task, race on patient de-duplication, and produce a
-**duplicate patient record**. The losing execution aborts with an HTTP 409, which
-leaves the Task unacknowledged, so it is re-polled every interval indefinitely —
-observed as roughly fifty attempts over 26 minutes, none of which could succeed.
+3. **It had no evidence of its own.** No second observation, no reproduction,
+   and its own text conceded it: *"It does not prove the race is closed, because
+   the suite never provokes two overlapping poll executions."* Its validation
+   record was taken at 195 checks against a suite that had grown to 355, and it
+   was never re-validated after the bridge was rewritten in Node.
 
-**Why it happens.** Not `fixedRate` on its own. The JDK's `scheduleAtFixedRate`
-already guarantees a task never runs concurrently with itself — late, yes,
-overlapping, no. `@Async` defeats that guarantee: the scheduled method hands the
-work to `AsyncConfig`'s `SimpleAsyncTaskExecutor` and returns immediately, so the
-scheduler believes the run finished and starts the next one while the real work
-continues on an unbounded, new-thread-per-submission executor. Nothing serialises
-them.
+4. **It was never actually in use.** `OE_IMAGE_REPO` has shipped `itechuw`
+   throughout. Every suite result this project has ever published — including
+   355 green — was produced against **stock** OpenELIS.
 
-**The change.**
+**What remains uncovered, stated honestly.** The lease keys on one Task. Two
+overlapping polls holding *different* Tasks for the *same new patient* would
+still race inside OpenELIS's patient create. It is narrow — a poll claims its
+whole batch in one statement, so the second usually gets nothing — and it has
+not been seen in three weeks and 526 accepted Tasks. If it ever is, that is the
+observation that would justify bringing the patch back, and it should be
+recorded here when it happens.
 
-- Remove `@Async` from `processWorkflow`, restoring the scheduler's own
-  non-overlap guarantee.
-- `fixedRateString` → `fixedDelayString`, so a slow poll is followed by a normal
-  interval rather than a burst of catch-up executions.
-- Drop the now-unused import.
-
-**Blast radius, checked rather than assumed.**
-
-- `processWorkflow` has exactly one caller — the scheduled method itself. No
-  other class in the codebase consumes `FhirApiWorkflowService`.
-- The scheduler pool is `Executors.newScheduledThreadPool(10)`
-  (`SchedulerConfig.java:80`) against ~12 `@Scheduled` methods, so making this one
-  synchronous occupies one of ten threads rather than starving other jobs.
-- It replaces an executor that created an **unbounded** thread per firing with
-  one bounded slot, which is the safer direction under load.
-
-**Why configuration cannot substitute.** Raising
-`org.openelisglobal.remote.poll.frequency` lowers the probability of overlap and
-cannot remove it: the trigger is "an execution outran the interval", which a
-longer interval makes rarer, never impossible. No property serialises the job.
-
-**What it does NOT fix.** A Task that genuinely cannot be imported is still
-retried for ever with no attempt counter and no terminal state; and
-`Task.status = rejected` still means either "the laboratory declined the order"
-or "an internal indexing write failed", with no way for an integrating system to
-tell them apart. Both need real upstream work.
-
-**The bridge-side lease stays regardless.** `bridge.delivery_leases` withholds a
-Task from the poll for `BRIDGE_TASK_LEASE_SECONDS` once delivered. It is not made
-redundant by this patch, for a reason that matters more than it first appears:
-the lease lives in *our* code and survives every OpenELIS upgrade untouched,
-whereas this patch is lost at each upgrade until someone re-applies it. The lease
-is the durable protection; the patch is the clean one. Keep both.
-
-The lease also is not equivalent. It does not serialise the poll — it starves the
-second execution of work — which leaves two narrow windows the patch closes: an
-import outrunning the lease, and a Task arriving between two passes such that
-both run with work in hand.
-
----
+**What was kept.** The upstream report,
+[`docs/upstream-issues/01-task-poll-not-idempotent.md`](../docs/upstream-issues/01-task-poll-not-idempotent.md),
+is unchanged and still worth filing: a Task whose import throws is never
+acknowledged and is re-polled for ever, and **neither the lease nor the patch
+fixes that**. Only upstream acknowledging the Task can. The machinery —
+`make openelis-patched` and `scripts/build-openelis.sh` — is also kept, ready
+for a patch that earns its place.
 
 ## Rejected — deliberately not patched
 

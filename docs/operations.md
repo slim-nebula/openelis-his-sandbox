@@ -282,6 +282,21 @@ it cannot drift from the data it describes.
 **Do not restart the bridge to "clear" a stuck order.** Nothing is held in
 memory. The state is in Postgres and Kafka, and a restart replays the same work.
 
+**Do not run a broad `GET /fhir/Task` to see what is queued.** The order-poll
+search *takes a delivery lease on everything it returns* — that is how it stops
+OpenELIS importing one order twice — so a wide search withholds those Tasks from
+the laboratory for `BRIDGE_TASK_LEASE_SECONDS` (90 by default). Debugging the
+queue this way stalls it. We did this while testing and blanked 562 Tasks for a
+minute and a half.
+
+Use the paths that deliberately take no lease:
+
+```bash
+docker exec bridge curl -s "http://127.0.0.1:8080/fhir/Task/<id>"      # read, no lease
+docker exec bridge curl -s "http://127.0.0.1:8080/fhir/Task?_id=<id>"  # same
+make psql-his   # then query bridge.fhir_resources directly
+```
+
 **Do not delete rows from `bridge.fhir_resources`.** It is what OpenELIS *reads*
 — an order it has not polled yet, a ServiceRequest it dereferences when a late
 report arrives. It is deliberately excluded from the retention sweep.
@@ -871,8 +886,13 @@ than a silent open door.
 
 ### Running the patched OpenELIS build
 
-The stack ships **stock** (`OE_IMAGE_REPO=itechuw`) and should stay that way
-unless you have a reason.
+The stack ships **stock** (`OE_IMAGE_REPO=itechuw`) and there is currently
+nothing else to run: **no patches are carried**. The last one was retired on
+2026-09-16 after measurement showed the bridge's delivery lease already covered
+it, so `make openelis-patched` now refuses with an explanation rather than
+building something identical to stock.
+
+What follows is the procedure for a patch that earns its place in future.
 
 ```bash
 make openelis-patched          # clone the tag, apply patches, build

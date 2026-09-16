@@ -151,6 +151,7 @@ services:
       RETENTION_EVENTS_DAYS: ${RETENTION_EVENTS_DAYS}
       RETENTION_EXPORT_CHECKS_DAYS: ${RETENTION_EXPORT_CHECKS_DAYS}
       RETENTION_DEAD_LETTERS_DAYS: ${RETENTION_DEAD_LETTERS_DAYS}
+      RETENTION_LEASES_DAYS: ${RETENTION_LEASES_DAYS}
       RETENTION_SWEEP_HOURS: ${RETENTION_SWEEP_HOURS}
       # Platform hooks: register with Consul, and put logs on the shared topic.
       # Same shapes the Node services use, so the estate cannot tell this one

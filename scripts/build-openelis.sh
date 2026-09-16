@@ -33,8 +33,15 @@ fi
 PATCH_DIR="$ROOT/openelis-patches/$VERSION"
 if [[ ! -d "$PATCH_DIR" ]]; then
     echo "No patches for $VERSION at openelis-patches/$VERSION/." >&2
-    echo "An upgrade needs its patches re-applied and re-verified — see" >&2
-    echo "openelis-patches/README.md, 'Re-applying after an upgrade'." >&2
+    echo >&2
+    echo "This repository currently carries NO patches, deliberately — the last" >&2
+    echo "one was retired on 2026-09-16 because the bridge's delivery lease" >&2
+    echo "covers what it did. So there is nothing to build here that stock does" >&2
+    echo "not already give you: run OE_IMAGE_REPO=itechuw, which is the default." >&2
+    echo >&2
+    echo "If you are adding a patch, put it in openelis-patches/$VERSION/ and" >&2
+    echo "read openelis-patches/README.md first — 'The rules' is the bar it has" >&2
+    echo "to clear." >&2
     exit 1
 fi
 

@@ -1122,12 +1122,13 @@ order OpenELIS never acknowledges. The bridge counts delivery attempts, so the
 condition is *visible*, but nobody is told. Decide how long is too long and who
 gets called — [Step 7](#how-long-is-too-long) has the cadence to base it on.
 
-**Keep validating the patch.** If you run the patched OpenELIS build
-(`OE_IMAGE_REPO=his-sandbox`), that patch must be re-applied, re-verified in the
-compiled artefact and re-validated against the full suite at **every** upgrade,
-for as long as you carry it. The procedure is in
-[openelis-patches/README.md](../openelis-patches/README.md). The default is stock,
-and staying stock is cheaper.
+**Stay on stock, and keep it that way.** This repository carries **no**
+patches to OpenELIS — one was carried and then retired once measurement showed
+the bridge's delivery lease already covered it. If you ever do add one, it must
+be re-applied, re-verified in the compiled artefact and re-validated against the
+full suite at **every** upgrade, for as long as you carry it. That recurring
+cost is the reason the bar is high; the rules are in
+[openelis-patches/README.md](../openelis-patches/README.md).
 
 **Involve the laboratory.** Two things in this list are theirs, not yours: keeping
 the test catalogue clean — a LOINC mapped to two different analytes is a mapping

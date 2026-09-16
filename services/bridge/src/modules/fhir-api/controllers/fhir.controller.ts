@@ -15,6 +15,7 @@ import {
   transactionResponseBundle,
 } from '@fhir/serialize.js';
 import type { BundleEntry, FhirResource, FhirTask } from '@fhir/types.js';
+import { tokenOne, tokenSet } from '@fhir/search-params.js';
 import { SUPPORTED_TYPES } from '@fhir/types.js';
 import type { FhirModel } from '../models/fhir.model.js';
 import type { OrderTrackingModel } from '@modules/orders/models/order-tracking.model.js';
@@ -68,9 +69,16 @@ export class FhirController {
   }
 
   private queryParam(req: Request, name: string): string | null {
-    const raw = req.query[name];
-    const value = Array.isArray(raw) ? raw[0] : raw;
-    return typeof value === 'string' ? value : null;
+    return tokenOne(req.query[name]);
+  }
+
+  /**
+   * A token parameter that may name several values — `?status=requested,received`
+   * or a repeated `?status=`. See fhir/search-params.ts for why dropping one of
+   * them loses orders silently.
+   */
+  private queryParamSet(req: Request, name: string): string[] | null {
+    return tokenSet(req.query[name]);
   }
 
   metadata = (_req: Request, res: Response): void => {
@@ -101,7 +109,7 @@ export class FhirController {
     const limit = this.limitFrom(req);
 
     if (type === 'Task') {
-      const status = this.queryParam(req, 'status');
+      const status = this.queryParamSet(req, 'status');
       const owner = this.queryParam(req, 'owner');
       const id = this.queryParam(req, '_id');
 
@@ -122,7 +130,10 @@ export class FhirController {
         );
       }
 
-      logger.info(`Task search status=${status} owner=${owner} -> ${tasks.length} match(es)`);
+      logger.info(
+        `Task search status=${status === null ? 'any' : status.join('|')} owner=${owner} ` +
+          `-> ${tasks.length} match(es)`,
+      );
       fhirResponse(res, searchBundle(tasks, this.baseUrl(req), total));
       return;
     }

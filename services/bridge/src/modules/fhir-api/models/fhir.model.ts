@@ -88,11 +88,11 @@ export class FhirModel {
    * debugging the queue becomes impossible — looking at an order would hide it
    * from the laboratory. Only the poll, which never carries _id, claims.
    */
-  async findTaskById(status: string | null, owner: string | null, id: string, limit: number): Promise<FhirResource[]> {
+  async findTaskById(status: string[] | null, owner: string | null, id: string, limit: number): Promise<FhirResource[]> {
     const rows = await query<Row>(
       `SELECT content FROM bridge.fhir_resources
         WHERE resource_type = 'Task'
-          AND ($1::text IS NULL OR content ->> 'status' = $1::text)
+          AND ($1::text[] IS NULL OR content ->> 'status' = ANY($1::text[]))
           AND ($2::text IS NULL OR content -> 'owner' ->> 'reference' = $2::text)
           AND resource_id = $3
         ORDER BY last_updated
@@ -134,14 +134,14 @@ export class FhirModel {
    * `make_interval(secs => ...)` is cast explicitly because pg cannot infer a
    * parameter's type inside a named argument.
    */
-  async searchAndLeaseTasks(status: string | null, owner: string | null, limit: number): Promise<FhirResource[]> {
+  async searchAndLeaseTasks(status: string[] | null, owner: string | null, limit: number): Promise<FhirResource[]> {
     const rows = await query<Row>(
       `WITH candidates AS (
            SELECT r.resource_id
              FROM bridge.fhir_resources r
              LEFT JOIN bridge.delivery_leases l ON l.resource_id = r.resource_id
             WHERE r.resource_type = 'Task'
-              AND ($1::text IS NULL OR r.content ->> 'status' = $1::text)
+              AND ($1::text[] IS NULL OR r.content ->> 'status' = ANY($1::text[]))
               AND ($2::text IS NULL OR r.content -> 'owner' ->> 'reference' = $2::text)
               AND (l.leased_until IS NULL OR l.leased_until <= now())
             ORDER BY r.last_updated
@@ -189,11 +189,11 @@ export class FhirModel {
    * silent precision loss. Cast in SQL and coerce at the call site — a string
    * here would serialise into the bundle's `total` as `"7"` rather than 7.
    */
-  async countTasks(status: string | null, owner: string | null, id: string | null): Promise<number> {
+  async countTasks(status: string[] | null, owner: string | null, id: string | null): Promise<number> {
     const row = await queryOne<Row>(
       `SELECT count(*)::int AS total FROM bridge.fhir_resources
         WHERE resource_type = 'Task'
-          AND ($1::text IS NULL OR content ->> 'status' = $1::text)
+          AND ($1::text[] IS NULL OR content ->> 'status' = ANY($1::text[]))
           AND ($2::text IS NULL OR content -> 'owner' ->> 'reference' = $2::text)
           AND ($3::text IS NULL OR resource_id = $3::text)`,
       [status, owner, id],
@@ -224,7 +224,8 @@ export class FhirModel {
    *
    * Expiring releases the Task just as effectively — the claim query tests
    * `leased_until <= now()` — and keeps first_at, last_at and the count.
-   * Retention sweeps this table; releasing is not the place to prune.
+   * The retention sweep prunes this table — settled Tasks only, so a live
+   * attempt counter is never forgotten. Releasing is not the place to prune.
    */
   async releaseDeliveryLease(resourceId: string): Promise<void> {
     await query(

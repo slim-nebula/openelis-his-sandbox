@@ -161,12 +161,16 @@ docs/               see the table above
 
 ## A note on OpenELIS itself
 
-The stack runs **stock upstream images** by default, pinned to a named release
-(`OE_VERSION`), never `:develop`. We carry exactly **one** patch, for a defect
-nothing outside OpenELIS can fix; the other six defects we found are handled
-entirely on our side, worked around, or simply lived with — one of them, the
-ordering clinician, turned out to need nothing more than the resource *type* of a
+The stack runs **stock upstream images**, pinned to a named release
+(`OE_VERSION`), never `:develop`. We carry **no patches**: every defect we found
+is handled on our side, worked around, or lived with. One of them, the ordering
+clinician, turned out to need nothing more than the resource *type* of a
 configuration value.
+
+A patch was carried for three weeks and then retired, once measurement showed
+the bridge's delivery lease already covered it. Why it was written and why it
+was dropped are both recorded — the decision to stop carrying a patch is worth
+as much as the decision to write one.
 
 Two are lived with rather than worked around, and both are the same bug in
 different resources: once OpenELIS has imported a **Practitioner** or a
@@ -175,7 +179,7 @@ the laboratory, and re-sending is precisely what does not work. That matters mos
 for the patient, where it means the two systems disagree about whose specimen is
 on the bench — see [07](docs/upstream-issues/07-patient-name-never-refreshed.md).
 
-The rules, the patch, and the two
+The rules, the retired patch, and the two
 candidates we rejected are in
 [openelis-patches/README.md](openelis-patches/README.md); the reports themselves
 are in [docs/upstream-issues/](docs/upstream-issues/).

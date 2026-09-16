@@ -343,6 +343,34 @@ export class OpsModel {
       ),
     );
 
+    // Delivery leases. One row per Task ever handed to the laboratory, and
+    // nothing removed them: releasing a lease became an UPDATE rather than a
+    // DELETE (so that `deliveries` survives a completed order), and the sweep
+    // was never taught about the table. The comment in fhir.model.ts claimed
+    // otherwise for three weeks. It grows for the life of the deployment, on
+    // the table the order poll LEFT JOINs.
+    //
+    // ONLY settled Tasks. A lease whose Task is still `requested` is a live
+    // attempt counter — deleting it would forget that the laboratory has
+    // already been given this order, and the next poll would hand it over as
+    // though for the first time, restarting the count that tells an operator
+    // the import is failing.
+    results.push(
+      await this.sweep(
+        'delivery_leases',
+        config.retention.leasesDays,
+        `DELETE FROM bridge.delivery_leases l
+          WHERE l.last_at < now() - make_interval(days => $1::int)
+            AND EXISTS (
+                  SELECT 1 FROM bridge.fhir_resources r
+                   WHERE r.resource_type = 'Task'
+                     AND r.resource_id = l.resource_id
+                     AND r.content ->> 'status' <> 'requested'
+                )
+          RETURNING l.resource_id`,
+      ),
+    );
+
     return results;
   }
 }

@@ -195,6 +195,14 @@ export const config = {
     eventsDays: num('RETENTION_EVENTS_DAYS', '14'),
     exportChecksDays: num('RETENTION_EXPORT_CHECKS_DAYS', '30'),
     deadLettersDays: num('RETENTION_DEAD_LETTERS_DAYS', '180'),
+    /**
+     * Delivery leases, and the only window here that is bounded by SAFETY
+     * rather than by usefulness. A lease row is the attempt counter for an
+     * order; pruning one whose Task is still `requested` would forget that the
+     * laboratory has already been given it, so the sweep below only ever
+     * touches Tasks that have left that state.
+     */
+    leasesDays: num('RETENTION_LEASES_DAYS', '90'),
     /** 0 disables the timer. A laboratory under audit hold cannot be swept by a default. */
     sweepHours: num('RETENTION_SWEEP_HOURS', '24'),
   },
