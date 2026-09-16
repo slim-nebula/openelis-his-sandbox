@@ -249,6 +249,44 @@ That failure is the tool working, not a defect. It only fails on
 free. Two other findings are reported and never fail, because only the hospital
 can judge them:
 
+#### Proven end to end, 2026-09-16
+
+Not described — run. The laboratory has a test called `Glucose(Plasma)` which
+was active and orderable but carried **no LOINC code**, so the bridge had never
+offered it. A laboratory administrator mapping it is the ordinary "we enabled a
+test" event, and it was done through OpenELIS's own admin API
+(`PUT /rest/test-catalog/tests/3/terminology`), not by editing its database:
+
+```
+1. Lab maps LOINC 2345-7 onto Glucose(Plasma)
+2. make sync-catalogue        applied: True | 17 -> 18
+                              + 2345-7 Glucose [Plasma]
+3. his.test_catalogue          2345-7|Plasma  is_active = true   ← orderable now
+4. make billing-check          10 unmapped  ->  11 unmapped
+                               Glucose  [Plasma]  2345-7
+5. add the mapping             ITEM-23457-PLA / CPT 82947
+6. make billing-check          11 unmapped  ->  10, 8 of 18 mapped
+7. a doctor orders it          LAB-20260916-BFD30764 → OpenELIS: accepted
+```
+
+**Step 4 is the point.** Between the laboratory enabling the test and somebody
+pricing it, the test was orderable and unbillable — and the check said so the
+same minute, instead of leaving it to be found in a revenue reconciliation
+months later.
+
+Step 3 also produced an unplanned demonstration of the composite key. The HIS
+catalogue now holds **two rows for LOINC 2345-7**:
+
+```
+ test_code       test_name   loinc_code   specimen_type   is_active
+ GLUC            Glucose     2345-7       Whole Blood     false
+ 2345-7|Plasma   Glucose     2345-7       Plasma          true
+```
+
+Same LOINC, different specimens, different rows — one retired, one live. A
+billing map keyed on the LOINC alone could not hold both, and would have priced
+whichever it happened to find.
+
 - **one charge item covering several tests** — correct for a panel, wrong if
   it's a copy-paste in the deployment spreadsheet
 - **a mapped test the laboratory has withdrawn** — harmless, but somebody should
@@ -347,6 +385,7 @@ through the same table, your team knows and we cannot tell from the schema.
 | Schema, with the reasoning in comments | [`db/his/017_lab_billing_map.sql`](../db/his/017_lab_billing_map.sql) |
 | Resolver and the drift queries | [`services/his-api/src/modules/billing/`](../services/his-api/src/modules/billing/) |
 | The check | [`scripts/check-billing-map.sh`](../scripts/check-billing-map.sh) |
+| Rehearsing "the laboratory enabled a test" | [`scripts/oe-map-loinc.sh`](../scripts/oe-map-loinc.sh) — via OpenELIS's admin API, not its database |
 | How the test menu gets here in the first place | [integration-guide.md Step 1](integration-guide.md#step-1--decide-who-owns-the-test-menu) |
 | Why the specimen is half the identity | [integration-contract.md §4.5](integration-contract.md#45-the-specimen-must-carry-the-local-abbreviation) |
 | The defects and designs found in your own services | [his-findings.md](his-findings.md) |
