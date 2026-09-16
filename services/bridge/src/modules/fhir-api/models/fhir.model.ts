@@ -30,6 +30,15 @@ import type { FhirResource } from '@fhir/types.js';
  */
 const contentOf = (row: Row): FhirResource => row.content as FhirResource;
 
+/**
+ * The Task statuses that mean "the laboratory still owes us an answer".
+ *
+ * These are exactly the states OpenELIS's remote poll asks for, and they are
+ * the only ones completeTaskIfOutstanding is allowed to move out of — so a
+ * verdict the laboratory actually gave can never be overwritten.
+ */
+const OUTSTANDING_TASK_STATUSES = ['requested', 'received'];
+
 export class FhirModel {
   // --- Published (outbound) resources ---------------------------------------
 
@@ -234,6 +243,52 @@ export class FhirModel {
         WHERE resource_id = $1`,
       [resourceId],
     );
+  }
+
+  /**
+   * Closes a Task whose result has already come back, and reports whether it
+   * had to.
+   *
+   * THE LOOP THIS ENDS. A Task leaves `requested` only when OpenELIS
+   * acknowledges it by PUTting it back. If that acknowledgement is lost — the
+   * import half-completes, a storage error aborts the pass, the container is
+   * restarted mid-write — nothing else ever moves it. The poll finds it again
+   * every cycle, for ever, and keeps handing the laboratory an order it has
+   * already done. One such Task in this sandbox was delivered over a hundred
+   * times while its result sat finalised in the HIS.
+   *
+   * Note this is NOT the undelivered-order alert, which already excludes orders
+   * a result has been forwarded for. That silenced the alarm and left the
+   * laboratory receiving the same finished order every thirty seconds; this is
+   * the half that costs the laboratory something.
+   *
+   * A released result is proof the laboratory did the work, so it is also proof
+   * the Task is finished, whatever the acknowledgement did. `completed` is the
+   * honest terminal status: `accepted` would assert an acknowledgement that
+   * never arrived.
+   *
+   * GUARDED, and the guard is the safety. The status predicate means this can
+   * only ever move a Task OUT of an outstanding state — it can never reopen a
+   * rejection, overwrite a verdict the laboratory actually gave, or fire twice
+   * for the corrections that follow a result.
+   *
+   * jsonb_set rather than read-modify-write: every other field is preserved
+   * byte for byte, which matters because `content` is otherwise only ever
+   * handed out as text to protect numeric precision (see getText).
+   */
+  async completeTaskIfOutstanding(resourceId: string): Promise<boolean> {
+    const rows = await query(
+      `UPDATE bridge.fhir_resources
+          SET content      = jsonb_set(content, '{status}', to_jsonb('completed'::text)),
+              version_id   = version_id + 1,
+              last_updated = now()
+        WHERE resource_type = 'Task'
+          AND resource_id   = $1
+          AND content ->> 'status' = ANY($2::text[])
+        RETURNING resource_id`,
+      [resourceId, OUTSTANDING_TASK_STATUSES],
+    );
+    return rows.length > 0;
   }
 
   // --- Inbound mirror -------------------------------------------------------

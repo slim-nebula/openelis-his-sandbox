@@ -609,7 +609,7 @@ Two notes on the re-creation itself:
   published, so there is nothing there to duplicate or withdraw. This matters
   because you *cannot* withdraw one afterwards: OpenELIS's cancellation path is
   unreachable over FHIR
-  ([defect 06](upstream-issues/06-fhir-cannot-cancel-an-order.md)).
+  ([defect 06](archive/upstream-issues/06-fhir-cannot-cancel-an-order.md)).
 
 ## Step 5 — Which identity to send
 
@@ -671,7 +671,7 @@ whitespace — last token to `family`, the rest to `given`. Two consequences:
 - **The laboratory keeps the first name it sees.** OpenELIS copies the
   `Practitioner` on first import and never refreshes it, so a name corrected in
   your HIS will not reach the laboratory
-  ([defect 05](upstream-issues/05-practitioner-name-never-refreshed.md)). Worth a
+  ([defect 05](archive/upstream-issues/05-practitioner-name-never-refreshed.md)). Worth a
   rule for your team: write `hcp.name` the way it should appear on a laboratory
   report, first time.
 - **The `Practitioner` id is a UUID derived from `hcp.id`**, never from the name.
@@ -963,7 +963,7 @@ both when the laboratory genuinely declines a test **and** when it hits an
 internal storage error. They are indistinguishable from outside. Do not tell a
 clinician "the laboratory refused this" with certainty — say the order did not
 complete and needs review. Filed upstream as
-[defect 01](upstream-issues/01-task-poll-not-idempotent.md).
+[defect 01](archive/upstream-issues/01-task-poll-not-idempotent.md).
 
 ### How long is "too long"
 
@@ -1032,7 +1032,7 @@ make patient-refresh  a known upstream limitation, held under test
 > outage paths by actually stopping Kafka, Redis, his-api and OpenELIS, and it
 > restores them — but a second run started before everything has truly settled
 > fails checks that have nothing to do with the code. We watched one clean run
-> give 56/56, and immediate re-runs give 54, then 49, then 48, purely from
+> give 58/58, and immediate re-runs give 54, then 49, then 48, purely from
 > compounding restart lag. Restart the stack between runs, or read the first
 > result. A failure here is worth re-testing from clean before believing it.
 
@@ -1045,7 +1045,7 @@ nothing anywhere says so.
 
 `patient-refresh` is the odd one: it **passes** by confirming that a corrected
 patient name does *not* reach the laboratory. It is a tripwire on
-[upstream issue 07](upstream-issues/07-patient-name-never-refreshed.md), written
+[upstream issue 07](archive/upstream-issues/07-patient-name-never-refreshed.md), written
 to go red when a future OpenELIS release fixes the freeze. If it fails on your
 stack, read it as good news and check whether the workaround is still needed.
 

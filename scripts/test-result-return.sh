@@ -210,4 +210,118 @@ sleep 15
 check "A preliminary report is not forwarded to the HIS" \
     "[[ \$(his_sql \"SELECT count(*) FROM his.lab_results_summary WHERE openelis_result_ref = 'DiagnosticReport/$PRELIM_ID'\") == 0 ]]"
 
+# ---------------------------------------------------------------------------
+section "8 · A result closes a Task the laboratory never acknowledged"
+
+# THE LOOP THIS ENDS.
+#
+# A Task leaves `requested` only when OpenELIS PUTs it back. If that
+# acknowledgement is lost — the import half-completes, a storage error aborts
+# the pass, the container restarts mid-write — nothing else ever moved it. The
+# poll found it again every cycle and re-offered the laboratory an order it had
+# already done. One Task in this sandbox was handed over more than a hundred
+# times while its result sat finalised in the HIS.
+#
+# A released result correlated to the order is proof the work was done, so it is
+# now also what closes the Task. `completed`, not `accepted`: the laboratory
+# never acknowledged, and saying it did would be a lie in the audit trail.
+
+# The broken state is CONSTRUCTED rather than waited for, and it has to be.
+#
+# Simply racing OpenELIS does not work: the first version of this waited for the
+# result to correlate, and OpenELIS polled and acknowledged the Task inside that
+# window, so the suite passed without ever exercising the path. Worse, it would
+# have kept passing after a regression, because OpenELIS was doing the closing.
+#
+# So the Task is put back to `requested` directly — which is exactly the state a
+# lost acknowledgement leaves behind — and held under a long delivery lease so
+# the poll cannot see it and cannot "fix" it for us. Whatever closes this Task
+# is the bridge, because nothing else can reach it.
+ACK_ORDER_JSON=$(api_curl -sf -X POST "${API}/lab-orders" -H 'Content-Type: application/json' \
+    -d "{\"patientId\":\"11111111-1111-1111-1111-111111111111\",\"testCode\":\"$(any_active_test_code)\",
+         \"facilityCode\":\"FAC-001\"}")
+ACK_ORDER=$(echo "$ACK_ORDER_JSON" | json_field "['orderNumber']")
+
+ACK_SR=""
+for _ in $(seq 1 20); do
+    ACK_SR=$(bridge_sql "SELECT fhir_servicerequest_id FROM bridge.order_tracking WHERE order_number = '$ACK_ORDER'")
+    [[ -n "$ACK_SR" ]] && break
+    sleep 1
+done
+
+ACK_TASK=$(bridge_sql "SELECT fhir_task_id FROM bridge.order_tracking WHERE order_number = '$ACK_ORDER'")
+
+if [[ -z "$ACK_SR" ]]; then
+    bad "A fresh order was published for the unacknowledged-Task check" "no tracking row for $ACK_ORDER"
+else
+    bridge_sql "UPDATE bridge.fhir_resources
+                   SET content = jsonb_set(content, '{status}', to_jsonb('requested'::text))
+                 WHERE resource_id = '$ACK_TASK'" >/dev/null
+    bridge_sql "UPDATE bridge.order_tracking SET task_status = 'requested'
+                 WHERE fhir_task_id = '$ACK_TASK'" >/dev/null
+    bridge_sql "INSERT INTO bridge.delivery_leases (resource_id, leased_until)
+                VALUES ('$ACK_TASK', now() + interval '10 minutes')
+                ON CONFLICT (resource_id)
+                DO UPDATE SET leased_until = excluded.leased_until" >/dev/null
+
+    check "The Task is unacknowledged, as a lost acknowledgement leaves it" \
+        "[[ \$(bridge_sql \"SELECT task_status FROM bridge.order_tracking WHERE fhir_task_id = '$ACK_TASK'\") == requested ]]"
+    check "It is held under a lease, so only the bridge can close it" \
+        "[[ \$(bridge_sql \"SELECT count(*) FROM bridge.delivery_leases WHERE resource_id = '$ACK_TASK' AND leased_until > now() + interval '5 minutes'\") == 1 ]]"
+
+    ACK_ANALYSIS_SR=$(uuidgen | tr 'A-Z' 'a-z')
+    ACK_OBS=$(uuidgen | tr 'A-Z' 'a-z')
+    ACK_DR=$(uuidgen | tr 'A-Z' 'a-z')
+
+    push ServiceRequest "$ACK_ANALYSIS_SR" "{
+      \"resourceType\":\"ServiceRequest\",\"id\":\"$ACK_ANALYSIS_SR\",
+      \"status\":\"active\",\"intent\":\"order\",
+      \"basedOn\":[{\"reference\":\"ServiceRequest/$ACK_SR\"}],
+      \"subject\":{\"reference\":\"Patient/$PATIENT_FHIR\"}
+    }"
+    push Observation "$ACK_OBS" "{
+      \"resourceType\":\"Observation\",\"id\":\"$ACK_OBS\",\"status\":\"final\",
+      \"code\":{\"coding\":[{\"system\":\"http://loinc.org\",\"code\":\"2345-7\",\"display\":\"Glucose\"}]},
+      \"valueQuantity\":{\"value\":5.9,\"unit\":\"mmol/L\"}
+    }"
+    push DiagnosticReport "$ACK_DR" "{
+      \"resourceType\":\"DiagnosticReport\",\"id\":\"$ACK_DR\",\"status\":\"final\",
+      \"basedOn\":[{\"reference\":\"ServiceRequest/$ACK_ANALYSIS_SR\"}],
+      \"code\":{\"coding\":[{\"system\":\"http://loinc.org\",\"code\":\"2345-7\"}],\"text\":\"Glucose\"},
+      \"issued\":\"$ISSUED\",
+      \"result\":[{\"reference\":\"Observation/$ACK_OBS\"}]
+    }"
+
+    ACK_CLOSED=""
+    for _ in $(seq 1 20); do
+        [[ $(bridge_sql "SELECT task_status FROM bridge.order_tracking WHERE order_number = '$ACK_ORDER'") == "completed" ]] \
+            && { ACK_CLOSED=yes; break; }
+        sleep 3
+    done
+
+    if [[ -n "$ACK_CLOSED" ]]; then
+        ok "The result closed the unacknowledged Task (requested -> completed)"
+    else
+        bad "The result closed the unacknowledged Task" \
+            "still '$(bridge_sql "SELECT task_status FROM bridge.order_tracking WHERE order_number = '$ACK_ORDER'")' after 60s"
+    fi
+
+    # The tracking row and the FHIR resource must agree, or the poll keeps
+    # matching a Task the bridge believes is finished.
+    check "The published Task resource says completed too" \
+        "[[ \$(bridge_sql \"SELECT content ->> 'status' FROM bridge.fhir_resources WHERE resource_id = '$ACK_TASK'\") == completed ]]"
+
+    check "It is no longer offered to the laboratory" \
+        "[[ \$(bridge_sql \"SELECT count(*) FROM bridge.fhir_resources WHERE resource_id = '$ACK_TASK' AND content ->> 'status' = 'requested'\") == 0 ]]"
+
+    check "The result still reached the HIS — closing the Task is not instead of forwarding" \
+        "[[ \$(his_sql \"SELECT count(*) FROM his.lab_results_summary WHERE openelis_result_ref = 'DiagnosticReport/$ACK_DR'\") == 1 ]]"
+
+    # The guard, which is what makes this safe: a verdict the laboratory DID
+    # give must never be overwritten. Section 4's order was accepted, and the
+    # corrections pushed against it in section 6 must have left it accepted.
+    check "A Task the laboratory did acknowledge keeps its own verdict" \
+        "[[ \$(bridge_sql \"SELECT task_status FROM bridge.order_tracking WHERE order_number = '$ORDER_NUMBER'\") == accepted ]]"
+fi
+
 summary

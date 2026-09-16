@@ -164,9 +164,9 @@ VERSIONS=$(oe_sql "SELECT count(*) FROM clinlims.hfj_res_ver v
 
 if [[ "$SEEN_SECOND" == "$CORRECTED_LAST" ]]; then
     # The good outcome. If this ever starts happening, the documented workaround
-    # is obsolete and docs/upstream-issues/07 should be closed.
+    # is obsolete and docs/archive/upstream-issues/07 should be closed.
     ok "OpenELIS REFRESHED the patient name — upstream issue 07 no longer applies"
-    info "update docs/upstream-issues/07-patient-name-never-refreshed.md and the field map"
+    info "update docs/archive/upstream-issues/07-patient-name-never-refreshed.md and the field map"
 else
     # The documented behaviour, asserted as such. This is not a passing test
     # celebrating a bug — it is a tripwire: it goes red the day upstream fixes
@@ -174,7 +174,7 @@ else
     ok "OpenELIS kept the name it first saw ('$SEEN_SECOND') — upstream issue 07 confirmed"
     check "…and wrote no new version of the resource (still $VERSIONS)" \
         "[[ ${VERSIONS:-0} -le 1 ]]"
-    info "a demographic correction does NOT reach the laboratory; see docs/upstream-issues/07"
+    info "a demographic correction does NOT reach the laboratory; see docs/archive/upstream-issues/07"
 fi
 
 summary

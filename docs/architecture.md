@@ -325,7 +325,7 @@ at idle: five mutually authenticated FHIR requests per minute.
 
 `fixedRate` rather than `fixedDelay` matters too — a slow import does not delay
 the next poll, so with `@Async` the two can overlap. That is the mechanism behind
-[defect 01](upstream-issues/01-task-poll-not-idempotent.md).
+[defect 01](archive/upstream-issues/01-task-poll-not-idempotent.md).
 
 **Results correlate by a two-hop chain**, not by patient or timestamp. See §8.
 
@@ -355,6 +355,8 @@ stateDiagram-v2
     SENT_TO_LIS --> SENT_TO_LIS: LIS offline — Task stays<br/>requested until it returns
 
     ACCEPTED_BY_LIS --> RESULT_AVAILABLE: DiagnosticReport correlated<br/>lab.result.released
+
+    SENT_TO_LIS --> RESULT_AVAILABLE: result arrived with no acknowledgement<br/>Task closed as completed
 
     RESULT_AVAILABLE --> RESULT_AVAILABLE: amended or corrected report<br/>upsert, never a duplicate row
 
@@ -390,6 +392,15 @@ state in which nothing has been sent to the laboratory. An order sitting here is
 not stuck in a hop; it is waiting on a physical act that has not happened. Every
 other stalled state means a system did not do its job — this one means a specimen
 has not been drawn, and no amount of restarting anything will move it.
+
+**`SENT_TO_LIS → RESULT_AVAILABLE` skips a state, and that is the point.** It
+means a result came back for an order the laboratory never acknowledged: the
+acknowledgement was lost, not the order. The bridge closes the Task as
+`completed` on the evidence of the result, because otherwise the poll re-offers
+a finished order for ever — observed here at 102 deliveries. The transition is
+always accompanied by a warning in the bridge log, since the *order* path failed
+silently even though the result path worked; see
+[operations.md](operations.md#an-order-was-resulted-but-the-task-is-still-being-offered).
 
 ---
 
@@ -752,7 +763,7 @@ in-house value as though the two were comparable.
 | running or fixing it | [operations.md](operations.md) — start with its alerts section |
 | watching it | [monitoring.md](monitoring.md) — the collector, the metrics, the rules |
 | assessing risk | [security.md](security.md) |
-| improving the real HIS | [his-findings.md](his-findings.md) |
+| improving the real HIS | [his-findings.md](archive/his-findings.md) |
 | wiring lab tests to billing | [billing-integration.md](billing-integration.md) |
 | judging whether it is any good | [archive/audit.md](archive/audit.md) — independent review and what it changed |
 | changing OpenELIS itself | [openelis-patches/README.md](../openelis-patches/README.md) |

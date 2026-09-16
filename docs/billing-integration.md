@@ -540,4 +540,4 @@ tested here.
 | Rehearsing "the laboratory enabled a test" | [`scripts/oe-map-loinc.sh`](../scripts/oe-map-loinc.sh) — via OpenELIS's admin API, not its database |
 | How the test menu gets here in the first place | [integration-guide.md Step 1](integration-guide.md#step-1--decide-who-owns-the-test-menu) |
 | Why the specimen is half the identity | [integration-contract.md §4.5](integration-contract.md#45-the-specimen-must-carry-the-local-abbreviation) |
-| The defects and designs found in your own services | [his-findings.md](his-findings.md) |
+| The defects and designs found in your own services | [his-findings.md](archive/his-findings.md) |

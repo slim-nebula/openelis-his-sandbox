@@ -987,7 +987,7 @@ rule from the laboratory rather than hardcoding a copy that will drift.
 ## One name, one chance
 
 `hcp.name` is a single column, and OpenELIS **copies a practitioner on first
-import and never refreshes it** (`docs/upstream-issues/05-...`). Between them:
+import and never refreshes it** (`docs/archive/upstream-issues/05-...`). Between them:
 however `hcp.name` is spelled the first time that clinician orders a test, that
 is what the laboratory prints from then on. A later correction never arrives.
 

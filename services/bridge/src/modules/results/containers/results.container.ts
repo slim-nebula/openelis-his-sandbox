@@ -1,3 +1,4 @@
+import { FhirModel } from '@modules/fhir-api/models/fhir.model.js';
 import { OrderTrackingModel } from '@modules/orders/models/order-tracking.model.js';
 import { DeadLetterModel } from '@shared/models/dead-letter.model.js';
 import { EventClaimModel } from '@shared/models/event-claim.model.js';
@@ -31,6 +32,7 @@ export class ResultsContainer {
         new OrderTrackingModel(),
         new EventClaimModel(),
         new DeadLetterModel(),
+        new FhirModel(),
       );
     }
     return this._correlator;

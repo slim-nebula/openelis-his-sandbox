@@ -83,6 +83,20 @@ away for a day; the order waits. Nothing in the bridge decides an order has been
 outstanding too long — that judgement belongs to a human, which is what
 `OrderUndelivered` and `make reconcile` exist to prompt.
 
+**With one exception, and it is evidence rather than a timer.** If a *result*
+comes back for an order whose Task is still `requested`, the Task is closed as
+`completed`. The acknowledgement was lost — the laboratory evidently imported
+the order, since it resulted it — and without this the poll re-offers a finished
+order for ever. Two Tasks here reached 102 and 48 deliveries that way.
+
+The close is guarded so it can only move a Task **out of** `requested` or
+`received`, never over a verdict the laboratory actually gave, and it logs a
+warning rather than passing in silence: a lost acknowledgement is a fault worth
+seeing, not just worth tidying. Note that the alert was never the problem — the
+undelivered-age gauge already excluded orders with a forwarded result — so this
+fixes what the laboratory experiences, not what the dashboard showed. See
+[operations.md](operations.md#an-order-was-resulted-but-the-task-is-still-being-offered).
+
 ---
 
 ## 3. The delivery lease, specifically

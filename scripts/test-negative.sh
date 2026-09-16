@@ -685,4 +685,48 @@ want = {'received_resources': $RETENTION_RECEIVED_DAYS,
 got = {r['table']: r['days'] for r in json.load(sys.stdin)}
 print('match' if got == want else f'MISMATCH want={want} got={got}')\") == match ]]"
 
+# ---------------------------------------------------------------------------
+section "This suite does not leave a Task looping behind it"
+
+# The seeded order above is resulted by injecting messages straight onto
+# lab.result.released — deliberately, because what is under test there is the
+# HIS consumer's idempotency, not the bridge's correlator. But it means the
+# bridge never sees a DiagnosticReport for this order, so nothing ever closes
+# its Task, and OpenELIS re-offers it on every poll for as long as the sandbox
+# lives.
+#
+# Two such orders, left by two earlier runs of this suite, were still being
+# handed to the laboratory after 102 and 48 deliveries. They also fired
+# OrderUndelivered for hours — and unlike a real lost acknowledgement, which the
+# gauge excludes once a result has been forwarded, these had no forwarded_results
+# row at all, because their "results" were injected past the bridge. A critical
+# alert that means nothing is the fastest way to teach people to ignore one.
+#
+# So the suite tidies up after itself, and asserts that it did.
+if [[ -n "${DUP_ORDER_NUMBER:-}" ]]; then
+    DUP_TASK=$(bridge_sql "SELECT fhir_task_id FROM bridge.order_tracking WHERE order_number = '$DUP_ORDER_NUMBER'")
+
+    if [[ -n "$DUP_TASK" ]]; then
+        bridge_sql "UPDATE bridge.fhir_resources
+                       SET content = jsonb_set(content, '{status}', to_jsonb('completed'::text))
+                     WHERE resource_id = '$DUP_TASK' AND content ->> 'status' IN ('requested','received')" >/dev/null
+        bridge_sql "UPDATE bridge.order_tracking SET task_status = 'completed'
+                     WHERE fhir_task_id = '$DUP_TASK' AND task_status IN ('requested','received')" >/dev/null
+        bridge_sql "UPDATE bridge.delivery_leases SET leased_until = now() - interval '1 second'
+                     WHERE resource_id = '$DUP_TASK'" >/dev/null
+
+        check "The order this suite seeded is not left awaiting collection for ever" \
+            "[[ \$(bridge_sql \"SELECT count(*) FROM bridge.fhir_resources
+                                WHERE resource_id = '$DUP_TASK' AND content ->> 'status' = 'requested'\") == 0 ]]"
+    fi
+fi
+
+# Nothing anywhere should still be offering a Task for an order the HIS has
+# already filed a result against. In normal operation the correlator closes
+# these itself (see `make results` §8); this is the backstop that says so.
+check "No order with a result is still being offered to the laboratory" \
+    "[[ \$(bridge_sql \"SELECT count(*) FROM bridge.order_tracking t
+                        WHERE t.task_status = 'requested'
+                          AND EXISTS (SELECT 1 FROM bridge.forwarded_results f WHERE f.order_id = t.order_id)\") == 0 ]]"
+
 summary

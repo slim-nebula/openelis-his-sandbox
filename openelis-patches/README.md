@@ -196,7 +196,7 @@ observation that would justify bringing the patch back, and it should be
 recorded here when it happens.
 
 **What was kept.** The upstream report,
-[`docs/upstream-issues/01-task-poll-not-idempotent.md`](../docs/upstream-issues/01-task-poll-not-idempotent.md),
+[`docs/upstream-issues/01-task-poll-not-idempotent.md`](../docs/archive/upstream-issues/01-task-poll-not-idempotent.md),
 is unchanged and still worth filing: a Task whose import throws is never
 acknowledged and is re-polled for ever, and **neither the lease nor the patch
 fixes that**. Only upstream acknowledging the Task can. The machinery —

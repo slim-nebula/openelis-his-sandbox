@@ -3,6 +3,7 @@ import { config } from '@config/env.js';
 import { logger } from '@config/logger.js';
 import { eventPublisher } from '@config/kafka.js';
 import type { FhirResource } from '@fhir/types.js';
+import type { FhirModel } from '@modules/fhir-api/models/fhir.model.js';
 import type { OrderTrackingModel, TrackedOrder } from '@modules/orders/models/order-tracking.model.js';
 import type { DeadLetterModel } from '@shared/models/dead-letter.model.js';
 import type { EventClaimModel } from '@shared/models/event-claim.model.js';
@@ -58,6 +59,9 @@ export class ResultCorrelator {
     private readonly tracking: OrderTrackingModel,
     private readonly claims: EventClaimModel,
     private readonly deadLetters: DeadLetterModel,
+    // Only ever used to CLOSE a Task whose result has come back — see
+    // closeTaskIfStillOutstanding. The correlator publishes nothing through it.
+    private readonly store: FhirModel,
   ) {}
 
   start(): void {
@@ -461,5 +465,50 @@ export class ResultCorrelator {
       `Forwarded released result ${resultRef} for order ${tracked.orderNumber}: ` +
         `${flat.value ?? ''} ${flat.unit ?? ''}`.trimEnd(),
     );
+
+    await this.closeTaskIfStillOutstanding(tracked);
+  }
+
+  /**
+   * A result came back, so the laboratory has done the work — whatever the
+   * acknowledgement did or did not do.
+   *
+   * Normally there is nothing to close here: OpenELIS acknowledged the Task
+   * when it imported the order, long before the result, and the guarded UPDATE
+   * matches nothing. This is for the case where the acknowledgement was LOST —
+   * upstream defect 01, or a container restarted mid-write — and the Task is
+   * still sitting in `requested` being re-offered to the laboratory on every
+   * single poll, for ever, for an order that is already finished.
+   *
+   * Closing it is safe in a way that closing it on a timer would not be: the
+   * evidence is a released result correlated to this exact order, not a guess
+   * about how long is too long. And it is deliberately LOUD, because a result
+   * without an acknowledgement means the order path failed silently even though
+   * the result path worked — the operator needs to know the acknowledgement is
+   * being lost, not just have the symptom cleaned up underneath them.
+   */
+  private async closeTaskIfStillOutstanding(tracked: TrackedOrder): Promise<void> {
+    try {
+      if (!(await this.store.completeTaskIfOutstanding(tracked.fhirTaskId))) return;
+
+      await this.tracking.setTaskStatus(tracked.fhirTaskId, 'completed');
+      await this.store.releaseDeliveryLease(tracked.fhirTaskId);
+
+      logger.warn(
+        `Order ${tracked.orderNumber} was resulted while its Task was still ` +
+          `'${tracked.taskStatus}' — the laboratory never acknowledged the order it evidently ` +
+          'imported. Closing the Task as completed so it stops being re-offered on every poll. ' +
+          'Check bridge.delivery_leases.deliveries for how many times it was handed over, and ' +
+          'the OpenELIS log around the import for why the acknowledgement was lost.',
+      );
+    } catch (error) {
+      // Never let this cost the result. The forward has already been published
+      // and claimed; a failure to tidy the Task is a loop to fix later, not a
+      // reason to redeliver a result the HIS has.
+      logger.error(
+        `Could not close Task ${tracked.fhirTaskId} after forwarding its result: ` +
+          (error as Error).message,
+      );
+    }
   }
 }

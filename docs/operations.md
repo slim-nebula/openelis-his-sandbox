@@ -109,7 +109,8 @@ docker exec bridge curl -s -H "Authorization: Bearer $TOKEN" \
 | platform smoke | `make smoke` | no |
 | order flow | `make e2e` | no, up to LIS acceptance |
 | lab workflow | `make e2e` (second half) | **yes** — release the result in the OpenELIS UI |
-| everything else | the twelve suite targets | no |
+| restart durability | `make restart` | no — but ~25 min, and it restarts Tomcat |
+| everything else | the thirteen suite targets | no |
 
 `make e2e` drives the order into OpenELIS automatically, then pauses and waits
 (default 10 minutes) for a lab user to accession, result, validate and release
@@ -134,7 +135,7 @@ correlation sweep.
 > **`make negative` is not safely re-runnable back to back.** It proves the
 > outage paths by actually stopping Kafka, Redis, his-api and OpenELIS. A second
 > run started before everything settles fails checks that have nothing to do with
-> the code — we watched a clean 56/56 become 54, then 49, then 48 purely from
+> the code — we watched a clean 58/58 become 54, then 49, then 48 purely from
 > compounding restart lag. Restart the stack between runs, or trust the first
 > result.
 
@@ -274,6 +275,13 @@ A large gap between `acc` and `res` is normal in this sandbox and **not** normal
 in a laboratory: here most orders are placed by test suites and never worked. In
 a real deployment that gap is the backlog, and it should close within a working
 day for routine tests.
+
+**`acc + rej + out` does not have to equal `on`, and a shortfall there is not a
+missing order.** A Task closed as `completed` — a result that came back without
+an acknowledgement, see §7 — is in none of those three buckets, because the
+laboratory never gave a verdict to record. Such an order still counts in `on`
+and in `res`, which are the two columns reconciliation actually turns on: it was
+taken on, and it was resulted.
 
 Everything in the report is derived from `order_tracking`, `forwarded_results`
 and `dead_letters` at read time. Nothing is written to produce it, which is why
@@ -435,7 +443,7 @@ Error: could not process Task with identifier : …/Task/<uuid>
 
 The Task is never acknowledged, so it stays `requested` and the next poll picks
 it up again — the retry loop from
-[defect 01](upstream-issues/01-task-poll-not-idempotent.md). **Nothing reaches
+[defect 01](archive/upstream-issues/01-task-poll-not-idempotent.md). **Nothing reaches
 the HIS.** The order sits at `SENT_TO_LIS` indefinitely with no rejection, no
 dead letter and no failure status, because from our side the Task was published
 successfully and simply never came back.
@@ -451,6 +459,54 @@ restarted or the resource is removed.
 Worth designing around in a real HIS: placeholder names for unidentified patients
 (`Unknown 47`, `Baby of Ward 3`), house numbers accidentally typed into a name
 field, and some transliterations will all trip this.
+
+### An order was resulted but the Task is still being offered
+
+The bridge now closes this by itself, and the log line is how you know it
+happened:
+
+```
+Order LAB-… was resulted while its Task was still 'requested' — the laboratory
+never acknowledged the order it evidently imported. Closing the Task as
+completed so it stops being re-offered on every poll.
+```
+
+**A result is proof the laboratory did the work**, so it is also proof the Task
+is finished — whatever the acknowledgement did. Before this, a lost
+acknowledgement left the Task in `requested` for ever: nothing else moved it, so
+the poll re-offered a finished order every cycle. Two such Tasks in this sandbox
+reached **102 and 48 deliveries**.
+
+**This is not the same thing as the alert firing, and the distinction matters.**
+`bridge_oldest_requested_task_age_seconds` already excludes any order the bridge
+has forwarded a result for, precisely so a lost acknowledgement does not page
+somebody about a patient who has their result. That exclusion was doing its job —
+but it only silenced the *alarm*. The laboratory was still being handed the order
+a hundred times, and nothing had addressed that. Closing the Task addresses the
+harm rather than the symptom.
+
+The warning is not noise — **it means the acknowledgement is being lost**, which
+is a real fault even though the result arrived. Find out how often:
+
+```sql
+-- make psql-his, on the bridge database: how many times was each one handed over?
+SELECT t.order_number, l.deliveries, l.first_at, l.last_at
+  FROM bridge.order_tracking t
+  JOIN bridge.delivery_leases l ON l.resource_id = t.fhir_task_id
+ WHERE t.task_status = 'completed'
+ ORDER BY l.deliveries DESC
+ LIMIT 20;
+```
+
+`deliveries` above 1 is the attempt counter OpenELIS does not keep. A handful is
+an import that eventually stuck; dozens means the acknowledgement path is broken
+and the OpenELIS log around the import is where to look — usually
+[defect 01](archive/upstream-issues/01-task-poll-not-idempotent.md).
+
+**`completed`, not `accepted`.** The laboratory never acknowledged, and recording
+that it did would put a fact in the audit trail that never happened. The closing
+is guarded so it can only ever move a Task **out of** `requested` or `received` —
+a verdict the laboratory really gave is never overwritten.
 
 ### An order is stuck at `SENT_TO_LIS`
 
@@ -497,7 +553,7 @@ never acknowledged, so it stays `status=requested` and the next poll picks it up
 again — one clean rebuild left a single order being re-imported every 30 seconds
 for twenty-six minutes, and one of those passes created a **duplicate patient
 record**. Full evidence:
-[defect 01](upstream-issues/01-task-poll-not-idempotent.md).
+[defect 01](archive/upstream-issues/01-task-poll-not-idempotent.md).
 
 ```bash
 # Is this happening? A count that keeps climbing for one Task is the signature.

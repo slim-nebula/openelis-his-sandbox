@@ -566,7 +566,7 @@ is working on it. A doctor who believes a test was refused may re-order it, or
 worse, proceed without it.
 
 Until upstream separates the two — filed as
-[defect 01](upstream-issues/01-task-poll-not-idempotent.md) — a HIS built on this
+[defect 01](archive/upstream-issues/01-task-poll-not-idempotent.md) — a HIS built on this
 should present a rejection as *"this order did not complete and needs review"*
 rather than as a definite refusal. That wording costs nothing and is true in both
 cases.

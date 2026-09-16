@@ -175,7 +175,7 @@ continued to report the rule as healthy; §5 caught it.
 This suite asserts the *documented* behaviour, not the desirable one, so it goes
 **red** the day a release fixes it. A test that asserted the staleness as though
 it were correct would be one nobody could act on. Filed as
-[upstream issue 07](../upstream-issues/07-patient-name-never-refreshed.md).
+[upstream issue 07](upstream-issues/07-patient-name-never-refreshed.md).
 
 ## Non-functional requirements
 

@@ -431,5 +431,5 @@ uuid5(DNS, "task|137539b5-2690-46ea-b808-bcbc0d31352c") → 07e60d38-f066-5d30-8
 
 - [integration-guide.md](integration-guide.md) — how to build it, step by step
 - [architecture.md](architecture.md) — what runs, and why
-- [upstream-issues/](upstream-issues/) — the OpenELIS defects above, filed in full
+- [upstream-issues/](archive/upstream-issues/) — the OpenELIS defects above, filed in full
 - [operations.md](operations.md) — when it breaks

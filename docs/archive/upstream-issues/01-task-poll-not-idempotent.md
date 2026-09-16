@@ -123,6 +123,40 @@ registers only `sendSiteIndicators` and `sendMalariaSurviellanceReport` — so
    `Task.status = rejected` currently conflates the two, and integrating systems
    have no way to tell them apart.
 
+## How we contain it downstream
+
+Neither of these fixes the defect — only OpenELIS can do that — but together
+they bound its cost, and they are worth describing because any integrator hitting
+this needs something before an upstream release.
+
+1. **A delivery lease** (`bridge.delivery_leases`) makes the read-and-claim
+   atomic, so two overlapping poll executions cannot both take the same Task.
+   That removes the duplicate-patient race in consequence 2. It also counts the
+   attempts, which is the attempt counter consequence 1 says OpenELIS lacks.
+
+2. **A released result closes the Task.** Consequence 1 — re-polled for ever,
+   with no terminal state — is unbounded precisely because *nothing except an
+   acknowledgement* could end it. A DiagnosticReport correlated to the order is
+   proof the laboratory imported and completed the work, so the bridge now
+   treats it as proof the Task is finished and closes it as `completed`. Guarded
+   to move a Task only **out of** `requested`/`received`, so a real verdict is
+   never overwritten.
+
+   Measured here before the change: **102 and 48 deliveries** of two Tasks whose
+   results were already filed in the ordering system.
+
+   Note what this is *not*. Suppressing the alert is easy and was already done —
+   the undelivered-age gauge excludes any order a result has been forwarded for,
+   so nobody is paged about a patient who has their result. That silences the
+   alarm and leaves the laboratory receiving the same finished order every
+   thirty seconds. The two are different problems and only the second one costs
+   the laboratory anything.
+
+What neither addresses is consequence 3 — a storage failure still arrives as
+`Task.status = rejected`, indistinguishable from the laboratory declining the
+test, and no amount of downstream care can recover information the status does
+not carry.
+
 ## Environment
 
 - OpenELIS Global 2 v3.2.2.0, official image `itechuw/openelis-global-2:3.2.2.0`

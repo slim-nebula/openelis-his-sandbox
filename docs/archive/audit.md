@@ -227,7 +227,7 @@ patient record (its own DB or the accessioning wizard endpoint, same technique
 as `test-requester.sh` §3).
 - If it refreshes: one paragraph in `integration-contract.md` saying so, with
   the evidence, and a regression check in `test-requester.sh` style.
-- If it freezes: `docs/upstream-issues/07-patient-name-never-refreshed.md`
+- If it freezes: `docs/archive/upstream-issues/07-patient-name-never-refreshed.md`
   (same shape as 05), a workaround note for the developers (demographic
   corrections must reach the laboratory out of band today), and the check
   asserts the *documented* behaviour so a future OpenELIS release that fixes it

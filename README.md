@@ -41,11 +41,22 @@ implements — no shortcut endpoints, no shared database.
 | watching it — Prometheus, the alerts, the metrics | [docs/monitoring.md](docs/monitoring.md) |
 | asking "can a restart lose an order?" | [docs/durability.md](docs/durability.md) — proved with `make restart` |
 | assessing risk before go-live | [docs/security.md](docs/security.md) |
-| **improving your own HIS codebase** | **[docs/his-findings.md](docs/his-findings.md)** — defects and designs found in `HIS Project`, with working code to copy |
 | wiring lab tests to billing and CPT codes | [docs/billing-integration.md](docs/billing-integration.md) |
 | changing OpenELIS itself | [openelis-patches/README.md](openelis-patches/README.md) |
-| looking at what we found in OpenELIS | [docs/upstream-issues/](docs/upstream-issues/) |
-| why the integration is shaped as it is | [docs/archive/](docs/archive/) — the audit and the acceptance record, kept as history |
+
+**Those seven are the integration.** Read them and you can build against this.
+
+[docs/archive/](docs/archive/README.md) holds the background — how this was
+audited and accepted, the OpenELIS defects found along the way, and a review of
+the real HIS codebase. It is worth reading, but **none of it is needed to
+integrate**, and some of it describes problems rather than the system you are
+building on:
+
+| | |
+|---|---|
+| [archive/his-findings.md](docs/archive/his-findings.md) | defects and designs found in `HIS Project`, with working code to copy — for whoever owns that codebase, not for wiring this up |
+| [archive/upstream-issues/](docs/archive/upstream-issues/) | seven OpenELIS defects, written as upstream reports. Useful when something behaves oddly; not a description of normal operation |
+| [archive/audit.md](docs/archive/audit.md), [archive/acceptance.md](docs/archive/acceptance.md) | why the integration is shaped as it is, kept as history |
 
 ---
 
@@ -83,17 +94,23 @@ make negative         outages: broker, Redis, API, OpenELIS
 make rejection        refusal, drift, and a withdrawn specimen
 make results          the result return path
 make corrections      corrections and retractions of a released result
-make e2e              an order into OpenELIS   (pauses for the manual lab step)
 make progress         laboratory progress within an order
+make restart          can a container restart lose an order? (~25 min)
+make e2e              an order into OpenELIS   (pauses for the manual lab step)
 ```
 
-The twelve suite targets run unattended and are the ones to trust before a
-change: **355 checks, currently 0 failures.** `make unit` is separate and needs
-nothing running — 64 assertions over the pure functions whose failure would be
-silent, chiefly the deterministic resource ids and the decimal precision of a
-result. `make e2e` deliberately pauses for a human
-to release a result in the OpenELIS UI, because that step is a real laboratory
-action and pretending otherwise would prove nothing.
+The thirteen suite targets from `smoke` to `progress` run unattended and are the
+ones to trust before a change: **378 checks, currently 0 failures.** `make unit`
+is separate and needs nothing running — 76 assertions over the pure functions
+whose failure would be silent, chiefly the deterministic resource ids and the
+decimal precision of a result.
+
+Two are deliberately left out of that set because they are slow and take
+containers away. `make restart` stops and restarts the bridge and OpenELIS
+underneath live orders (~25 min — see [durability.md](docs/durability.md)), and
+`make e2e` pauses for a human to release a result in the OpenELIS UI, because
+that step is a real laboratory action and pretending otherwise would prove
+nothing.
 
 Two of these assert things you might not expect a test to assert.
 `make patient-refresh` asserts that a corrected patient name **does not** reach
@@ -113,7 +130,7 @@ up front saves re-discovering them later.
 - **Patient names containing digits are rejected by OpenELIS**, and the order
   then retries indefinitely without ever failing. It is the one stall with no
   error anywhere — see [docs/operations.md](docs/operations.md) and
-  [upstream issue 07](docs/upstream-issues/07-patient-name-never-refreshed.md).
+  [upstream issue 07](docs/archive/upstream-issues/07-patient-name-never-refreshed.md).
 - **An inpatient order can wait forever.** `AWAITING_COLLECTION` has no timeout,
   deliberately: expiring a real pending order because a nurse was busy would be
   worse than leaving it visible. It is the ward's worklist, and a real estate
@@ -158,7 +175,8 @@ frontend/           the doctor's test client
 openelis/           volume assets, common.properties template
 openelis-patches/   our patches to OpenELIS, and the rules governing them
 scripts/            config rendering, and every test suite
-docs/               see the table above
+docs/               the seven integration documents — see the table above
+docs/archive/       background: the audit, the OpenELIS defects, the HIS review
 ```
 
 ## A note on OpenELIS itself
@@ -179,11 +197,11 @@ different resources: once OpenELIS has imported a **Practitioner** or a
 **Patient**, it never refreshes them. A name corrected in the HIS never reaches
 the laboratory, and re-sending is precisely what does not work. That matters most
 for the patient, where it means the two systems disagree about whose specimen is
-on the bench — see [07](docs/upstream-issues/07-patient-name-never-refreshed.md).
+on the bench — see [07](docs/archive/upstream-issues/07-patient-name-never-refreshed.md).
 
 The rules, the retired patch, and the two
 candidates we rejected are in
 [openelis-patches/README.md](openelis-patches/README.md); the reports themselves
-are in [docs/upstream-issues/](docs/upstream-issues/).
+are in [docs/archive/upstream-issues/](docs/archive/upstream-issues/).
 
 `docker ps` always shows which build is running.
