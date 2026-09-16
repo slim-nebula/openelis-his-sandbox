@@ -217,6 +217,7 @@ would already show as a 500 or a red container, it does not need an alert.
 | `LaboratoryStoppedPolling` | no poll for >5 min | OpenELIS is down, or the mTLS handshake is failing — §7. Fires *before* `OrderUndelivered` because it does not need an order to exist |
 | `DeadLettersGrowing` | new failures in the last hour | `make dead-letters`, then §7 |
 | `CatalogueStale` | the test menu is >45 days old | `make sync-catalogue` and **read the diff** |
+| — | *(no alert)* a synced test nobody has priced | `make sync-catalogue` now prints billing coverage; see [billing-integration.md](billing-integration.md) |
 | `CatalogueNeverSynced` | no menu at all | `make sync-catalogue`. Until it runs, nothing is orderable |
 | `ServiceDown` | Prometheus cannot scrape a service | while this fires, every other alert on that service is **blind, not quiet** |
 | `ResultConsumerNotRunning` | his-api is up but not consuming | results are piling up on the topic and reaching no patient record. Restart his-api; the consumer retries on its own but a stuck one needs a push |
@@ -537,7 +538,7 @@ Almost always test identity. Confirm the LOINC exists on an OpenELIS test:
 
 ```bash
 make catalogue          # what the HIS currently offers
-make sync-catalogue     # re-read it from OpenELIS
+make sync-catalogue     # re-read it from OpenELIS (also reports billing coverage)
 docker logs bridge --since 10m | grep -E 'is claimed by|OpenELIS catalogue:'
 ```
 

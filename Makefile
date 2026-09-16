@@ -171,6 +171,12 @@ sync-catalogue: ## Refresh the test menu from OpenELIS (FORCE=true to override t
 	  | python3 -c "import sys,json; d=json.load(sys.stdin); \
 	  print('    offered', d['offered'], '| updated', d['upserted'], '| withdrawn', d['deactivated']) \
 	  if d['applied'] else print('    REFUSED:', d['reason'])"
+	@# A synced test is orderable immediately and billable only once a human maps
+	@# it. Reporting that here, rather than leaving it to be remembered, is the
+	@# whole point of the check. Non-fatal: the sync itself succeeded, and an
+	@# unmapped test is a normal state between enabling a test and pricing it.
+	@echo "==> Billing coverage"
+	@bash scripts/check-billing-map.sh 2>/dev/null | grep -E 'carry a billing|cannot be billed|^    ' || true
 
 alerts: ## What is firing right now, and what is merely pending
 	@docker exec his-prometheus wget -qO- http://localhost:9090/api/v1/alerts \

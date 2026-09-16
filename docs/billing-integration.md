@@ -21,6 +21,16 @@ Plain English throughout. Where it names a table in your real HIS
 - **You already have almost everything else.** The table below is the only
   genuinely new thing.
 
+**And the one operational rule that falls out of all of it:**
+
+> When the laboratory enables a test and somebody runs `make sync-catalogue`,
+> that test becomes **orderable immediately** — and **billable only when a human
+> maps it**. Nothing can invent the price or the CPT code for you.
+>
+> So `make billing-check` runs straight after `make sync-catalogue`, every time.
+> Between those two commands is a window where a doctor can order a test the
+> hospital cannot charge for, and nothing anywhere reports an error.
+
 ---
 
 ## 2. What CPT is, briefly
@@ -368,8 +378,11 @@ through the same table, your team knows and we cannot tell from the schema.
    `mlh_erp_fin_scm_main_items` and `mlh_his_ehr_mdc_cpt_codes`. Copy the
    composite key and the catalogue foreign key exactly — those are the two
    things that fail silently.
-3. **Port the reconciliation check.** Run it in CI and after every catalogue
-   sync. It is worth more than the table.
+3. **Port the reconciliation check, and wire it to the sync.** Syncing the
+   catalogue makes tests orderable but never billable, so the check belongs
+   immediately after the sync — in the same script or the same runbook step, not
+   as a separate thing somebody remembers. Run it in CI too. It is worth more
+   than the table.
 4. **Wire order creation**: resolve the map, write `ep_mdc_cpt_code` and
    `fn_str_mit_id` onto the clinical order. Your existing `OrderCreatedEvent`
    then works unchanged — **billing needs no modification at all.**
