@@ -695,10 +695,10 @@ The three things that break it, in order of likelihood:
    > **`certgen` does not generate certificates.** It ships prebuilt keystores
    > baked into the image and copies them into the volumes, so the peer
    > certificate is a fixed property of the pinned digest. Deleting the volumes
-   > returns the *same* certificate, byte for byte. `make certs FORCE=true`
-   > rotates our own CA and re-exports OpenELIS's unchanged — which is a useful
-   > thing to know before reaching for it to fix an expiry. See
-   > [security.md §9](security.md#9-what-is-still-open).
+   > returns the *same* certificate, byte for byte, and `make certs FORCE=true`
+   > rotates our own CA while re-exporting OpenELIS's unchanged. To actually
+   > replace it, change the digest in `compose/openelis.yml` and run
+   > `make certs-rotate` — see below.
 
 To bisect, turn it off: `BRIDGE_MTLS_ENABLED=false` and
 `BRIDGE_FHIR_BASE=http://bridge:8080/fhir`, then `make config` and restart both.
@@ -813,6 +813,47 @@ After editing `.env`, always `make config` before restarting OpenELIS —
 | `BRIDGE_MAX_SEARCH_RESULTS` | 200 | a larger cap on `/ops` and FHIR searches |
 
 Each is a restart of one container, not a rebuild.
+
+### Replacing OpenELIS's TLS certificate
+
+The one OpenELIS presents to the bridge, and the one the bridge pins.
+
+```bash
+# 1. find what the current certgen image actually carries
+docker pull itechuw/certgen:main
+docker image inspect itechuw/certgen:main --format '{{index .RepoDigests 0}}'
+
+# 2. pin that digest in compose/openelis.yml (never the :main tag — it moves)
+# 3. rotate
+make certs-rotate
+```
+
+`certs-rotate` stops the stack, removes the three certgen volumes, deletes the
+stale exported peer certificate so `init-mtls.sh` re-exports rather than keeping
+it, brings everything back, and prints the new validity window. **No patient data
+is in those volumes** — they hold the keystore, the truststore and the nginx
+certificate and key.
+
+Confirm before trusting it:
+
+```bash
+docker exec bridge curl -s http://127.0.0.1:8080/metrics | grep fhir_requests
+docker logs bridge 2>&1 | grep -i "Pinned the FHIR peer"
+```
+
+`transport="mtls"` climbing and a `Pinned the FHIR peer to …` line with the new
+thumbprint means the rotation took. The bridge re-reads the certificate per
+handshake, so it needs no restart of its own.
+
+Two things worth knowing:
+
+- **The browser certificate changes too.** OpenELIS's own HTTPS certificate comes
+  from the same image, so `https://localhost` will warn afresh. It is self-signed
+  either way.
+- **Done on 2026-09-15**, moving off a digest whose certificate had expired on
+  2026-07-23 — unnoticed for eight weeks, because pinning compares bytes and a
+  byte comparison cannot read a date. Full account in
+  [security.md §9](security.md#9-what-is-still-open).
 
 ### Adding a new FHIR peer
 

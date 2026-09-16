@@ -234,6 +234,25 @@ progress: ## Phase 4b - where an order has got to inside the laboratory
 certs: ## Issue the certificates for the OpenELIS <-> bridge hop (FORCE=true to regenerate)
 	@bash scripts/init-mtls.sh $(if $(FORCE),--force,)
 
+certs-rotate: ## Replace OpenELIS's keystore from the pinned certgen image (destroys the cert volumes)
+	@echo "==> Rotating OpenELIS's TLS material."
+	@echo "    certgen does not generate — it copies prebuilt keystores out of its"
+	@echo "    image, so the only way to change the certificate is to change the"
+	@echo "    pinned digest and clear the volumes it populates."
+	@echo "    No patient data lives in these: keystore, truststore, nginx cert/key."
+	@$(APP) down
+	@docker volume rm his-lab-sandbox_oe-certs his-lab-sandbox_oe-key-trust-store \
+	  his-lab-sandbox_oe-keys 2>/dev/null || true
+	@# Force a fresh export: init-mtls keeps an existing peer certificate, which
+	@# after a rotation is the one we are trying to replace.
+	@rm -f certs/openelis-client.crt
+	@$(MAKE) --no-print-directory app-up
+	@echo "==> New peer certificate:"
+	@openssl x509 -in certs/openelis-client.crt -noout -subject -dates 2>/dev/null \
+	  || echo "    !! not exported — check: make logs S=oe-peer-cert"
+	@echo "==> Confirm the handshake before trusting this:"
+	@echo "    docker exec bridge curl -s http://127.0.0.1:8080/metrics | grep fhir_requests"
+
 trust-bridge: ## Import our CA into OpenELIS's truststore, then restart it
 	@$(APP) up oe-trust-bridge
 	@echo "==> Restarting OpenELIS: the truststore is read once, at startup"

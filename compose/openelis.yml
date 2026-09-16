@@ -17,8 +17,20 @@ services:
   # that moves. It writes the keystore every other OpenELIS container's TLS
   # depends on, so "whatever `main` was that day" is not an acceptable input to
   # a stack whose certificates the bridge pins by thumbprint.
+  #
+  # It does NOT generate anything, despite the name — it ships prebuilt
+  # keystores in its layers and copies them into the volumes. The certificate is
+  # therefore a property of the digest, and deleting the volumes returns the
+  # same one byte for byte.
+  #
+  # Moved 2026-09-15 from e27a8194, whose certificate ran 2025-07-23 → 2026-07-23
+  # and had already expired. The bridge kept working because it pins DER bytes
+  # and a byte comparison cannot read a date — which is exactly why nothing
+  # noticed. This digest (built 2026-09-07) carries 2026-09-07 → 2126-08-14.
+  # Bumping it is a certificate rotation, so the three certgen volumes must be
+  # removed for the new keystore to land: `make certs-rotate`.
   oe-certs:
-    image: itechuw/certgen@sha256:e27a8194300ba73309e835a4070e9ce531687eb3ee604895de781f3061791635
+    image: itechuw/certgen@sha256:c61651de8bc3bb4032abf85a9ebfaf8df6ef83f7933c20cafa5c4bd1f2362be0
     platform: linux/amd64
     container_name: openelis-certs
     restart: "no"

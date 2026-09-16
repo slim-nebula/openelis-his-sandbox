@@ -61,10 +61,16 @@ the sample-type vocabulary, the polling contract, the correlation chain.
 
 ### The four that exit
 
-`openelis-certs` and `openelis-peer-cert` issue the mTLS material,
+`openelis-certs` and `openelis-peer-cert` put the mTLS material in place,
 `openelis-trust-bridge` imports our CA into OpenELIS's truststore, and
 `his-kafka-init` creates the topics. All four show `Exited (0)` in `docker ps -a`
 when the stack is healthy — that is success, not a crash.
+
+**`openelis-certs` copies rather than generates.** The `certgen` image ships
+prebuilt keystores in its layers, so OpenELIS's certificate is a property of the
+pinned digest, not something made at install time. Changing it means changing
+the digest and clearing the volumes — `make certs-rotate`, and
+[operations.md](operations.md#replacing-openeliss-tls-certificate).
 
 > **On patching.** The webapp is the only image we ever build ourselves, and only
 > when `OE_IMAGE_REPO=his-sandbox`. The default is `itechuw` — stock. See
@@ -647,8 +653,11 @@ meaning lives in the eighth.
 | bridge → OpenELIS REST | servlet form login as a service user (OpenELIS gates its catalogue endpoints behind `hasRole('ADMIN')`) |
 
 The mTLS material lives in the `oe-certs`, `oe-keys` and `oe-key-trust-store`
-volumes and is issued by `make certs`. OpenELIS reads its truststore once, at
-startup, which is why `make trust-bridge` restarts it.
+volumes. **Ours** — the CA and the bridge's certificate — is issued by
+`make certs`. **OpenELIS's** is not issued here at all: it arrives prebuilt
+inside the `certgen` image and is exported from its truststore, so replacing it
+is `make certs-rotate` rather than `make certs`. OpenELIS reads its truststore
+once, at startup, which is why `make trust-bridge` restarts it.
 
 ---
 

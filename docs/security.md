@@ -716,51 +716,51 @@ services to Postgres, Kafka and Redis. Those carry patient data too. The
 OpenELIS hop was ranked first because it crosses an organisational boundary and
 was the one an assessor would open with — it is not the last of this work.
 
-**No certificate rotation — and one certificate has already expired.**
-OpenELIS's client certificate, the one the bridge pins, is I-TECH's shipped
-default (`CN=localhost`) and its `notAfter` was **2026-07-23**. It is still in
-use, because pinning compares DER bytes and a byte comparison cannot read a
-date (§3).
+**Certificate rotation: how it works here, and the expiry that was fixed on
+2026-09-15.**
 
-Nothing is broken today and nothing will break on its own, which is exactly the
-problem: the condition is invisible, and it will stay invisible until someone
-turns on chain validation and discovers the integration stops.
+`itechuw/certgen` **does not generate certificates**, despite the name. It ships
+prebuilt keystores baked into its image layers and copies them into the volumes.
+The certificate is therefore a **property of the pinned digest**, and that has
+two consequences people get wrong:
 
-**It cannot be fixed from this repository, and the obvious attempts do not
-work.** Tested on 2026-09-15:
+- **Deleting the volumes returns the same certificate**, byte for byte.
+- **`make certs FORCE=true` does not touch it either.** That regenerates *our*
+  CA and the bridge's certificate, then re-*exports* OpenELIS's unchanged —
+  `init-mtls.sh` exports the peer certificate from OpenELIS's truststore, it
+  never issues it. Reaching for it to fix an expiry rotates your own CA for
+  nothing.
 
-| Attempt | Result |
-|---|---|
-| `make certs FORCE=true` | Regenerates **our** CA and bridge certificate, then **re-exports the same expired peer certificate** — `init-mtls.sh` exports OpenELIS's cert from its truststore rather than issuing it. No change, and now the CA has rotated for nothing. |
-| Delete the certgen volumes and `make up` | Also no change. The certificate came back **byte-identical**, same `notBefore` to the second. |
+The only way to change it is to change the digest and clear the volumes it
+populates, which is what `make certs-rotate` does.
 
-The reason is that `itechuw/certgen` does not generate anything. Its name is
-misleading: the image **ships prebuilt keystores baked into its layers**, dated
-`Jul 23 2025`, and the container copies them into the volumes. Pinned by digest,
-as it should be, that makes the certificate a fixed property of the image:
+**What happened here.** The digest this repository pinned shipped a certificate
+valid `2025-07-23 → 2026-07-23`. It expired, and **nothing noticed for eight
+weeks** — because the bridge pins DER bytes and a byte comparison cannot read a
+date (§3). Orders kept flowing throughout.
 
-```
-$ docker run --rm --entrypoint sh itechuw/certgen@sha256:e27a81… -c 'ls -la /etc/openelis-global'
--rwxrwxrwx 1 root root 2589 Jul 23  2025 client_facing_keystore
--rwxrwxrwx 1 root root 2589 Jul 23  2025 keystore
--rwxrwxrwx 1 root root 1366 Jul 23  2025 truststore
-```
+Upstream had already published a replacement. Moved to
+`sha256:c61651de…` (built 2026-09-07), whose certificate runs
+`2026-09-07 → 2126-08-14`, and rotated with `make certs-rotate`; the bridge
+re-pinned to the new thumbprint on its next handshake and the full suite passed.
 
-So the real options are upstream's or your own:
+Two things to carry forward:
 
-1. **A newer certgen image.** Moves the expiry; does not remove the problem,
-   since whatever it ships also has a fixed date.
-2. **Supply OpenELIS's keystore yourself**, from your PKI, and mount it in place
-   of the certgen volume. This is configuration rather than a code change to the
-   accredited component, and it is what a real deployment should do anyway —
-   see §9.
-3. **Leave it, knowingly.** Which is the current state, and is defensible only
-   because the peer is pinned by bytes.
+- **A hundred-year certificate is not a rotation strategy.** It removes the
+  expiry from your list of concerns, which for a pinned demo stack is the right
+  trade, and it removes any pressure to build the process a hospital needs. A
+  real deployment should supply its own keystore from its own PKI — a mount over
+  `/etc/openelis-global/keystore`, which is configuration rather than a change to
+  the accredited component — with a documented renewal that accounts for the
+  truststore being read once at startup.
+- **Do not turn on `rejectUnauthorized` to "harden" this.** If the peer
+  certificate is ever expired again, strict validation refuses the real OpenELIS
+  and the laboratory stops receiving orders — while every impostor in
+  `make negative` is still refused correctly, so the suite stays green and tells
+  you nothing. That is the failure this section exists to prevent.
 
-**Whichever you choose, do not turn on `rejectUnauthorized` first.** With the
-peer certificate expired, strict validation refuses the real OpenELIS and the
-laboratory stops receiving orders — while every impostor in `make negative` is
-still refused correctly, so the suite stays green and tells you nothing.
+The bridge's own certificates remain ten-year with no renewal path, which is
+what you issue when you have no rotation process.
 
 The bridge's own certificates are valid for ten years with no renewal path. Ten
 -year certificates are what you issue when you have no rotation process, and
