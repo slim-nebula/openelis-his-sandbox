@@ -238,6 +238,9 @@ auth: ## User tokens, revocation, degraded mode, the audit trail and the interna
 progress: ## Phase 4b - where an order has got to inside the laboratory
 	@bash scripts/test-progress.sh $(ORDER)
 
+restart: ## Can a container restart lose an order? (~25 min; SKIP_OPENELIS=1 to skip Tomcat)
+	@bash scripts/test-restart.sh $(TEST_CODE)
+
 certs: ## Issue the certificates for the OpenELIS <-> bridge hop (FORCE=true to regenerate)
 	@bash scripts/init-mtls.sh $(if $(FORCE),--force,)
 

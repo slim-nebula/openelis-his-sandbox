@@ -179,6 +179,12 @@ drift from the data it describes. Read it right to left: **`>1d` is the column
 that matters.** An order outstanding for minutes is ordinary traffic; one
 outstanding overnight is a patient whose test nobody is running.
 
+The same split decides what to do after a restart. Gauges reset with the process
+and tell you nothing about the outage you just had; the ledger spans it. So the
+report to run after an incident is `make reconcile`, not a dashboard — and why a
+restart costs no orders in the first place is
+[durability.md](durability.md).
+
 ---
 
 ## 7. Adding a rule

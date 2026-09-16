@@ -216,6 +216,13 @@ plus an outbox row. It runs here as **one broker, replication factor 1** — fin
 for a sandbox, a single point of failure for a laboratory. See
 [integration-guide.md](integration-guide.md#from-integration-to-production).
 
+Its "yes" above has one edge worth knowing: the broker's log directory is left
+at the image default rather than on a named volume, so it survives `stop`/`start`
+and `restart` but **not** removing the container. That, the seven-day retention,
+and what each component restarting actually costs are worked through in
+[durability.md](durability.md) — and `make restart` proves it against live
+orders.
+
 ---
 
 ## 5. The round trip
@@ -430,6 +437,10 @@ flowchart TD
 
 Every arrow is exercised by `make negative`, except the two dead-letter timeouts,
 which are time-based. The Observation branch is `make panel` §8.
+
+This chart is about a **message** failing. A **process** failing — the bridge or
+OpenELIS restarting mid-order — is a different question with its own answer and
+its own suite: [durability.md](durability.md), `make restart`.
 
 **Why the report waits for its own analytes.** OpenELIS pushes a report's
 `Observation`s in separate deliveries, so a panel routinely arrives before its

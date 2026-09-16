@@ -39,6 +39,7 @@ implements — no shortcut endpoints, no shared database.
 | deciding what an order must carry | [docs/integration-contract.md](docs/integration-contract.md) |
 | running it, or fixing it at 3am | [docs/operations.md](docs/operations.md) |
 | watching it — Prometheus, the alerts, the metrics | [docs/monitoring.md](docs/monitoring.md) |
+| asking "can a restart lose an order?" | [docs/durability.md](docs/durability.md) — proved with `make restart` |
 | assessing risk before go-live | [docs/security.md](docs/security.md) |
 | **improving your own HIS codebase** | **[docs/his-findings.md](docs/his-findings.md)** — defects and designs found in `HIS Project`, with working code to copy |
 | wiring lab tests to billing and CPT codes | [docs/billing-integration.md](docs/billing-integration.md) |

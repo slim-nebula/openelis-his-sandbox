@@ -335,6 +335,12 @@ accredited component. Every asymmetry in this design exists because of that.
 
 ## 7. Recovery
 
+> **Before reaching for any of this: a container restarting does not lose
+> orders.** Which component died, what it was holding, and why the order still
+> arrives is [durability.md](durability.md) — including the one sandbox default
+> (Kafka's log directory) that must not ship to a hospital. Prove it on your own
+> stack with `make restart`.
+
 ### `.env` has been lost, but the stack is still running
 
 **Do not run `make secrets`.** It generates fresh passwords and tokens, and the
