@@ -57,7 +57,7 @@ services:
   # Only the public certificate leaves the store. The bridge can recognise
   # OpenELIS; it holds nothing that would let it be OpenELIS.
   oe-peer-cert:
-    image: ${OE_IMAGE_REPO}/openelis-global-2:${OE_VERSION}
+    image: itechuw/openelis-global-2:${OE_VERSION}
     platform: linux/amd64
     container_name: openelis-peer-cert
     restart: "no"
@@ -108,7 +108,7 @@ services:
     # pulled, so this adds nothing to a deployment; and its keytool is the same
     # one whose Tomcat will read the store, so a PKCS12 written here is one that
     # side can certainly open.
-    image: ${OE_IMAGE_REPO}/openelis-global-2:${OE_VERSION}
+    image: itechuw/openelis-global-2:${OE_VERSION}
     platform: linux/amd64
     container_name: openelis-trust-bridge
     restart: "no"
@@ -145,7 +145,7 @@ services:
 
   # --- LIS application -------------------------------------------------------
   oe.openelis.org:
-    image: ${OE_IMAGE_REPO}/openelis-global-2:${OE_VERSION}
+    image: itechuw/openelis-global-2:${OE_VERSION}
     platform: linux/amd64
     container_name: openelis-webapp
     restart: unless-stopped
@@ -186,9 +186,6 @@ services:
 
   # --- Co-resident HAPI FHIR store (OpenELIS's own working store) ------------
   fhir.openelis.org:
-    # Always stock. No patch touches the FHIR store, and build-openelis.sh only
-    # builds the webapp — pointing this at OE_IMAGE_REPO would send it looking
-    # for an image nobody produces the moment the patched build is selected.
     image: itechuw/openelis-global-2-fhir:${OE_VERSION}
     platform: linux/amd64
     container_name: openelis-fhir

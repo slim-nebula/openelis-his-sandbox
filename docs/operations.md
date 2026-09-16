@@ -57,8 +57,8 @@ they are pulled and emulated. Pinned to a **named release**, never `:develop` �
 
 Allocate **at least 8 GB** to Docker Desktop. With less, the OpenELIS webapp and
 its HAPI FHIR server compete for heap and the poll loop stalls. On an 8 GB host,
-stop the stack before building anything large — `make openelis-patched` in
-particular.
+`make down` before rebuilding the bridge or the HIS service — a build alongside
+a running OpenELIS is what wedged the daemon here.
 
 ---
 
@@ -950,37 +950,30 @@ FHIR endpoint restricted to openelis-webapp, openelis-fhir
 An empty list disables the check and logs a warning instead — visible, rather
 than a silent open door.
 
-### Running the patched OpenELIS build
+### OpenELIS is stock, and there is no way to make it otherwise
 
-The stack ships **stock** (`OE_IMAGE_REPO=itechuw`) and there is currently
-nothing else to run: **no patches are carried**. The last one was retired on
-2026-09-16 after measurement showed the bridge's delivery lease already covered
-it, so `make openelis-patched` now refuses with an explanation rather than
-building something identical to stock.
+Every OpenELIS image is pinned to the published upstream build:
 
-What follows is the procedure for a patch that earns its place in future.
-
-```bash
-make openelis-patched          # clone the tag, apply patches, build
-# then set OE_IMAGE_REPO=his-sandbox in .env
-make up
-docker ps                      # confirms which build is live
+```yaml
+image: itechuw/openelis-global-2:${OE_VERSION}
 ```
 
-Only `openelis-global-2` follows `OE_IMAGE_REPO`. The fhir, frontend, proxy and
-database images are pinned to `itechuw` and never patched.
+The repository is **hardcoded in compose**, not a variable. `OE_VERSION` picks
+which official release runs and is the only knob — there is no setting that
+points this stack at a locally modified build.
 
-- **The build needs the stack stopped** on an 8 GB host. `make down` first.
-- **It retries up to 5 times** (`BUILD_ATTEMPTS`). Truncated downloads from Maven
-  Central are common on a slow link; retries resume from the Maven cache.
-- **A patch that will not apply stops the build.** That is the process working —
-  upstream changed the code it depends on. Read their change; do not force it.
-- **Switching back** is the same two lines in reverse. Both directions verified.
+That is deliberate, and it is the strongest guarantee in this repository.
+OpenELIS is the accredited component; a laboratory's certification rests on
+running the software it was certified against. Every defect found along the way
+is handled on our side, worked around, or lived with, and the ones worth
+reporting are written up in
+[archive/upstream-issues/](archive/upstream-issues/).
 
-Every patch must be re-applied, proven present in the compiled artefact, and
-re-validated against the full suite at each upgrade. The procedure — including
-how to read the class constant pool to prove the change reached the WAR — is in
-[openelis-patches/README.md](../openelis-patches/README.md).
+There was briefly one patch — a lock around the remote Task poll — and it was
+retired on 2026-09-16 once measurement showed the bridge's delivery lease
+already covered the collision it addressed. The patching machinery went with it.
+Upgrading is now a one-line `OE_VERSION` change and a full suite run, with
+nothing to re-apply and nothing to prove still present in a compiled artefact.
 
 ---
 

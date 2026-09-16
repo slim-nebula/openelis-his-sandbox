@@ -72,13 +72,12 @@ pinned digest, not something made at install time. Changing it means changing
 the digest and clearing the volumes — `make certs-rotate`, and
 [operations.md](operations.md#replacing-openeliss-tls-certificate).
 
-> **On patching.** The webapp is the only image we could ever build ourselves,
-> and only when `OE_IMAGE_REPO=his-sandbox`. Today that is moot: this repository
-> carries **no patches**, so a self-built image would be identical to stock. One
-> patch was carried and then retired once measurement showed the bridge's
-> delivery lease already covered it — see
-> [openelis-patches/README.md](../openelis-patches/README.md). `docker ps` always
-> shows which build is running.
+> **Every OpenELIS image is stock, and cannot be anything else.** The repository
+> is hardcoded in compose — `itechuw/openelis-global-2:${OE_VERSION}` — so the
+> only knob is *which official release* runs. There is no variable that points
+> this stack at a modified build. OpenELIS is the accredited component; a
+> laboratory's certification rests on running the software it was certified
+> against, so every defect found is handled on our side rather than in theirs.
 
 ---
 
@@ -766,4 +765,4 @@ in-house value as though the two were comparable.
 | improving the real HIS | [his-findings.md](archive/his-findings.md) |
 | wiring lab tests to billing | [billing-integration.md](billing-integration.md) |
 | judging whether it is any good | [archive/audit.md](archive/audit.md) — independent review and what it changed |
-| changing OpenELIS itself | [openelis-patches/README.md](../openelis-patches/README.md) |
+| asking whether a restart loses orders | [durability.md](durability.md) |

@@ -68,7 +68,9 @@ needs a stronger argument than "cleaner":
 - **The pull model.** OpenELIS polls; the bridge holds. Pushing would fight the
   LIS's design.
 - **Zero patches to the LIS.** The accreditation argument stands. Workarounds
-  live in the bridge, documented and re-appliable (`openelis-patches/README.md`).
+  live in the bridge. *(Since this was written, the patching machinery itself has
+  been removed: the OpenELIS image repository is hardcoded in compose, so there
+  is no longer a way to run anything but the published upstream build.)*
 - **The outbox.** A broker outage delays an order; it can never lose one or leave
   one half-created.
 - **The asymmetric refusal logic** in `Messaging.cs` (`ProcessOrderAsync`):

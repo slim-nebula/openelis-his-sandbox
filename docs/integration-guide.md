@@ -1122,13 +1122,19 @@ order OpenELIS never acknowledges. The bridge counts delivery attempts, so the
 condition is *visible*, but nobody is told. Decide how long is too long and who
 gets called — [Step 7](#how-long-is-too-long) has the cadence to base it on.
 
-**Stay on stock, and keep it that way.** This repository carries **no**
-patches to OpenELIS — one was carried and then retired once measurement showed
-the bridge's delivery lease already covered it. If you ever do add one, it must
-be re-applied, re-verified in the compiled artefact and re-validated against the
-full suite at **every** upgrade, for as long as you carry it. That recurring
-cost is the reason the bar is high; the rules are in
-[openelis-patches/README.md](../openelis-patches/README.md).
+**Stay on stock, and keep it that way.** This repository carries **no** patches
+to OpenELIS, and no way to run a modified build: the image repository is
+hardcoded in compose, so `OE_VERSION` only chooses which official release runs.
+One patch was carried briefly and then retired once measurement showed the
+bridge's delivery lease already covered the collision it addressed.
+
+Resist adding one. A patch must be re-applied, re-verified in the compiled
+artefact and re-validated against the full suite at **every** upgrade, for as
+long as you carry it — and in an accredited laboratory it also puts you on
+software that is not what was certified. Every defect we found is handled on our
+side instead; the seven worth reporting are written up in
+[archive/upstream-issues/](archive/upstream-issues/), and filing them upstream is
+how they eventually stop being yours.
 
 **Involve the laboratory.** Two things in this list are theirs, not yours: keeping
 the test catalogue clean — a LOINC mapped to two different analytes is a mapping
