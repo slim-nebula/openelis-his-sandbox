@@ -209,6 +209,32 @@ the bridge cannot read `his.patients`, it must call the HIS API. In production
 they would be separate servers, because the HIS and the bridge are different
 trust domains.
 
+### The schema documents itself — read it from the database
+
+Every table and every column in both schemas carries a `COMMENT`. **21 tables,
+193 columns, no gaps.** So the explanation is wherever you meet the schema:
+
+```bash
+make psql-his
+\d+ his.lab_orders        -- descriptions in the right-hand column
+```
+
+The same text appears in DBeaver, pgAdmin, DataGrip and any diagram tool that
+reads schema metadata, because it lives in the database rather than in a file.
+
+That distinction is the whole point. The migrations in `db/` were always heavily
+commented — around 700 of `db/his`'s 1,200 lines explain a decision rather than
+execute one — but a `--` comment never leaves the file. Someone opening the
+schema in a GUI, which is how most people meet a schema, saw column names and
+nothing else. `db/his/018_schema_comments.sql` and
+`db/bridge/010_schema_comments.sql` put it where the tools look.
+
+The rule they follow: **a comment must say something the column name does not.**
+`patient_id uuid` needs no help. `order_number` does — the fact that it, and not
+`order_id`, is the integration's public key is the most important thing to know
+about that table. Keep new columns to the same standard; `COMMENT ON` is
+idempotent, so extending those two files is safe.
+
 **Kafka is a source of truth while an order is in flight**, not just a pipe. An
 order accepted by the HIS but not yet delivered exists *only* as a Kafka event
 plus an outbox row. It runs here as **one broker, replication factor 1** — fine
