@@ -16,6 +16,7 @@ import labOrderRoutes from '@modules/lab-orders/routes/lab-order.routes.js';
 import labOrderInternalRoutes from '@modules/lab-orders/routes/internal.routes.js';
 import internalResultRoutes from '@modules/lab-orders/routes/internal-results.routes.js';
 import visitRoutes, { facilityRouter } from '@modules/lab-orders/routes/visit.routes.js';
+import billingRouter from '@modules/billing/routes/billing.routes.js';
 import {
   catalogueRouter,
   catalogueAdminRouter,
@@ -100,6 +101,11 @@ app.use('/lab-orders', asUser, labOrderRoutes);
 app.use('/visits', asUser, visitRoutes);
 app.use('/test-catalogue', asUser, catalogueRouter);
 app.use('/facilities', asUser, facilityRouter);
+
+// What a test is charged and claimed as, and whether that map still matches the
+// laboratory's menu. Read-only — the map is deployment configuration, not
+// something a running system edits. See docs/billing-integration.md.
+app.use('/billing', asUser, billingRouter);
 
 // The catalogue refresh keeps its shared operator token rather than a user
 // token. It is run by a script and by the deployment, neither of which is a

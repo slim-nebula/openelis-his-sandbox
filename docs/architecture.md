@@ -738,5 +738,6 @@ in-house value as though the two were comparable.
 | running or fixing it | [operations.md](operations.md) — start with its alerts section |
 | assessing risk | [security.md](security.md) |
 | improving the real HIS | [his-findings.md](his-findings.md) |
+| wiring lab tests to billing | [billing-integration.md](billing-integration.md) |
 | judging whether it is any good | [archive/audit.md](archive/audit.md) — independent review and what it changed |
 | changing OpenELIS itself | [openelis-patches/README.md](../openelis-patches/README.md) |

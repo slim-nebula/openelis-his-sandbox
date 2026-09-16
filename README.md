@@ -40,6 +40,7 @@ implements — no shortcut endpoints, no shared database.
 | running it, or fixing it at 3am | [docs/operations.md](docs/operations.md) |
 | assessing risk before go-live | [docs/security.md](docs/security.md) |
 | **improving your own HIS codebase** | **[docs/his-findings.md](docs/his-findings.md)** — defects and designs found in `HIS Project`, with working code to copy |
+| wiring lab tests to billing and CPT codes | [docs/billing-integration.md](docs/billing-integration.md) |
 | changing OpenELIS itself | [openelis-patches/README.md](openelis-patches/README.md) |
 | looking at what we found in OpenELIS | [docs/upstream-issues/](docs/upstream-issues/) |
 | why the integration is shaped as it is | [docs/archive/](docs/archive/) — the audit and the acceptance record, kept as history |

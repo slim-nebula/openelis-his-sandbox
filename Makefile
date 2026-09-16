@@ -41,7 +41,8 @@ endif
         smoke e2e results rejection corrections catalogue-test negative auth capture token \
         requester panel monitoring patient-refresh \
         certs trust-bridge progress alerts dead-letters reconcile \
-        sync-catalogue catalogue export-status prune migrate psql-his psql-oe topics urls
+        sync-catalogue catalogue export-status prune migrate psql-his psql-oe topics urls \
+        billing-check billing-map certs-rotate unit
 
 help:
 	@grep -hE '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -233,6 +234,18 @@ progress: ## Phase 4b - where an order has got to inside the laboratory
 
 certs: ## Issue the certificates for the OpenELIS <-> bridge hop (FORCE=true to regenerate)
 	@bash scripts/init-mtls.sh $(if $(FORCE),--force,)
+
+billing-check: ## Does the billing map still cover the laboratory's menu?
+	@bash scripts/check-billing-map.sh
+
+billing-map: ## Show what each test is charged and claimed as
+	@docker exec his-db-external psql -U $(HIS_DB_USER) -d $(HIS_DB_NAME) -c \
+	  "SELECT m.loinc_code, m.specimen_type, c.test_name, m.charge_item_ref, \
+	          coalesce(m.claim_code,'-') AS claim, m.is_active \
+	     FROM his.lab_billing_map m \
+	     LEFT JOIN his.test_catalogue c \
+	       ON c.loinc_code = m.loinc_code AND c.specimen_type = m.specimen_type \
+	    ORDER BY c.test_name, m.specimen_type;"
 
 certs-rotate: ## Replace OpenELIS's keystore from the pinned certgen image (destroys the cert volumes)
 	@echo "==> Rotating OpenELIS's TLS material."

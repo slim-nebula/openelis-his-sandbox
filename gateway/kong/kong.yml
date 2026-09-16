@@ -72,6 +72,15 @@ services:
         methods: [GET]
         strip_path: false
 
+      # What a test is charged and claimed as, and whether that map still covers
+      # the laboratory's menu. GET only, and deliberately so: the map is
+      # deployment configuration loaded by migration, not something a running
+      # system edits. See docs/billing-integration.md.
+      - name: billing
+        paths: ["/billing"]
+        methods: [GET]
+        strip_path: false
+
       # The sites a doctor may order from — the picker behind the order form,
       # and the laboratory's "Referring Site". GET only: the list is maintained
       # by whoever owns the site register, never by the ordering screen.
