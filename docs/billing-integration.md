@@ -22,6 +22,13 @@ Plain English throughout. Where it names a table in your real HIS
 - **You already have almost everything else.** The table below is the only
   genuinely new thing.
 
+**What this document is, and is not.** Sections 4 to 6 are a prepared
+foundation — schema, resolver, reconciliation check, endpoint — built and
+tested here so you do not have to work it out. Section 7 is the opposite: four
+business decisions left deliberately open, because they belong to your HIS's
+own logic. **Your developers make those calls and implement them**; the seams
+are already cut for each one.
+
 **And the one operational rule that falls out of all of it:**
 
 > When the laboratory enables a test and somebody runs `make sync-catalogue`,
@@ -421,11 +428,34 @@ when"* unanswerable.
 
 ---
 
-## 7. The four decisions — yours, not ours
+## 7. The four decisions — yours to make and to implement
 
-These are business rules. We have deliberately not chosen for you, because a
-sandbox that picked answers would teach them as though they were the answers.
-Each one changes what you build.
+**This is the handover.** Everything in §4 to §6 is terrain: the schema, the
+resolver, the check, the endpoint. It is deliberately finished, and just as
+deliberately stops short of the four questions below.
+
+They are **business rules of your HIS**, not integration problems. What a
+hospital charges for, when it charges, how it treats a panel and how inpatient
+work is routed are decisions that belong to your organisation and are expressed
+in your own code. A sandbox that answered them would be inventing your business
+logic and teaching it as though it were the only possibility — and you would
+then have to unpick it.
+
+So: **your developers decide these against the HIS business logic, and implement
+them.** The seams are already in place, and each decision has one:
+
+| Decision | Where you plug in |
+|---|---|
+| a) When to charge | the resolver is a pure lookup; *calling* it is your choice of moment — order creation, accession (`labProgress = IN_LABORATORY`), or result |
+| a) Reversing a charge | subscribe to **`lab.order.failed`**; `is_refund` on the clinical order is already there for it |
+| b) Panels | a column on the map row, so the rule is data your code reads rather than an `if` somebody has to find |
+| c) Reflex tests | a spike first — see below — then the same map, keyed on whatever the laboratory reports |
+| d) Inpatient | whichever order table you route through; the resolver does not care |
+
+Nothing below needs the sandbox changed to accommodate it. If you find yourself
+editing `his.lab_billing_map`'s shape to make a business rule fit, that is worth
+a conversation first — the two columns are identity, and identity is the part
+that fails silently when it bends.
 
 ### a) When do you charge?
 
@@ -475,6 +505,10 @@ through the same table, your team knows and we cannot tell from the schema.
 ---
 
 ## 8. What to build, in order
+
+**Steps 1, 4, 5 and 6 are yours to decide and implement** — they are where the
+HIS's business logic lives. Steps 2 and 3 are porting what is already built and
+tested here.
 
 1. **Answer §7a** — the billing trigger, and the reversal on rejection. Every
    other decision sits on top of this one.
